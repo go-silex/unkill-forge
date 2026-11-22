@@ -52,8 +52,12 @@ function withKvPut(intercept: (key: string, write: () => Promise<void>) => Promi
   })
 }
 
-async function token(send: Handle, params: Record<string, string>) {
-  return send('/token', { method: 'POST', body: new URLSearchParams(params) })
+async function token(send: Handle, params: Record<string, string>, origin?: string) {
+  return send('/token', {
+    method: 'POST',
+    headers: origin ? { Origin: origin } : undefined,
+    body: new URLSearchParams(params),
+  })
 }
 
 async function tokens(response: Response) {
@@ -132,15 +136,19 @@ async function authorize(
   const code = redirect.searchParams.get('code')
   if (!code) throw new Error('Expected authorization code')
   return {
-    exchange: () =>
-      token(send, {
-        grant_type: 'authorization_code',
-        client_id: clientId,
-        code,
-        redirect_uri: callback,
-        code_verifier: verifier,
-        resource,
-      }),
+    exchange: (origin?: string) =>
+      token(
+        send,
+        {
+          grant_type: 'authorization_code',
+          client_id: clientId,
+          code,
+          redirect_uri: callback,
+          code_verifier: verifier,
+          resource,
+        },
+        origin,
+      ),
     refresh: (refreshToken: string) =>
       token(send, {
         grant_type: 'refresh_token',
@@ -316,7 +324,11 @@ describe('OAuth with DCR enabled for this runtime only', () => {
       const b = await mockProvider().signedIn(send, 'fresh-code')
       const grant = await authorize(send, b, false)
       fail = true
-      await expectInvalidGrant(await grant.exchange())
+      const origin = new URL(redirectUri).origin
+      const response = await grant.exchange(origin)
+      expect(response.headers.get('Access-Control-Allow-Origin')).toBe(origin)
+      expect(response.headers.get('Vary')).toContain('Origin')
+      await expectInvalidGrant(response)
       fail = false
       await expectInvalidGrant(await grant.exchange())
     },
@@ -348,6 +360,44 @@ describe('OAuth with DCR enabled for this runtime only', () => {
       await expectInvalidGrant(await grant.exchange())
     } finally {
       resumeFirst.resolve()
+    }
+    const issued = await tokens(await first)
+    expect((await mcpCall(send, issued.access_token)).status).toBe(401)
+    await expectInvalidGrant(await grant.refresh(issued.refresh_token))
+  })
+
+  it('durably revokes a code replay between the grant write and the access token write', async () => {
+    const reached = Promise.withResolvers<void>()
+    const resume = Promise.withResolvers<void>()
+    let hold = false
+    const send = withKvPut(async (key, write) => {
+      const [kind] = key.split(':', 1)
+      if (hold && kind === 'token') {
+        hold = false
+        reached.resolve()
+        await resume.promise
+      }
+      await write()
+    })
+    const b = await mockProvider().signedIn(send, 'late-overlap')
+    const grant = await authorize(send, b, false)
+    hold = true
+    const first = grant.exchange()
+    try {
+      await Promise.race([
+        reached.promise,
+        first.then(() => {
+          throw new Error('First exchange issued tokens before the second exchange started')
+        }),
+      ])
+      const replay = await grant.exchange()
+      expect(replay.status).toBe(400)
+      expect(await replay.json()).toMatchObject({
+        error: 'invalid_grant',
+        error_description: 'Authorization code already used',
+      })
+    } finally {
+      resume.resolve()
     }
     const issued = await tokens(await first)
     expect((await mcpCall(send, issued.access_token)).status).toBe(401)

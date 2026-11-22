@@ -5,6 +5,7 @@ import {
   activeMember,
   grantMember,
   type Member,
+  recordAuthorizationCodeReplay,
   redeemAuthorizationCode,
   releaseAuthorizationCode,
 } from '../../core'
@@ -150,6 +151,7 @@ async function exchangeToken(
   ctx: ExecutionContext,
 ): Promise<Response> {
   const redemption: Redemption = { retryableGrantWriteFailed: false }
+  const replayRequest = request.clone()
   const kv = bindings.OAUTH_KV
   bindings.redemption = redemption
   bindings.OAUTH_KV = new Proxy(kv, {
@@ -179,8 +181,9 @@ async function exchangeToken(
     response = await provider.fetch(request, bindings, ctx)
   } catch (error) {
     if (!redemption.grantId) throw error
-    return restartAuthorization()
+    return restartAuthorization(request)
   }
+  if (response.status === 400) await recordProviderReplay(replayRequest, response, bindings.DB)
   if (!redemption.grantId || (response.status < 500 && response.status !== 429)) return response
   if (response.status === 429 && redemption.retryableGrantWriteFailed) {
     try {
@@ -189,12 +192,40 @@ async function exchangeToken(
       console.warn('OAuth code reservation could not be released')
     }
   }
-  return restartAuthorization()
+  return restartAuthorization(request, response)
 }
 
-function restartAuthorization(): Response {
+async function recordProviderReplay(request: Request, response: Response, db: D1Database): Promise<void> {
+  const error = await response.clone().json<{ error?: string; error_description?: string }>()
+  // Provider 1.2.4 emits this description only after checking the code hash and client.
+  if (error.error !== 'invalid_grant' || error.error_description !== 'Authorization code already used') return
+  const params = await request.formData()
+  const code = params.get('code')
+  if (params.get('grant_type') !== 'authorization_code' || typeof code !== 'string') return
+  const parts = code.split(':')
+  if (parts.length === 3 && parts[1]) await recordAuthorizationCodeReplay(db, parts[1])
+}
+
+function restartAuthorization(request: Request, replaced?: Response): Response {
+  const headers = new Headers()
+  if (replaced) {
+    for (const [name, value] of replaced.headers) {
+      if (name.startsWith('access-control-') || name === 'vary') headers.set(name, value)
+    }
+  } else {
+    // Thrown provider errors never pass through its token-endpoint CORS wrapper.
+    const origin = request.headers.get('Origin')
+    if (origin) {
+      headers.set('Access-Control-Allow-Origin', origin)
+      headers.set('Access-Control-Allow-Methods', '*')
+      headers.set('Access-Control-Allow-Headers', 'Authorization, *')
+      headers.set('Access-Control-Max-Age', '86400')
+      headers.set('Access-Control-Expose-Headers', 'WWW-Authenticate, Retry-After')
+      headers.set('Vary', 'Origin')
+    }
+  }
   return Response.json(
     { error: 'invalid_grant', error_description: 'Token issuance failed; start a new authorization' },
-    { status: 400 },
+    { status: 400, headers },
   )
 }

@@ -4,7 +4,7 @@ Forge is a self-hosted service for publishing HTML artefacts at stable URLs, con
 
 **Gate 0:** this build implements sign-in, member and bot administration, and the MCP `whoami` tool. No artefact storage or publishing yet. Live identity-provider and MCP-client compatibility still needs to be validated on a test zone. See [the specification](docs/spec.md).
 
-Gate 0 runtime: 2,119 lines under `src/`.
+Gate 0 runtime: 2,158 lines under `src/`.
 
 ## Configure sign-in
 
@@ -66,7 +66,7 @@ Existing Gate 0 databases apply `0002_oauth_code_redemption.sql` to add replay t
 - **Hermes:** Create a bot and token under **Bots and API tokens**, copy the token when shown, and send `Authorization: Bearer fgt_<token>` to the same `/mcp` URL.
 - For browser-based MCP clients, add their exact HTTPS origins to the optional comma-separated `MCP_ALLOWED_ORIGINS`. Leave it unset for clients that do not send an `Origin` header.
 
-OAuth access tokens last up to one hour and are shortened near the grant's seven-day cap. Codes are single-use: overlapping exchanges revoke the grant, and only a confirmed KV rate limit before the code is consumed permits retrying it. If an access token predates the replay migration, refresh it before use.
+OAuth access tokens last up to one hour and are shortened near the grant's seven-day cap. Codes are single-use: overlapping exchanges revoke the grant, and only a confirmed KV rate limit before the code is consumed permits retrying it. Access tokens without `grantId` are refused. If the grant already carries `sid`, refresh to acquire `grantId`; original Gate 0 grants without `sid` require fresh authorization.
 
 ## License
 

@@ -216,7 +216,7 @@ Endpoint `https://<manage>/mcp`: Streamable HTTP, stateless, JSON responses. Two
 - Access tokens are bound to `/mcp` and last up to one hour, shortened near the seven-day absolute grant end. Refresh tokens rotate; the cap starts at the code exchange.
 - Authorization codes are single-use. Every exchange, refresh and MCP request rechecks active membership and subject or session revocations at or after the grant was approved (§10).
 
-Gate 0 reserves the code's `grant_id` and `redeemed_at` in D1's `oauth_code_redemptions`. An overlapping validated exchange records a durable `oauth_code_replays` marker that denies exchange, refresh and MCP access even if KV's revocation races the winner's writes. A confirmed rate limit at the grant write releases an unreplayed reservation; when issuance is partial or uncertain the client must restart authorization. Access tokens issued before replay tracking lack a grant ID in their encrypted props; refresh them before use.
+Gate 0 reserves the code's `grant_id` and `redeemed_at` in D1's `oauth_code_redemptions`. An overlapping validated exchange records a durable `oauth_code_replays` marker that denies exchange, refresh and MCP access even if KV's revocation races the winner's writes. A confirmed rate limit at the grant write releases an unreplayed reservation; when issuance is partial or uncertain the client must restart authorization. Access tokens without `grantId` are refused; grants that carry `sid` can refresh to acquire it, while original Gate 0 grants without `sid` require fresh authorization.
 
 **API tokens, for bots and autonomous agents** (Hermes, CI, scheduled jobs).
 

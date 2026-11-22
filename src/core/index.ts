@@ -297,16 +297,24 @@ export function grantMember(db: D1Database, grant: Grant, grantId: string): Prom
     .first<Member>()
 }
 
+function codeReplayStatement(db: D1Database, grantId: string): D1PreparedStatement {
+  return db
+    .prepare(`INSERT OR IGNORE INTO oauth_code_replays (grant_id)
+      SELECT grant_id FROM oauth_code_redemptions WHERE grant_id = ?`)
+    .bind(grantId)
+}
+
+export async function recordAuthorizationCodeReplay(db: D1Database, grantId: string): Promise<void> {
+  await codeReplayStatement(db, grantId).run()
+}
+
 export async function redeemAuthorizationCode(
   db: D1Database,
   grantId: string,
   now: number,
 ): Promise<boolean> {
   const [, reservation] = await db.batch([
-    db
-      .prepare(`INSERT OR IGNORE INTO oauth_code_replays (grant_id)
-        SELECT grant_id FROM oauth_code_redemptions WHERE grant_id = ?`)
-      .bind(grantId),
+    codeReplayStatement(db, grantId),
     db
       .prepare(`INSERT OR IGNORE INTO oauth_code_redemptions (grant_id, redeemed_at)
         SELECT ?, ? WHERE NOT EXISTS (SELECT 1 FROM oauth_code_replays WHERE grant_id = ?)`)
