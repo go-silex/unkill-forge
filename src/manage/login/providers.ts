@@ -106,7 +106,12 @@ function verificationError(error: unknown): never {
   ) {
     throw new ProviderUnavailable()
   }
-  throw new InvalidProviderResponse()
+  const code = (error as { code?: unknown } | null)?.code
+  const oauthError =
+    error instanceof oauth.ResponseBodyError || error instanceof oauth.AuthorizationResponseError
+      ? `:${error.error}`
+      : ''
+  throw new InvalidProviderResponse((typeof code === 'string' ? code : 'invalid_response') + oauthError)
 }
 
 interface Exchange {
@@ -126,11 +131,10 @@ export async function oidcIdentity(
   httpsEndpoint(as.token_endpoint)
   httpsEndpoint(as.userinfo_endpoint)
   const client: oauth.Client = { client_id: provider.clientId }
-  const clientAuth =
-    as.token_endpoint_auth_methods_supported?.includes('client_secret_post') &&
-    !as.token_endpoint_auth_methods_supported.includes('client_secret_basic')
-      ? oauth.ClientSecretPost(provider.clientSecret)
-      : oauth.ClientSecretBasic(provider.clientSecret)
+  // Basic auth form-encodes the credentials (RFC 6749 §2.3.1); Google does not decode them.
+  const clientAuth = as.token_endpoint_auth_methods_supported?.includes('client_secret_post')
+    ? oauth.ClientSecretPost(provider.clientSecret)
+    : oauth.ClientSecretBasic(provider.clientSecret)
 
   try {
     if (params.has('access_token') || (params.has('error') && params.has('code'))) {
@@ -177,14 +181,14 @@ export async function oidcIdentity(
         !exact(payload[claim], expected) ||
         !exact(userInfo[claim], expected)
       ) {
-        throw new IdentityDenied()
+        throw new IdentityDenied(`required_claim:${claim}`)
       }
     }
     if (
       provider.hostedDomains?.length &&
       (!nonempty(payload.hd) || !provider.hostedDomains.includes(payload.hd))
     ) {
-      throw new IdentityDenied()
+      throw new IdentityDenied('hosted_domain')
     }
 
     const emailClaims = nonempty(userInfo.email) ? userInfo : payload

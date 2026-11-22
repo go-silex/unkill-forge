@@ -167,6 +167,14 @@ async function callback(
         ? await oidcIdentity(provider, exchange, await flowNonce(state), previous?.subject)
         : await githubIdentity(provider, exchange)
   } catch (error) {
+    if (
+      error instanceof IdentityDenied ||
+      error instanceof SessionDenied ||
+      error instanceof InvalidProviderResponse
+    ) {
+      // Reasons are claim names or library error codes, never claim values.
+      console.warn('Sign-in refused', provider.id, error.constructor.name, error.message)
+    }
     if (error instanceof IdentityDenied || error instanceof SessionDenied) {
       if (!previous) return respond(401, 'Sign-in refused')
       const now = Date.now()
