@@ -189,6 +189,13 @@ async function exchangeToken(
       { status: 413, headers: tokenCorsHeaders(request) },
     )
   }
+  const form = await tokenForm(request, body)
+  if (form && form.getAll('code').length > 1) {
+    return Response.json(
+      { error: 'invalid_request', error_description: 'Token request has more than one code' },
+      { status: 400, headers: tokenCorsHeaders(request) },
+    )
+  }
   const kv = bindings.OAUTH_KV
   bindings.redemption = redemption
   bindings.OAUTH_KV = new Proxy(kv, {
@@ -224,7 +231,7 @@ async function exchangeToken(
     if (!redemption.grantId) throw error
     return restartAuthorization(request)
   }
-  if (response.status === 400) await recordProviderReplay(body, response, bindings.DB)
+  if (response.status === 400 && form) await recordProviderReplay(form, response, bindings.DB)
   if (!redemption.grantId || (response.status < 500 && response.status !== 429)) return response
   if (response.status === 429 && redemption.retryableGrantWriteFailed) {
     try {
@@ -236,15 +243,39 @@ async function exchangeToken(
   return restartAuthorization(request, response)
 }
 
-async function recordProviderReplay(body: Uint8Array, response: Response, db: D1Database): Promise<void> {
+// Provider 1.2.4 parses /token with Request.formData(); URLSearchParams can disagree on edge input.
+async function tokenForm(request: Request, body: Uint8Array<ArrayBuffer>): Promise<FormData | null> {
+  const headers = new Headers()
+  const type = request.headers.get('Content-Type')
+  if (type) headers.set('Content-Type', type)
+  try {
+    return await new Request(request.url, { method: 'POST', headers, body }).formData()
+  } catch {
+    return null
+  }
+}
+
+async function recordProviderReplay(form: FormData, response: Response, db: D1Database): Promise<void> {
   const error = await response.clone().json<{ error?: string; error_description?: string }>()
   // Provider 1.2.4 emits this description only after checking the code hash and client.
   if (error.error !== 'invalid_grant' || error.error_description !== 'Authorization code already used') return
-  const params = new URLSearchParams(new TextDecoder().decode(body))
-  const code = params.get('code')
-  if (params.get('grant_type') !== 'authorization_code' || code === null) return
+  const code = form.get('code')
+  if (form.get('grant_type') !== 'authorization_code' || typeof code !== 'string') return
   const parts = code.split(':')
-  if (parts.length === 3 && parts[1]) await recordAuthorizationCodeReplay(db, parts[1])
+  if (parts.length !== 3 || !parts[1]) return
+  for (const delay of [50, 150, 0]) {
+    try {
+      await recordAuthorizationCodeReplay(db, parts[1])
+      return
+    } catch (error) {
+      if (!delay) {
+        // The provider has already deleted the grant from KV; see docs/spec.md §13.
+        console.warn('OAuth code replay marker could not be written', error)
+        return
+      }
+      await scheduler.wait(delay)
+    }
+  }
 }
 
 function restartAuthorization(request: Request, replaced?: Response): Response {

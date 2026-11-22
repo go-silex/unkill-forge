@@ -216,7 +216,7 @@ Endpoint `https://<manage>/mcp`: Streamable HTTP, stateless, JSON responses. Two
 - Access tokens are bound to `/mcp` and last up to one hour, shortened near the seven-day absolute grant end. Refresh tokens rotate; the cap starts at the code exchange.
 - Authorization codes are single-use. Every exchange, refresh and MCP request rechecks active membership and subject or session revocations at or after the grant was approved (§10).
 
-Gate 0 reserves the code's `grant_id` and `redeemed_at` in D1's `oauth_code_redemptions`. A validated replay records a durable `oauth_code_replays` marker that denies exchange, refresh and MCP access even if KV revocation races issuance. Both refresh and MCP also require the KV grant to exist: a missing grant denies access even if writing the D1 marker failed. A confirmed rate limit at the grant write releases an unreplayed reservation; when issuance is partial or uncertain the client must restart authorization. `/token` rejects bodies over 16 KiB. Access tokens without `grantId` are refused; grants that carry `sid` can refresh to acquire it, while original Gate 0 grants without `sid` require fresh authorization.
+Gate 0 reserves the code's `grant_id` and `redeemed_at` in D1's `oauth_code_redemptions`. A validated replay records a durable `oauth_code_replays` marker, retried up to three times, that denies exchange, refresh and MCP access even if KV revocation races issuance. Both refresh and MCP also require the KV grant to exist. A confirmed rate limit at the grant write releases an unreplayed reservation; when issuance is partial or uncertain the client must restart authorization. `/token` rejects bodies over 16 KiB and requests with more than one `code`, and reads the code with the provider's form parser. Access tokens without `grantId` are refused; grants that carry `sid` can refresh to acquire it, while original Gate 0 grants without `sid` require fresh authorization.
 
 **API tokens, for bots and autonomous agents** (Hermes, CI, scheduled jobs).
 
@@ -351,6 +351,7 @@ Known limits, stated in `docs/security.md`:
 - A share key travels in the URL. `Referrer-Policy` keeps it from third parties by default, but artefact HTML can override the policy, artefact JavaScript can read its own URL, and Cloudflare request logs may record paths. Anyone holding a link can forward it until revocation.
 - Back-channel logout is best effort. A missing notification can leave the Forge session alive until revalidation or the cap. If the IdP session ends without a logout notification, the grant is only caught by subject-wide revocation, member removal or the 7-day grant end.
 - The OAuth provider accepts the previous refresh token until the next one is used, without reuse detection. The 7-day absolute grant end bounds a stolen refresh token.
+- If all replay-marker writes fail, replay revocation relies on the provider deleting the KV grant. Other Cloudflare locations can keep seeing that grant for about 60 seconds, so the first exchange's access token can be accepted there during that window before it is refused. If the KV grant deletion also fails, the grant stays usable until another revocation or the 7-day grant end.
 - Bytes already downloaded cannot be recalled.
 
 ## 14. Repository and process

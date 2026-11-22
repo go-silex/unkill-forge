@@ -4,7 +4,7 @@ Forge is a self-hosted service for publishing HTML artefacts at stable URLs, con
 
 **Gate 0:** this build implements sign-in, member and bot administration, and the MCP `whoami` tool. No artefact storage or publishing yet. Live identity-provider and MCP-client compatibility still needs to be validated on a test zone. See [the specification](docs/spec.md).
 
-Gate 0 runtime: 2,205 lines under `src/`.
+Gate 0 runtime: 2,236 lines under `src/`.
 
 ## Configure sign-in
 

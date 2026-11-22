@@ -140,20 +140,18 @@ async function authorize(
   expect(redirect.searchParams.get('state')).toBe(state)
   const code = redirect.searchParams.get('code')
   if (!code) throw new Error('Expected authorization code')
+  const params = {
+    grant_type: 'authorization_code',
+    client_id: clientId,
+    code,
+    redirect_uri: callback,
+    code_verifier: verifier,
+    resource,
+  }
   return {
-    exchange: (origin?: string) =>
-      token(
-        send,
-        {
-          grant_type: 'authorization_code',
-          client_id: clientId,
-          code,
-          redirect_uri: callback,
-          code_verifier: verifier,
-          resource,
-        },
-        origin,
-      ),
+    code,
+    params,
+    exchange: (origin?: string) => token(send, params, origin),
     refresh: (refreshToken: string) =>
       token(send, {
         grant_type: 'refresh_token',
@@ -293,6 +291,36 @@ describe('OAuth with DCR enabled for this runtime only', () => {
     await expectInvalidGrant(await grant.refresh(issued.refresh_token))
   })
 
+  it('records a replay only for the code the provider parsed', async () => {
+    const send = runtime({ ALLOW_DCR: 'true' })
+    const idp = mockProvider()
+    const victim = await authorize(send, await idp.signedIn(send, 'oauth-victim'), false)
+    const victimTokens = await tokens(await victim.exchange())
+    const attacker = await authorize(send, await idp.signedIn(send, 'oauth-attacker'), false)
+    await tokens(await attacker.exchange())
+    const crafted = await send('/token', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: `?code=${encodeURIComponent(victim.code)}&${new URLSearchParams(attacker.params)}`,
+    })
+    expect(await crafted.json()).toMatchObject({ error_description: 'Authorization code already used' })
+    expect(await whoami(send, victimTokens.access_token)).toMatchObject({ name: 'oauth-victim' })
+    expect((await victim.refresh(victimTokens.refresh_token)).status).toBe(200)
+  })
+
+  it('refuses token requests with more than one code', async () => {
+    const send = runtime({ ALLOW_DCR: 'true' })
+    const grant = await authorize(send, await mockProvider().signedIn(send, 'oauth-duplicate'), false)
+    const response = await send('/token', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: `${new URLSearchParams(grant.params)}&code=${encodeURIComponent(grant.code)}`,
+    })
+    expect(response.status).toBe(400)
+    expect(await response.json()).toMatchObject({ error: 'invalid_request' })
+    await tokens(await grant.exchange())
+  })
+
   it.each([false, true])('rejects token bodies over 16 KiB (Content-Length: %s)', async (declared) => {
     const send = runtime()
     const first = new TextEncoder().encode('grant_type=authorization_code&padding=')
@@ -396,14 +424,14 @@ describe('OAuth with DCR enabled for this runtime only', () => {
       const resume = Promise.withResolvers<void>()
       let hold = false
       let failMarker = false
-      let markerFailed = false
+      let markerAttempts = 0
       let grantKey = ''
       const db = new Proxy(bindings.DB, {
         get(target, key) {
           if (key === 'prepare') {
             return (query: string) => {
               if (failMarker && query.startsWith('INSERT OR IGNORE INTO oauth_code_replays')) {
-                markerFailed = true
+                markerAttempts += 1
                 throw new Error('Injected replay marker write failure')
               }
               return target.prepare(query)
@@ -445,16 +473,15 @@ describe('OAuth with DCR enabled for this runtime only', () => {
         ])
         failMarker = signal === 'missing KV grant'
         const replay = await grant.exchange()
+        expect(replay.status).toBe(400)
+        expect(await replay.json()).toMatchObject({
+          error: 'invalid_grant',
+          error_description: 'Authorization code already used',
+        })
         if (failMarker) {
-          expect(replay.status).toBe(503)
-          expect(markerFailed).toBe(true)
+          expect(markerAttempts).toBe(3)
           expect(await bindings.OAUTH_KV.get(grantKey)).toBeNull()
         } else {
-          expect(replay.status).toBe(400)
-          expect(await replay.json()).toMatchObject({
-            error: 'invalid_grant',
-            error_description: 'Authorization code already used',
-          })
           expect(await bindings.OAUTH_KV.get(grantKey)).not.toBeNull()
         }
       } finally {
