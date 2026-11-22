@@ -1,8 +1,57 @@
 # unkill-forge
 
-Publish HTML artefacts at stable URLs, control who can read them, and create, read and edit them from AI agents through a remote MCP server. Runs on Cloudflare Workers, D1, R2 and KV.
+Forge is a self-hosted service for publishing HTML artefacts at stable URLs, controlling who can read them, and working with them through remote MCP. It runs on Cloudflare.
 
-**Status:** pre-release. Gate 0 (sign-in and MCP connectivity proof) is in progress; see [the specification](docs/spec.md).
+**Gate 0:** this build implements sign-in, member and bot administration, and the MCP `whoami` tool. No artefact storage or publishing yet. Live identity-provider and MCP-client compatibility still needs to be validated on a test zone. See [the specification](docs/spec.md).
+
+Gate 0 runtime: 1,914 lines under `src/`.
+
+## Configure sign-in
+
+Register Forge with each identity provider. The callback URL for provider ID `github`, `google` or any custom ID is `https://<manage>/login/<id>/callback`. If the OIDC provider supports back-channel logout, register `https://<manage>/login/<id>/backchannel-logout` too.
+
+Set `AUTH_PROVIDERS` to a JSON-encoded array in your Wrangler configuration, for example:
+
+```json
+[
+  { "id": "github", "type": "github", "label": "GitHub", "clientId": "github-client-id" },
+  {
+    "id": "google",
+    "type": "oidc",
+    "label": "Google",
+    "clientId": "google-client-id",
+    "issuer": "https://accounts.google.com",
+    "hostedDomains": ["example.com"]
+  },
+  {
+    "id": "team",
+    "type": "oidc",
+    "label": "Team SSO",
+    "clientId": "oidc-client-id",
+    "issuer": "https://id.example.com",
+    "requireClaims": { "active_member": true },
+    "autoJoinRole": "viewer"
+  }
+]
+```
+
+Store each client's secret in Wrangler, not in the file: `AUTH_GITHUB_CLIENT_SECRET`, `AUTH_GOOGLE_CLIENT_SECRET` and `AUTH_TEAM_CLIENT_SECRET` in this example. The variable name uses the uppercased ID with non-alphanumeric characters replaced by `_`. Set `FORGE_COOKIE_KEY` to a high-entropy secret of at least 32 characters.
+
+The first eligible verified address in `ADMIN_EMAILS` can bootstrap an administrator. This is a one-time action. Later sign-ins create pending members unless an OIDC provider grants `autoJoinRole` after its claim checks. Keep an active administrator to manage access.
+
+## Deploy
+
+1. Install Node.js 24+ and run `npm ci`.
+2. Provision a D1 database and a KV namespace. Copy `wrangler.jsonc` to a private file and replace its resource IDs, provider settings, custom domains and matching HTTPS origins; leave `main` and `migrations_dir` relative to this checkout.
+3. Set the secrets on the target Worker (`npx wrangler secret put <NAME> --config <private path>`). Keep `ALLOW_DCR` off unless a required client demonstrably needs it.
+4. Run `npm run deploy -- --config <private path>`. The script temporarily copies the private configuration into the checkout so Wrangler resolves its paths there, applies the remote D1 migrations, then deploys.
+5. Open the manage origin and sign in as the bootstrap administrator.
+
+## Connect an agent
+
+- **OAuth:** give the MCP client `https://<manage>/mcp` as its Streamable HTTP server URL. Use a client with Client ID Metadata Documents (CIMD), then sign in and approve the request on the manage origin.
+- **API token:** create a bot and its token on **Bots and API tokens**. Copy the token when shown and send `Authorization: Bearer fgt_<token>` to the same `/mcp` URL. A revoked token or a removed member cannot call `whoami`.
+- For browser-based MCP clients, add their exact HTTPS origins to the optional comma-separated `MCP_ALLOWED_ORIGINS`. Leave it unset for clients that do not send an `Origin` header.
 
 ## License
 
