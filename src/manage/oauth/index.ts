@@ -107,7 +107,7 @@ export async function oauthFetch(
           const member = external.success
             ? await activeMember(bindings.DB, external.data.memberId)
             : oauth.success && oauth.data.grantId
-              ? await grantMember(bindings.DB, oauth.data, oauth.data.grantId)
+              ? await oauthMember(bindings, oauth.data, oauth.data.grantId)
               : null
           if (!member) {
             const metadata = `${config.manageOrigin}/.well-known/oauth-protected-resource/mcp`
@@ -144,6 +144,37 @@ export async function oauthFetch(
   return exchangeToken(provider, request, bindings, ctx)
 }
 
+async function oauthMember(bindings: Env, claims: z.infer<typeof grant>, grantId: string) {
+  // OAuth Provider 1.2.4 refresh uses this same grant key. A token record alone is not enough.
+  const key = `grant:${claims.memberId}:${grantId}`
+  if ((await bindings.OAUTH_KV.get(key)) === null) return null
+  return grantMember(bindings.DB, claims, grantId)
+}
+
+const tokenBodyLimit = 16 * 1024
+
+async function readTokenBody(request: Request): Promise<Uint8Array<ArrayBuffer> | null> {
+  if (Number(request.headers.get('Content-Length')) > tokenBodyLimit) return null
+  if (!request.body) return new Uint8Array()
+  const reader = request.body.getReader()
+  const bytes = new Uint8Array(tokenBodyLimit)
+  let length = 0
+  try {
+    for (;;) {
+      const { done, value } = await reader.read()
+      if (done) return bytes.subarray(0, length)
+      if (value.byteLength > tokenBodyLimit - length) {
+        await reader.cancel()
+        return null
+      }
+      bytes.set(value, length)
+      length += value.byteLength
+    }
+  } finally {
+    reader.releaseLock()
+  }
+}
+
 async function exchangeToken(
   provider: OAuthProvider<OAuthEnv>,
   request: Request,
@@ -151,7 +182,13 @@ async function exchangeToken(
   ctx: ExecutionContext,
 ): Promise<Response> {
   const redemption: Redemption = { retryableGrantWriteFailed: false }
-  const replayRequest = request.clone()
+  const body = await readTokenBody(request)
+  if (body === null) {
+    return Response.json(
+      { error: 'invalid_request', error_description: 'Token request body exceeds 16 KiB' },
+      { status: 413, headers: tokenCorsHeaders(request) },
+    )
+  }
   const kv = bindings.OAUTH_KV
   bindings.redemption = redemption
   bindings.OAUTH_KV = new Proxy(kv, {
@@ -178,12 +215,16 @@ async function exchangeToken(
   })
   let response: Response
   try {
-    response = await provider.fetch(request, bindings, ctx)
+    response = await provider.fetch(
+      new Request(request.url, { method: request.method, headers: request.headers, body }),
+      bindings,
+      ctx,
+    )
   } catch (error) {
     if (!redemption.grantId) throw error
     return restartAuthorization(request)
   }
-  if (response.status === 400) await recordProviderReplay(replayRequest, response, bindings.DB)
+  if (response.status === 400) await recordProviderReplay(body, response, bindings.DB)
   if (!redemption.grantId || (response.status < 500 && response.status !== 429)) return response
   if (response.status === 429 && redemption.retryableGrantWriteFailed) {
     try {
@@ -195,37 +236,43 @@ async function exchangeToken(
   return restartAuthorization(request, response)
 }
 
-async function recordProviderReplay(request: Request, response: Response, db: D1Database): Promise<void> {
+async function recordProviderReplay(body: Uint8Array, response: Response, db: D1Database): Promise<void> {
   const error = await response.clone().json<{ error?: string; error_description?: string }>()
   // Provider 1.2.4 emits this description only after checking the code hash and client.
   if (error.error !== 'invalid_grant' || error.error_description !== 'Authorization code already used') return
-  const params = await request.formData()
+  const params = new URLSearchParams(new TextDecoder().decode(body))
   const code = params.get('code')
-  if (params.get('grant_type') !== 'authorization_code' || typeof code !== 'string') return
+  if (params.get('grant_type') !== 'authorization_code' || code === null) return
   const parts = code.split(':')
   if (parts.length === 3 && parts[1]) await recordAuthorizationCodeReplay(db, parts[1])
 }
 
 function restartAuthorization(request: Request, replaced?: Response): Response {
-  const headers = new Headers()
+  const headers = replaced ? new Headers() : tokenCorsHeaders(request)
   if (replaced) {
     for (const [name, value] of replaced.headers) {
       if (name.startsWith('access-control-') || name === 'vary') headers.set(name, value)
-    }
-  } else {
-    // Thrown provider errors never pass through its token-endpoint CORS wrapper.
-    const origin = request.headers.get('Origin')
-    if (origin) {
-      headers.set('Access-Control-Allow-Origin', origin)
-      headers.set('Access-Control-Allow-Methods', '*')
-      headers.set('Access-Control-Allow-Headers', 'Authorization, *')
-      headers.set('Access-Control-Max-Age', '86400')
-      headers.set('Access-Control-Expose-Headers', 'WWW-Authenticate, Retry-After')
-      headers.set('Vary', 'Origin')
     }
   }
   return Response.json(
     { error: 'invalid_grant', error_description: 'Token issuance failed; start a new authorization' },
     { status: 400, headers },
+  )
+}
+
+function tokenCorsHeaders(request: Request): Headers {
+  // Errors generated outside the provider mirror its token-endpoint CORS policy.
+  const origin = request.headers.get('Origin')
+  return new Headers(
+    origin
+      ? {
+          'Access-Control-Allow-Origin': origin,
+          'Access-Control-Allow-Methods': '*',
+          'Access-Control-Allow-Headers': 'Authorization, *',
+          'Access-Control-Max-Age': '86400',
+          'Access-Control-Expose-Headers': 'WWW-Authenticate, Retry-After',
+          Vary: 'Origin',
+        }
+      : undefined,
   )
 }

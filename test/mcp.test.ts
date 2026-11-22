@@ -37,16 +37,21 @@ const register = (send: Handle) =>
     body: JSON.stringify(registerBody),
   })
 
-function withKvPut(intercept: (key: string, write: () => Promise<void>) => Promise<void>) {
-  // The test Worker declares this binding in wrangler.jsonc.
-  const bindings = env as typeof env & { OAUTH_KV: KVNamespace }
+// The test Worker declares these bindings in wrangler.jsonc.
+const bindings = env as typeof env & { DB: D1Database; OAUTH_KV: KVNamespace }
+
+function withKvPut(
+  intercept: (key: string, write: () => Promise<void>) => Promise<void>,
+  faults: { delete?: KVNamespace['delete']; db?: D1Database } = {},
+) {
   const kv = bindings.OAUTH_KV
   return runtime({
     ALLOW_DCR: String(true),
+    DB: faults.db ?? bindings.DB,
     OAUTH_KV: {
       get: kv.get.bind(kv),
       list: kv.list.bind(kv),
-      delete: kv.delete.bind(kv),
+      delete: faults.delete ?? kv.delete.bind(kv),
       put: (key, value, options) => intercept(key, () => kv.put(key, value, options)),
     } as KVNamespace,
   })
@@ -288,6 +293,24 @@ describe('OAuth with DCR enabled for this runtime only', () => {
     await expectInvalidGrant(await grant.refresh(issued.refresh_token))
   })
 
+  it.each([false, true])('rejects token bodies over 16 KiB (Content-Length: %s)', async (declared) => {
+    const send = runtime()
+    const first = new TextEncoder().encode('grant_type=authorization_code&padding=')
+    const rest = new Uint8Array(16 * 1024).fill(120)
+    const headers = new Headers({ 'Content-Type': 'application/x-www-form-urlencoded' })
+    if (declared) headers.set('Content-Length', String(first.length + rest.length))
+    const body = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(first)
+        controller.enqueue(rest)
+        controller.close()
+      },
+    })
+    const response = await send('/token', { method: 'POST', headers, body })
+    expect(response.status).toBe(413)
+    expect(await response.json()).toMatchObject({ error: 'invalid_request' })
+  })
+
   it('can retry the same code after KV rejects the grant write with a rate limit', async () => {
     let fail = false
     const send = withKvPut(async (key, write) => {
@@ -366,43 +389,83 @@ describe('OAuth with DCR enabled for this runtime only', () => {
     await expectInvalidGrant(await grant.refresh(issued.refresh_token))
   })
 
-  it('durably revokes a code replay between the grant write and the access token write', async () => {
-    const reached = Promise.withResolvers<void>()
-    const resume = Promise.withResolvers<void>()
-    let hold = false
-    const send = withKvPut(async (key, write) => {
-      const [kind] = key.split(':', 1)
-      if (hold && kind === 'token') {
-        hold = false
-        reached.resolve()
-        await resume.promise
-      }
-      await write()
-    })
-    const b = await mockProvider().signedIn(send, 'late-overlap')
-    const grant = await authorize(send, b, false)
-    hold = true
-    const first = grant.exchange()
-    try {
-      await Promise.race([
-        reached.promise,
-        first.then(() => {
-          throw new Error('First exchange issued tokens before the second exchange started')
-        }),
-      ])
-      const replay = await grant.exchange()
-      expect(replay.status).toBe(400)
-      expect(await replay.json()).toMatchObject({
-        error: 'invalid_grant',
-        error_description: 'Authorization code already used',
+  it.each(['D1 replay marker', 'missing KV grant'])(
+    'refuses late-overlap tokens using the %s even if the other check cannot detect replay',
+    async (signal) => {
+      const reached = Promise.withResolvers<void>()
+      const resume = Promise.withResolvers<void>()
+      let hold = false
+      let failMarker = false
+      let markerFailed = false
+      let grantKey = ''
+      const db = new Proxy(bindings.DB, {
+        get(target, key) {
+          if (key === 'prepare') {
+            return (query: string) => {
+              if (failMarker && query.startsWith('INSERT OR IGNORE INTO oauth_code_replays')) {
+                markerFailed = true
+                throw new Error('Injected replay marker write failure')
+              }
+              return target.prepare(query)
+            }
+          }
+          const value = Reflect.get(target, key)
+          return typeof value === 'function' ? value.bind(target) : value
+        },
       })
-    } finally {
-      resume.resolve()
-    }
-    const issued = await tokens(await first)
-    expect((await mcpCall(send, issued.access_token)).status).toBe(401)
-    await expectInvalidGrant(await grant.refresh(issued.refresh_token))
-  })
+      const send = withKvPut(
+        async (key, write) => {
+          const [kind] = key.split(':', 1)
+          if (kind === 'grant') grantKey = key
+          if (hold && kind === 'token') {
+            hold = false
+            reached.resolve()
+            await resume.promise
+          }
+          await write()
+        },
+        {
+          db,
+          delete: async (key) => {
+            if (signal === 'D1 replay marker' && key === grantKey) return
+            await bindings.OAUTH_KV.delete(key)
+          },
+        },
+      )
+      const b = await mockProvider().signedIn(send, 'late-overlap')
+      const grant = await authorize(send, b, false)
+      hold = true
+      const first = grant.exchange()
+      try {
+        await Promise.race([
+          reached.promise,
+          first.then(() => {
+            throw new Error('First exchange issued tokens before the second exchange started')
+          }),
+        ])
+        failMarker = signal === 'missing KV grant'
+        const replay = await grant.exchange()
+        if (failMarker) {
+          expect(replay.status).toBe(503)
+          expect(markerFailed).toBe(true)
+          expect(await bindings.OAUTH_KV.get(grantKey)).toBeNull()
+        } else {
+          expect(replay.status).toBe(400)
+          expect(await replay.json()).toMatchObject({
+            error: 'invalid_grant',
+            error_description: 'Authorization code already used',
+          })
+          expect(await bindings.OAUTH_KV.get(grantKey)).not.toBeNull()
+        }
+      } finally {
+        failMarker = false
+        resume.resolve()
+      }
+      const issued = await tokens(await first)
+      expect((await mcpCall(send, issued.access_token)).status).toBe(401)
+      await expectInvalidGrant(await grant.refresh(issued.refresh_token))
+    },
+  )
 
   it('revokes the consent session and its grants for a logout carrying both sub and sid', async () => {
     const send = runtime({ ALLOW_DCR: 'true' })
