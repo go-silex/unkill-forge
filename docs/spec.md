@@ -212,10 +212,11 @@ Endpoint `https://<manage>/mcp`: Streamable HTTP, stateless, JSON responses. Two
 - Clients identify by Client ID Metadata Document (fetched with `global_fetch_strictly_public`), advertised together with `none` client authentication so Claude uses it. Dynamic Client Registration stays off unless Gate 0 shows that a required client cannot use CIMD.
 - Redirect URIs match exactly, except loopback hosts, which match on any port.
 - Authorization runs on the manage host: the person signs in (§10) and approves the consent page. Consent is always shown, with the verified client identity (the CIMD URL host, or "unverified client" otherwise) and the redirect host. Loopback redirects get an explicit warning. Approval consumes a single-use form token bound to the login session and authorization request.
-- Access tokens are bound to `/mcp` and last one hour. Refresh tokens rotate; the grant ends at most 7 days after the code exchange.
+- The Forge-hosted local CIMD describes a generic local application, not a verified identity. Consent labels it unverified and displays the redirect's loopback port.
+- Access tokens are bound to `/mcp` and last up to one hour, shortened near the seven-day absolute grant end. Refresh tokens rotate; the cap starts at the code exchange.
 - Authorization codes are single-use. Every exchange, refresh and MCP request rechecks active membership and subject or session revocations at or after the grant was approved (§10).
 
-Gate 0 records the consumed `grant_id` (primary key) and `redeemed_at` in D1's `oauth_code_redemptions` table.
+Gate 0 reserves the code's `grant_id` and `redeemed_at` in D1's `oauth_code_redemptions`. An overlapping validated exchange records a durable `oauth_code_replays` marker that denies exchange, refresh and MCP access even if KV's revocation races the winner's writes. A confirmed rate limit at the grant write releases an unreplayed reservation; when issuance is partial or uncertain the client must restart authorization. Access tokens issued before replay tracking lack a grant ID in their encrypted props; refresh them before use.
 
 **API tokens, for bots and autonomous agents** (Hermes, CI, scheduled jobs).
 
@@ -267,6 +268,7 @@ Gate 0 records the consumed `grant_id` (primary key) and `redeemed_at` in D1's `
 
 Each `oidc` provider declares:
 
+- `tokenAuthMethod`: `client_secret_basic` (default) or `client_secret_post` (required for Google). Set the method accepted by the registration regardless of which methods discovery lists.
 - `requireClaims`: claims that must hold, in both ID token and UserInfo, or sign-in is refused. For example `{"email_verified": true, "active_member": true}`, where `active_member` is whatever claim the identity manager uses to say a person belongs to the team.
 - `autoJoinRole`: the role granted at first sign-in when the claims hold. Omit it for pending access in Gate 0 (or an invite in Phase 1).
 - For Google: `hostedDomains`, a list of accepted `hd` values (Workspace domains).
@@ -327,6 +329,7 @@ Deployment needs a Cloudflare zone for the two hostnames, plus at least one iden
 
 1. Register Forge as a client of each provider. The callback is `https://<manage>/login/<id>/callback`; for OIDC managers that support it, the back-channel logout URI is `https://<manage>/login/<id>/backchannel-logout`.
 2. For Gate 0, create D1 and KV first. Clone → `npm ci` → configure origins, providers and binding IDs → set secrets → `npm run deploy`. The script applies migrations and deploys; it does not provision resources.
+   The `0002_oauth_code_redemption.sql` migration upgrades databases that already applied `0001_init.sql`, including those where the redemption table was manually added.
 3. Attach the two custom domains.
 4. Sign in with an `ADMIN_EMAILS` address.
 

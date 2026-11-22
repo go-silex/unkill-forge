@@ -13,6 +13,30 @@ export class IdentityDenied extends Error {}
 export class SessionDenied extends Error {}
 export class InvalidProviderResponse extends Error {}
 
+// `error` comes verbatim from the callback query or the provider's token response; log only
+// registered protocol codes (RFC 6749, OpenID Connect Core).
+const knownOauthErrors: Record<string, true> = {
+  invalid_request: true,
+  invalid_client: true,
+  invalid_grant: true,
+  unauthorized_client: true,
+  unsupported_grant_type: true,
+  unsupported_response_type: true,
+  invalid_scope: true,
+  access_denied: true,
+  server_error: true,
+  temporarily_unavailable: true,
+  interaction_required: true,
+  login_required: true,
+  account_selection_required: true,
+  consent_required: true,
+  invalid_request_uri: true,
+  invalid_request_object: true,
+  request_not_supported: true,
+  request_uri_not_supported: true,
+  registration_not_supported: true,
+}
+
 export interface Identity {
   subject: string
   name: string
@@ -109,7 +133,7 @@ function verificationError(error: unknown): never {
   const code = (error as { code?: unknown } | null)?.code
   const oauthError =
     error instanceof oauth.ResponseBodyError || error instanceof oauth.AuthorizationResponseError
-      ? `:${error.error}`
+      ? `:${Object.hasOwn(knownOauthErrors, error.error) ? error.error : 'unrecognized'}`
       : ''
   throw new InvalidProviderResponse((typeof code === 'string' ? code : 'invalid_response') + oauthError)
 }
@@ -131,10 +155,12 @@ export async function oidcIdentity(
   httpsEndpoint(as.token_endpoint)
   httpsEndpoint(as.userinfo_endpoint)
   const client: oauth.Client = { client_id: provider.clientId }
-  // Basic auth form-encodes the credentials (RFC 6749 §2.3.1); Google does not decode them.
-  const clientAuth = as.token_endpoint_auth_methods_supported?.includes('client_secret_post')
-    ? oauth.ClientSecretPost(provider.clientSecret)
-    : oauth.ClientSecretBasic(provider.clientSecret)
+  // Each registration accepts one method, whatever discovery advertises (Google rejects the
+  // form-encoded Basic credentials of RFC 6749 §2.3.1; some Better Auth clients reject POST).
+  const clientAuth =
+    provider.tokenAuthMethod === 'client_secret_post'
+      ? oauth.ClientSecretPost(provider.clientSecret)
+      : oauth.ClientSecretBasic(provider.clientSecret)
 
   try {
     if (params.has('access_token') || (params.has('error') && params.has('code'))) {

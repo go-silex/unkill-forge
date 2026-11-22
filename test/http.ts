@@ -15,6 +15,7 @@ export const manage = 'https://manage.forge.example'
 export const read = 'https://read.forge.example'
 export const issuer = 'https://idp.example'
 export const clientId = 'forge-test-client'
+export const oidcTestSecret = crypto.randomUUID()
 export const provider = {
   id: 'team',
   type: 'oidc',
@@ -43,7 +44,7 @@ export function runtime(overrides: Partial<Env> = {}): Handle {
     MANAGE_ORIGIN: manage,
     ADMIN_EMAILS: `${admin}@example.test`,
     AUTH_PROVIDERS: JSON.stringify([provider]),
-    AUTH_TEAM_CLIENT_SECRET: crypto.randomUUID(),
+    AUTH_TEAM_CLIENT_SECRET: oidcTestSecret,
     MCP_ALLOWED_ORIGINS: 'https://allowed-client.example',
     ALLOW_DCR: 'false',
     FORGE_COOKIE_KEY: base64url.encode(new Uint8Array(32).fill(17)),

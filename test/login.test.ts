@@ -49,6 +49,30 @@ describe('Worker boundary', () => {
 })
 
 describe('browser sign-in', () => {
+  it.each([undefined, 'client_secret_post'] as const)(
+    'uses the registered OIDC token auth method (%s; default is Basic)',
+    async (tokenAuthMethod) => {
+      const send = runtime({ AUTH_PROVIDERS: JSON.stringify([{ ...provider, tokenAuthMethod }]) })
+      const idp = mockProvider(tokenAuthMethod)
+      const b = await idp.signedIn(send, admin)
+      expect((await b.request(members)).status).toBe(200)
+    },
+  )
+
+  it('redacts unknown upstream OAuth error codes from sign-in logs', async () => {
+    const upstream = crypto.randomUUID()
+    const warning = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    try {
+      const b = new Browser(runtime())
+      const response = await mockProvider(undefined, upstream).login(b, admin)
+      expect(response.status).toBe(401)
+      expect(warning.mock.calls.flat().join(' ')).toContain(':unrecognized')
+      expect(warning.mock.calls.flat().join(' ')).not.toContain(upstream)
+    } finally {
+      warning.mockRestore()
+    }
+  })
+
   it('uses GitHub PKCE and admits with the primary verified email', async () => {
     const send = runtime({
       AUTH_PROVIDERS: JSON.stringify([

@@ -88,8 +88,3 @@ CREATE TABLE oauth_consents (
   expires_at INTEGER NOT NULL
 );
 CREATE INDEX oauth_consents_expiry ON oauth_consents(expires_at);
-
-CREATE TABLE oauth_code_redemptions (
-  grant_id TEXT PRIMARY KEY,
-  redeemed_at INTEGER NOT NULL
-);

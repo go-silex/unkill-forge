@@ -286,13 +286,14 @@ export function activeMember(db: D1Database, memberId: string): Promise<Member |
     .first<Member>()
 }
 
-export function grantMember(db: D1Database, grant: Grant): Promise<Member | null> {
+export function grantMember(db: D1Database, grant: Grant, grantId: string): Promise<Member | null> {
   return db
     .prepare(`SELECT m.id, m.kind, m.name, m.email, m.role, m.status FROM members m
     JOIN identities i ON m.id = i.member_id WHERE m.id = ? AND i.provider = ? AND i.subject = ? AND m.status = 'active'
     AND NOT EXISTS (SELECT 1 FROM identity_revocations r WHERE r.provider = i.provider AND r.received_at >= ?
-      AND ((r.sid IS NULL AND r.subject = i.subject) OR (r.sid = ? AND (r.subject IS NULL OR r.subject = i.subject))))`)
-    .bind(grant.memberId, grant.provider, grant.subject, grant.grantedAt, grant.sid)
+      AND ((r.sid IS NULL AND r.subject = i.subject) OR (r.sid = ? AND (r.subject IS NULL OR r.subject = i.subject))))
+    AND NOT EXISTS (SELECT 1 FROM oauth_code_replays WHERE grant_id = ?)`)
+    .bind(grant.memberId, grant.provider, grant.subject, grant.grantedAt, grant.sid, grantId)
     .first<Member>()
 }
 
@@ -301,11 +302,24 @@ export async function redeemAuthorizationCode(
   grantId: string,
   now: number,
 ): Promise<boolean> {
+  const [, reservation] = await db.batch([
+    db
+      .prepare(`INSERT OR IGNORE INTO oauth_code_replays (grant_id)
+        SELECT grant_id FROM oauth_code_redemptions WHERE grant_id = ?`)
+      .bind(grantId),
+    db
+      .prepare(`INSERT OR IGNORE INTO oauth_code_redemptions (grant_id, redeemed_at)
+        SELECT ?, ? WHERE NOT EXISTS (SELECT 1 FROM oauth_code_replays WHERE grant_id = ?)`)
+      .bind(grantId, now, grantId),
+  ])
+  return reservation?.meta.changes === 1
+}
+
+export async function releaseAuthorizationCode(db: D1Database, grantId: string): Promise<boolean> {
   const { meta } = await db
-    .prepare(
-      'INSERT INTO oauth_code_redemptions (grant_id, redeemed_at) VALUES (?, ?) ON CONFLICT DO NOTHING',
-    )
-    .bind(grantId, now)
+    .prepare(`DELETE FROM oauth_code_redemptions WHERE grant_id = ?
+      AND NOT EXISTS (SELECT 1 FROM oauth_code_replays WHERE grant_id = ?)`)
+    .bind(grantId, grantId)
     .run()
   return meta.changes === 1
 }

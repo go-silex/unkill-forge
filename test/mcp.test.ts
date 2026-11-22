@@ -1,3 +1,4 @@
+import { env } from 'cloudflare:test'
 import { base64url } from 'jose'
 import { describe, expect, it, vi } from 'vitest'
 import {
@@ -35,6 +36,21 @@ const register = (send: Handle) =>
     headers: jsonHeaders,
     body: JSON.stringify(registerBody),
   })
+
+function withKvPut(intercept: (key: string, write: () => Promise<void>) => Promise<void>) {
+  // The test Worker declares this binding in wrangler.jsonc.
+  const bindings = env as typeof env & { OAUTH_KV: KVNamespace }
+  const kv = bindings.OAUTH_KV
+  return runtime({
+    ALLOW_DCR: String(true),
+    OAUTH_KV: {
+      get: kv.get.bind(kv),
+      list: kv.list.bind(kv),
+      delete: kv.delete.bind(kv),
+      put: (key, value, options) => intercept(key, () => kv.put(key, value, options)),
+    } as KVNamespace,
+  })
+}
 
 async function token(send: Handle, params: Record<string, string>) {
   return send('/token', { method: 'POST', body: new URLSearchParams(params) })
@@ -95,7 +111,13 @@ async function authorize(
       .map((directive) => directive.trim())
     expect(csp).toContain(`form-action 'self' ${new URL(callback).origin}`)
     expect(csp).toContain("frame-ancestors 'none'")
-    return formValue(await response.text(), 'consent')
+    const html = await response.text()
+    if (clientId === `${manage}/oauth/clients/local.json`) {
+      expect(html).toContain('Unverified client (local application)')
+      expect(html).not.toContain('Verified client domain:')
+      expect(html).toContain(new URL(callback).host)
+    }
+    return formValue(html, 'consent')
   }
   if (verifyExplicitApproval) {
     const form = await consent()
@@ -254,6 +276,80 @@ describe('OAuth with DCR enabled for this runtime only', () => {
     const issued = await tokens(await grant.exchange())
     expect(await whoami(send, issued.access_token)).toMatchObject({ name: 'oauth-replayed' })
     await expectInvalidGrant(await grant.exchange())
+    expect((await mcpCall(send, issued.access_token)).status).toBe(401)
+    await expectInvalidGrant(await grant.refresh(issued.refresh_token))
+  })
+
+  it('can retry the same code after KV rejects the grant write with a rate limit', async () => {
+    let fail = false
+    const send = withKvPut(async (key, write) => {
+      if (fail && key.startsWith('grant:')) {
+        fail = false
+        throw new Error('KV put() failed: 429 Too Many Requests')
+      }
+      await write()
+    })
+    const b = await mockProvider().signedIn(send, 'retry-code')
+    const grant = await authorize(send, b, false)
+    fail = true
+    const failed = await grant.exchange()
+    expect(failed.status).toBe(429)
+    expect((await failed.json<{ error: string }>()).error).toBe('temporarily_unavailable')
+    const issued = await tokens(await grant.exchange())
+    expect(await whoami(send, issued.access_token)).toMatchObject({ name: 'retry-code' })
+  })
+
+  it.each([true, false])(
+    'requires fresh authorization on uncertain or partial issuance (grant write: %s)',
+    async (grantWrite) => {
+      let fail = false
+      const send = withKvPut(async (key, write) => {
+        const [kind] = key.split(':', 1)
+        if (fail && grantWrite && kind === 'grant') {
+          throw new Error('KV put() failed: 503 Service Unavailable')
+        }
+        if (fail && !grantWrite && kind === 'token') {
+          throw new Error('KV put() failed: 429 Too Many Requests')
+        }
+        await write()
+      })
+      const b = await mockProvider().signedIn(send, 'fresh-code')
+      const grant = await authorize(send, b, false)
+      fail = true
+      await expectInvalidGrant(await grant.exchange())
+      fail = false
+      await expectInvalidGrant(await grant.exchange())
+    },
+  )
+
+  it('durably revokes overlapping code exchanges before the first grant reaches KV', async () => {
+    let hold = false
+    const firstAtPut = Promise.withResolvers<void>()
+    const resumeFirst = Promise.withResolvers<void>()
+    const send = withKvPut(async (key, write) => {
+      if (hold && key.startsWith('grant:')) {
+        hold = false
+        firstAtPut.resolve()
+        await resumeFirst.promise
+      }
+      await write()
+    })
+    const b = await mockProvider().signedIn(send, 'overlap-code')
+    const grant = await authorize(send, b, false)
+    hold = true
+    const first = grant.exchange()
+    try {
+      await Promise.race([
+        firstAtPut.promise,
+        first.then(() => {
+          throw new Error('First exchange finished before committing its grant')
+        }),
+      ])
+      await expectInvalidGrant(await grant.exchange())
+    } finally {
+      resumeFirst.resolve()
+    }
+    const issued = await tokens(await first)
     expect((await mcpCall(send, issued.access_token)).status).toBe(401)
     await expectInvalidGrant(await grant.refresh(issued.refresh_token))
   })

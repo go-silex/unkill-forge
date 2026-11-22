@@ -14,6 +14,7 @@ export async function authorize(
   request: Request,
   runtime: Runtime,
   helpers: OAuthHelpers,
+  localClientId: string,
 ): Promise<Response> {
   if (request.method !== 'GET' && request.method !== 'POST') {
     return new Response('Method not allowed', { status: 405, headers: { Allow: 'GET, POST' } })
@@ -37,20 +38,23 @@ export async function authorize(
         )
       }
       const consent = await helpers.describeConsent(authRequest)
+      const local = authRequest.clientId === localClientId
+      const redirect = new URL(authRequest.redirectUri)
       const token = randomSecret()
       await putConsent(DB, await hashSecret(token), session.idHash, request.url, Date.now())
       const page = (
         <Page config={config} title="Connect an agent">
-          {consent.clientDomain ? (
+          {consent.clientDomain && !local ? (
             <p>
               Verified client domain: <strong>{consent.clientDomain}</strong>
             </p>
           ) : (
-            <p>Unverified client</p>
+            <p>{local ? 'Unverified client (local application)' : 'Unverified client'}</p>
           )}
           <p>Client: {consent.clientName}</p>
           <p>
-            Redirect destination: <strong>{consent.redirectHost}</strong>
+            Redirect destination:{' '}
+            <strong>{consent.redirectIsLoopback ? redirect.host : consent.redirectHost}</strong>
           </p>
           {consent.redirectIsLoopback && (
             <p>Warning: any local process could be listening on this loopback address.</p>
@@ -69,7 +73,6 @@ export async function authorize(
           </form>
         </Page>
       )
-      const redirect = new URL(authRequest.redirectUri)
       const target =
         redirect.protocol === 'https:' || redirect.protocol === 'http:' ? redirect.origin : redirect.protocol
       return manageHeaders(

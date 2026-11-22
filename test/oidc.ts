@@ -1,6 +1,16 @@
 import { base64url, exportJWK, generateKeyPair, type JWK, type JWTPayload, SignJWT } from 'jose'
 import { afterEach, beforeAll, expect, vi } from 'vitest'
-import { Browser, clientId, type Handle, issuer, location, manage, navigation, sessionCookie } from './http'
+import {
+  Browser,
+  clientId,
+  type Handle,
+  issuer,
+  location,
+  manage,
+  navigation,
+  oidcTestSecret,
+  sessionCookie,
+} from './http'
 
 let signingKey: CryptoKey
 let publicJwk: JWK
@@ -28,7 +38,10 @@ interface IdentityOptions {
   userinfo?: Record<string, unknown>
 }
 
-export function mockProvider() {
+export function mockProvider(
+  authMethod: 'client_secret_basic' | 'client_secret_post' = 'client_secret_basic',
+  upstreamError?: string,
+) {
   const tokenReplies = new Map<string, { id_token: string; access_token: string; challenge: string }>()
   const profiles = new Map<string, JWTPayload>()
   let serial = 0
@@ -67,13 +80,32 @@ export function mockProvider() {
     }
     if (request.method === 'POST' && url.pathname === '/token') {
       exchanges++
-      const params = new URLSearchParams(await request.text())
+      const params = await request.formData()
+      const auth = request.headers.get('Authorization')
+      const basic = auth?.startsWith('Basic ')
+        ? atob(auth.slice(6))
+            .split(':')
+            .map((part) => new URLSearchParams(`value=${part}`).get('value'))
+        : []
+      const authenticated =
+        authMethod === 'client_secret_basic'
+          ? basic.length === 2 &&
+            basic[0] === clientId &&
+            basic[1] === oidcTestSecret &&
+            !params.has('client_id') &&
+            !params.has('client_secret')
+          : auth === null &&
+            params.get('client_id') === clientId &&
+            params.get('client_secret') === oidcTestSecret
+      if (!authenticated) return Response.json({ error: 'invalid_client' }, { status: 401 })
+      if (upstreamError) return Response.json({ error: upstreamError }, { status: 400 })
       const code = params.get('code')
       if (code === 'unavailable') return Response.json({ error: 'temporarily_unavailable' }, { status: 503 })
-      const reply = code ? tokenReplies.get(code) : undefined
-      if (!reply || !code) return Response.json({ error: 'invalid_grant' }, { status: 400 })
+      const reply = typeof code === 'string' ? tokenReplies.get(code) : undefined
+      if (!reply || typeof code !== 'string')
+        return Response.json({ error: 'invalid_grant' }, { status: 400 })
       tokenReplies.delete(code)
-      const verifier = new TextEncoder().encode(params.get('code_verifier') ?? '')
+      const verifier = new TextEncoder().encode(String(params.get('code_verifier') ?? ''))
       const challenge = base64url.encode(new Uint8Array(await crypto.subtle.digest('SHA-256', verifier)))
       if (challenge !== reply.challenge || params.get('redirect_uri') !== `${manage}${callbackPath}`) {
         return Response.json({ error: 'invalid_grant' }, { status: 400 })
