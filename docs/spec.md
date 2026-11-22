@@ -12,14 +12,14 @@ Design target: one person can read the whole codebase in an afternoon and deploy
 
 ## 2. Goals and non-goals
 
-| # | Goal |
-|---|---|
-| G1 | Publish, update and read back artefacts from claude.ai, Claude Desktop, Claude Code, Codex, autonomous agents such as Hermes, or any MCP client, with no local plugin. |
-| G2 | Three ways to read: members (private), anyone holding a revocable share link, everyone (public). |
-| G3 | Sign-in through GitHub, Google, or an external identity manager over OIDC (an in-house identity provider, Cloudflare Access, Keycloak, Entra…). Deactivation at the identity manager reaches Forge. Instance roles; bot members for automation. |
-| G4 | Forkable: Cloudflare only (Workers, D1, R2, KV); branding through configuration and assets, not code edits. |
-| G5 | Small: a runtime budget around 5,000 lines of TypeScript, tracked, not a release gate; at most four docs besides README. |
-| G6 | Safe defaults: new artefacts are private; untrusted HTML runs on its own origin; every authorization decision reads live state. |
+| #   | Goal                                                                                                                                                                                                                                            |
+| --- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| G1  | Publish, update and read back artefacts from claude.ai, Claude Desktop, Claude Code, Codex, autonomous agents such as Hermes, or any MCP client, with no local plugin.                                                                          |
+| G2  | Three ways to read: members (private), anyone holding a revocable share link, everyone (public).                                                                                                                                                |
+| G3  | Sign-in through GitHub, Google, or an external identity manager over OIDC (an in-house identity provider, Cloudflare Access, Keycloak, Entra…). Deactivation at the identity manager reaches Forge. Instance roles; bot members for automation. |
+| G4  | Forkable: Cloudflare only (Workers, D1, R2, KV); branding through configuration and assets, not code edits.                                                                                                                                     |
+| G5  | Small: a runtime budget around 5,000 lines of TypeScript, tracked, not a release gate; at most four docs besides README.                                                                                                                        |
+| G6  | Safe defaults: new artefacts are private; untrusted HTML runs on its own origin; every authorization decision reads live state.                                                                                                                 |
 
 Non-goals:
 
@@ -36,21 +36,21 @@ Non-goals:
 
 ## 3. Vocabulary
 
-| Term | Meaning |
-|---|---|
-| **Instance** | One deployment: its two hostnames, members, artefacts and storage. |
-| **Artefact** | A named folder of files served under `/a/<slug>/`. The unit of access. |
-| **Slug** | The artefact's address name. |
-| **Revision** | An immutable, numbered snapshot of an artefact's file list. Publishing creates the next number. |
-| **File** | A path inside a revision, pointing to a blob, with size and content type. |
-| **Blob** | Content-addressed bytes in R2, keyed by SHA-256, shared by every file with the same content. |
-| **Visibility** | `private` (members) or `public` (everyone). |
-| **Share link** | A secret URL `/s/<slug>/<key>/` that lets anyone read one artefact until the link is revoked. |
-| **Identity provider** | A configured sign-in source: `github`, or an `oidc` provider (Google, an external identity manager). |
-| **Identity** | One (provider, subject) pair that has signed in. It belongs to one member. |
-| **Member** | A human (one identity) or a bot (created by an admin), with a role: `viewer`, `publisher` or `admin`. |
-| **API token** | A bearer secret belonging to one member, used by bots and scripts on the MCP endpoint. |
-| **Invite link** | A single-use URL that makes the person who signs in through it a member with a given role. |
+| Term                  | Meaning                                                                                               |
+| --------------------- | ----------------------------------------------------------------------------------------------------- |
+| **Instance**          | One deployment: its two hostnames, members, artefacts and storage.                                    |
+| **Artefact**          | A named folder of files served under `/a/<slug>/`. The unit of access.                                |
+| **Slug**              | The artefact's address name.                                                                          |
+| **Revision**          | An immutable, numbered snapshot of an artefact's file list. Publishing creates the next number.       |
+| **File**              | A path inside a revision, pointing to a blob, with size and content type.                             |
+| **Blob**              | Content-addressed bytes in R2, keyed by SHA-256, shared by every file with the same content.          |
+| **Visibility**        | `private` (members) or `public` (everyone).                                                           |
+| **Share link**        | A secret URL `/s/<slug>/<key>/` that lets anyone read one artefact until the link is revoked.         |
+| **Identity provider** | A configured sign-in source: `github`, or an `oidc` provider (Google, an external identity manager).  |
+| **Identity**          | One (provider, subject) pair that has signed in. It belongs to one member.                            |
+| **Member**            | A human (one identity) or a bot (created by an admin), with a role: `viewer`, `publisher` or `admin`. |
+| **API token**         | A bearer secret belonging to one member, used by bots and scripts on the MCP endpoint.                |
+| **Invite link**       | A single-use URL that makes the person who signs in through it a member with a given role.            |
 
 ## 4. Architecture
 
@@ -75,16 +75,16 @@ flowchart LR
 - **One Worker, two hostnames.** The read host serves untrusted artefact HTML; the manage host carries sessions, OAuth and administration. The Worker first matches the request against the two configured HTTPS origins and answers 404 to anything else, before any authentication, routing or asset lookup. `workers_dev` and preview URLs are disabled. No route exists on both hosts.
 - **Core owns policy.** `src/core/` alone owns Forge's tables and R2, and alone decides access, roles and session validity. Adapters (delivery, MCP, admin UI, sign-in, OAuth glue) verify credentials, call core and render results; they make no authorization decision of their own.
 
-| Concern | Choice | Why |
-|---|---|---|
-| HTTP | Hono | Small, Workers-native, JSX for server-rendered pages. |
-| Sign-in | Forge login module on `oauth4webapi` + `jose` (panva) | One code path for every OIDC provider (Google included) plus a small GitHub adapter; Forge owns sessions, claim rules, silent revalidation and back-channel logout, which generic auth frameworks leave to the application. |
-| MCP authorization | `@cloudflare/workers-oauth-provider` (KV) | Workers-native OAuth 2.1 server: PKCE, CIMD, optional DCR, and a token-resolution hook for API tokens. Gate 0 confirms it. |
-| MCP protocol | `@modelcontextprotocol/sdk`, Web-standard Streamable HTTP, stateless, JSON responses | No sessions, no Durable Objects. |
-| Validation | zod | One schema per tool and form. |
-| Database | D1, plain SQL migrations (`wrangler d1 migrations`) | Readable by forkers; no ORM. |
-| Tests | Vitest + `@cloudflare/vitest-pool-workers` (real D1/R2 in workerd) | Behaviour tests. |
-| Tooling | npm + TypeScript | No Bun, Turborepo or monorepo. |
+| Concern           | Choice                                                                               | Why                                                                                                                                                                                                                         |
+| ----------------- | ------------------------------------------------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| HTTP              | Hono                                                                                 | Small, Workers-native, JSX for server-rendered pages.                                                                                                                                                                       |
+| Sign-in           | Forge login module on `oauth4webapi` + `jose` (panva)                                | One code path for every OIDC provider (Google included) plus a small GitHub adapter; Forge owns sessions, claim rules, silent revalidation and back-channel logout, which generic auth frameworks leave to the application. |
+| MCP authorization | `@cloudflare/workers-oauth-provider` (KV)                                            | Workers-native OAuth 2.1 server: PKCE, CIMD, optional DCR, and a token-resolution hook for API tokens. Gate 0 confirms it.                                                                                                  |
+| MCP protocol      | `@modelcontextprotocol/sdk`, Web-standard Streamable HTTP, stateless, JSON responses | No sessions, no Durable Objects.                                                                                                                                                                                            |
+| Validation        | zod                                                                                  | One schema per tool and form.                                                                                                                                                                                               |
+| Database          | D1, plain SQL migrations (`wrangler d1 migrations`)                                  | Readable by forkers; no ORM.                                                                                                                                                                                                |
+| Tests             | Vitest + `@cloudflare/vitest-pool-workers` (real D1/R2 in workerd)                   | Behaviour tests.                                                                                                                                                                                                            |
+| Tooling           | npm + TypeScript                                                                     | No Bun, Turborepo or monorepo.                                                                                                                                                                                              |
 
 Repository layout:
 
@@ -106,23 +106,24 @@ wrangler.jsonc    template without account identifiers
 
 ## 5. Data model
 
-| Table | Columns (essentials) |
-|---|---|
-| `members` | `id` PK, `kind` ∈ human/bot, `name`, `email`, `role` ∈ viewer/publisher/admin, `status` ∈ active/removed, `created_at`, `created_by`, `removed_at` |
-| `identities` | (`provider`, `subject`) PK, `member_id` UNIQUE, `email`, `email_verified`, `last_login_at` |
-| `login_flows` | `state_hash` PK, `browser_hash`, `provider`, `nonce`, `code_verifier`, `return_path`, `invite_hash`, `expires_at` |
-| `sessions` | `id_hash` PK, `member_id`, `provider`, `subject`, `sid`, `auth_time`, `created_at`, `validated_at`, `expires_at`, `revoked_at` |
-| `identity_revocations` | `jti` PK, `provider`, `subject`, `sid` NULL, `received_at` |
-| `invites` | `token_hash` PK, `role`, `created_by`, `expires_at`, `used_by`, `used_at` |
-| `artefacts` | `id` PK, `slug` UNIQUE, `title`, `visibility` ∈ private/public, `current_revision`, `created_by`, `created_at`, `updated_at`, `deleted_at` |
-| `revisions` | (`artefact_id`, `number`) PK, `created_by`, `created_at`, `message` |
-| `files` | (`artefact_id`, `revision`, `path`) PK, `sha256`, `size`, `content_type` |
-| `share_links` | `id` PK, `artefact_id`, `label`, `key_hash` UNIQUE, `key_sealed`, `created_by`, `created_at`, `revoked_at`, `last_used_at` |
-| `api_tokens` | `id` PK, `member_id`, `name`, `prefix`, `token_hash` UNIQUE, `created_at`, `last_used_at`, `revoked_at` |
-| `uploads` | `token_hash` PK, `member_id`, `slug`, `path`, `sha256`, `size`, `content_type`, `state` ∈ pending/stored/consumed, `expires_at` |
-| `handoffs` | `code_hash` PK, `session_id_hash`, `state_hash`, `return_path`, `expires_at` |
-| `redirects` | `from_prefix` PK, `to_prefix`, `created_at` |
-| `audit_log` | `id`, `at`, `member_id`, `action`, `artefact_id`, `detail_json` |
+| Table                  | Columns (essentials)                                                                                                                                       |
+| ---------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `members`              | `id` PK, `kind` ∈ human/bot, `name`, `email`, `role` ∈ viewer/publisher/admin, `status` ∈ pending/active/removed, `created_at`, `created_by`, `removed_at` |
+| `identities`           | (`provider`, `subject`) PK, `member_id` UNIQUE, `email`, `email_verified`, `last_login_at`                                                                 |
+| `login_flows`          | `state_hash` PK, `browser_hash`, `provider`, `return_path`, `session_hash` for silent revalidation, `created_at`, `expires_at`; `invite_hash` in Phase 1   |
+| `sessions`             | `id_hash` PK, `member_id`, `provider`, `subject`, `sid`, `auth_time`, `created_at`, `validated_at`, `expires_at`, `revoked_at`                             |
+| `identity_revocations` | (`provider`, `jti`) PK, `subject` NULL for sid-only events, `sid` NULL for subject-wide events, `received_at`                                              |
+| `oauth_consents`       | `token_hash` PK, `session_hash`, validated authorization request URL, `expires_at`                                                                         |
+| `invites`              | `token_hash` PK, `role`, `created_by`, `expires_at`, `used_by`, `used_at`                                                                                  |
+| `artefacts`            | `id` PK, `slug` UNIQUE, `title`, `visibility` ∈ private/public, `current_revision`, `created_by`, `created_at`, `updated_at`, `deleted_at`                 |
+| `revisions`            | (`artefact_id`, `number`) PK, `created_by`, `created_at`, `message`                                                                                        |
+| `files`                | (`artefact_id`, `revision`, `path`) PK, `sha256`, `size`, `content_type`                                                                                   |
+| `share_links`          | `id` PK, `artefact_id`, `label`, `key_hash` UNIQUE, `key_sealed`, `created_by`, `created_at`, `revoked_at`, `last_used_at`                                 |
+| `api_tokens`           | `id` PK, `member_id`, `name`, `prefix`, `token_hash` UNIQUE, `created_at`, `last_used_at`, `revoked_at`                                                    |
+| `uploads`              | `token_hash` PK, `member_id`, `slug`, `path`, `sha256`, `size`, `content_type`, `state` ∈ pending/stored/consumed, `expires_at`                            |
+| `handoffs`             | `code_hash` PK, `session_id_hash`, `state_hash`, `return_path`, `expires_at`                                                                               |
+| `redirects`            | `from_prefix` PK, `to_prefix`, `created_at`                                                                                                                |
+| `audit_log`            | `id`, `at`, `member_id`, `action`, `artefact_id`, `detail_json`                                                                                            |
 
 Indexes:
 
@@ -150,12 +151,12 @@ Rules:
 
 **Share-link reads** (`/s/…`) use one rule only: the key matches an unrevoked share link of that artefact, whatever its visibility. A revoked key returns 404 even on a public artefact.
 
-| Action | viewer | publisher | admin |
-|---|:-:|:-:|:-:|
-| Read private artefacts | ✓ | ✓ | ✓ |
-| Create, publish, edit, rename, delete, restore; visibility; share links | | ✓ | ✓ |
-| Own API tokens | | ✓ | ✓ |
-| Members, bots, invite links, redirects, purge; supply a share key at creation | | | ✓ |
+| Action                                                                        | viewer | publisher | admin |
+| ----------------------------------------------------------------------------- | :----: | :-------: | :---: |
+| Read private artefacts                                                        |   ✓    |     ✓     |   ✓   |
+| Create, publish, edit, rename, delete, restore; visibility; share links       |        |     ✓     |   ✓   |
+| Own API tokens                                                                |        |     ✓     |   ✓   |
+| Members, bots, invite links, redirects, purge; supply a share key at creation |        |           |   ✓   |
 
 - Publishers may change any artefact: a team trusts its publishers.
 - Every request loads the member's live status and role from D1; tokens and cookies never carry a role. Removing a member ends read, UI and MCP access on their next request, OAuth refresh included.
@@ -190,7 +191,7 @@ Response headers:
 
 ## 8. Publishing semantics
 
-- **Atomic commit.** `publish` builds revision *n+1* and commits it in one D1 batch: insert the `revisions` row, copy unchanged file rows with one `INSERT … SELECT`, insert new file rows, mark uploads consumed, move `current_revision`, append the audit row. The `revisions` primary key is the compare-and-set: if another publish already took *n+1*, the whole batch fails and nothing changes.
+- **Atomic commit.** `publish` builds revision _n+1_ and commits it in one D1 batch: insert the `revisions` row, copy unchanged file rows with one `INSERT … SELECT`, insert new file rows, mark uploads consumed, move `current_revision`, append the audit row. The `revisions` primary key is the compare-and-set: if another publish already took _n+1_, the whole batch fails and nothing changes.
 - With `expectedRevision`, a mismatch returns `conflict` and the current revision. Without it, `merge` publishes retry on the new head (at most three times) and `replace` publishes overwrite the head.
 - `mode: "merge"` keeps unmentioned files; `mode: "replace"` makes the call the complete file list; `delete` removes listed paths.
 - A new artefact starts private at revision 1. Content types come from the extension unless supplied. The result returns the entry URL: `/a/<slug>/` when `index.html` exists, otherwise the first HTML file in path order.
@@ -210,9 +211,12 @@ Endpoint `https://<manage>/mcp`: Streamable HTTP, stateless, JSON responses. Two
 - OAuth 2.1 with PKCE (S256); the endpoint answers `401` with RFC 9728 resource metadata.
 - Clients identify by Client ID Metadata Document (fetched with `global_fetch_strictly_public`), advertised together with `none` client authentication so Claude uses it. Dynamic Client Registration stays off unless Gate 0 shows that a required client cannot use CIMD.
 - Redirect URIs match exactly, except loopback hosts, which match on any port.
-- Authorization runs on the manage host: the person signs in (§10) and approves the consent page. Consent is always shown, with the verified client identity (the CIMD URL host, or "unverified client" otherwise) and the redirect host. Loopback-only clients get an explicit warning.
-- Access tokens are bound to the `/mcp` resource and last one hour. Refresh tokens rotate and last 7 days, then the person signs in again.
-- Every token exchange, refresh and MCP request rechecks that the member is active and that their identity has no revocation newer than the grant (§10).
+- Authorization runs on the manage host: the person signs in (§10) and approves the consent page. Consent is always shown, with the verified client identity (the CIMD URL host, or "unverified client" otherwise) and the redirect host. Loopback redirects get an explicit warning. Approval consumes a single-use form token bound to the login session and authorization request.
+- The Forge-hosted local CIMD describes a generic local application, not a verified identity. Consent labels it unverified and displays the redirect's loopback port.
+- Access tokens are bound to `/mcp` and last up to one hour, shortened near the seven-day absolute grant end. Refresh tokens rotate; the cap starts at the code exchange.
+- Authorization codes are single-use. Every exchange, refresh and MCP request rechecks active membership and subject or session revocations at or after the grant was approved (§10).
+
+Gate 0 reserves the code's `grant_id` and `redeemed_at` in D1's `oauth_code_redemptions`. A validated replay records a durable `oauth_code_replays` marker, retried up to three times, that denies exchange, refresh and MCP access even if KV revocation races issuance. Both refresh and MCP also require the KV grant to exist. A confirmed rate limit at the grant write releases an unreplayed reservation; when issuance is partial or uncertain the client must restart authorization. `/token` rejects bodies over 16 KiB and requests with more than one `code`, and reads the code with the provider's form parser. Access tokens without `grantId` are refused; grants that carry `sid` can refresh to acquire it, while original Gate 0 grants without `sid` require fresh authorization.
 
 **API tokens, for bots and autonomous agents** (Hermes, CI, scheduled jobs).
 
@@ -222,25 +226,25 @@ Endpoint `https://<manage>/mcp`: Streamable HTTP, stateless, JSON responses. Two
 
 **Tools.**
 
-| Tool | Input | Result |
-|---|---|---|
-| `whoami` | — | member, role, read and manage URLs |
-| `list_artefacts` | `query?`, `cursor?` | slug, title, visibility, revision, updated |
-| `get_artefact` | `slug`, `cursor?` | metadata, current revision, a page of files (path, size, type), URL, share links without keys |
-| `read_file` | `slug`, `path`, `revision?`, `offset?`, `limit?` | revision read, total length, a text slice (default 40,000, max 100,000 characters); binary files return metadata only |
-| `publish` | `slug`, `title?`, `files[]` (`{path, content, encoding?}` or `{path, uploadId}`), `mode`, `delete?`, `expectedRevision?`, `message?` | entry URL, revision |
-| `edit_file` | `slug`, `path`, `oldText`, `newText`, `expectedRevision` (required), `replaceAll?` | new revision; fails unless exactly one match (or `replaceAll`) |
-| `create_uploads` | `slug`, `files[]` (`path`, `size`, `sha256`, `contentType?`) | per file: `uploadId` and a single-use `PUT` URL valid 15 min, or "already stored" when the blob exists |
-| `set_visibility` | `slug`, `visibility` | — |
-| `create_share_link` | `slug`, `label?`, `key?` (admin only) | share URL, in full |
-| `list_share_links` | `slug` | id, label, created, last used |
-| `get_share_link` | `id` | share URL, to copy it again |
-| `revoke_share_link` | `id` | — |
-| `list_revisions` | `slug` | number, author, date, message |
-| `restore_revision` | `slug`, `revision` | new revision |
-| `rename_artefact` | `slug`, `newSlug` | new URL |
-| `delete_artefact` | `slug` | — |
-| `set_redirects` | `add[]`, `remove[]` (admin only) | — |
+| Tool                | Input                                                                                                                                | Result                                                                                                                |
+| ------------------- | ------------------------------------------------------------------------------------------------------------------------------------ | --------------------------------------------------------------------------------------------------------------------- |
+| `whoami`            | —                                                                                                                                    | member, role, read and manage URLs                                                                                    |
+| `list_artefacts`    | `query?`, `cursor?`                                                                                                                  | slug, title, visibility, revision, updated                                                                            |
+| `get_artefact`      | `slug`, `cursor?`                                                                                                                    | metadata, current revision, a page of files (path, size, type), URL, share links without keys                         |
+| `read_file`         | `slug`, `path`, `revision?`, `offset?`, `limit?`                                                                                     | revision read, total length, a text slice (default 40,000, max 100,000 characters); binary files return metadata only |
+| `publish`           | `slug`, `title?`, `files[]` (`{path, content, encoding?}` or `{path, uploadId}`), `mode`, `delete?`, `expectedRevision?`, `message?` | entry URL, revision                                                                                                   |
+| `edit_file`         | `slug`, `path`, `oldText`, `newText`, `expectedRevision` (required), `replaceAll?`                                                   | new revision; fails unless exactly one match (or `replaceAll`)                                                        |
+| `create_uploads`    | `slug`, `files[]` (`path`, `size`, `sha256`, `contentType?`)                                                                         | per file: `uploadId` and a single-use `PUT` URL valid 15 min, or "already stored" when the blob exists                |
+| `set_visibility`    | `slug`, `visibility`                                                                                                                 | —                                                                                                                     |
+| `create_share_link` | `slug`, `label?`, `key?` (admin only)                                                                                                | share URL, in full                                                                                                    |
+| `list_share_links`  | `slug`                                                                                                                               | id, label, created, last used                                                                                         |
+| `get_share_link`    | `id`                                                                                                                                 | share URL, to copy it again                                                                                           |
+| `revoke_share_link` | `id`                                                                                                                                 | —                                                                                                                     |
+| `list_revisions`    | `slug`                                                                                                                               | number, author, date, message                                                                                         |
+| `restore_revision`  | `slug`, `revision`                                                                                                                   | new revision                                                                                                          |
+| `rename_artefact`   | `slug`, `newSlug`                                                                                                                    | new URL                                                                                                               |
+| `delete_artefact`   | `slug`                                                                                                                               | —                                                                                                                     |
+| `set_redirects`     | `add[]`, `remove[]` (admin only)                                                                                                     | —                                                                                                                     |
 
 - Tool descriptions are written for agents: when to use the tool, what it changes, what to tell the user.
 - Results are compact JSON text. Errors use stable codes: `not_found`, `forbidden`, `conflict`, `invalid_input`, `too_large`.
@@ -257,41 +261,42 @@ Endpoint `https://<manage>/mcp`: Streamable HTTP, stateless, JSON responses. Two
 
 **Providers** are listed in configuration; at least one is required.
 
-| Type | Use | Mechanics |
-|---|---|---|
-| `github` | GitHub accounts | OAuth 2.0 code flow with PKCE; identity from `/user`; email from `/user/emails`, primary and verified only. |
-| `oidc` | Google, or an external identity manager (an in-house provider, Cloudflare Access SaaS OIDC, Keycloak, Entra…) | Discovery, Authorization Code + PKCE S256, confidential client, ID token validated against JWKS (issuer, audience, dates, nonce), then UserInfo with the same `sub`. |
+| Type     | Use                                                                                                           | Mechanics                                                                                                                                                            |
+| -------- | ------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `github` | GitHub accounts                                                                                               | OAuth 2.0 code flow with PKCE; identity from `/user`; email from `/user/emails`, primary and verified only.                                                          |
+| `oidc`   | Google, or an external identity manager (an in-house provider, Cloudflare Access SaaS OIDC, Keycloak, Entra…) | Discovery, Authorization Code + PKCE S256, confidential client, ID token validated against JWKS (issuer, audience, dates, nonce), then UserInfo with the same `sub`. |
 
 Each `oidc` provider declares:
 
+- `tokenAuthMethod`: `client_secret_basic` (default) or `client_secret_post` (required for Google). Set the method accepted by the registration regardless of which methods discovery lists.
 - `requireClaims`: claims that must hold, in both ID token and UserInfo, or sign-in is refused. For example `{"email_verified": true, "active_member": true}`, where `active_member` is whatever claim the identity manager uses to say a person belongs to the team.
-- `autoJoinRole`: the role granted at first sign-in when the claims hold. Omit it to require an invite.
+- `autoJoinRole`: the role granted at first sign-in when the claims hold. Omit it for pending access in Gate 0 (or an invite in Phase 1).
 - For Google: `hostedDomains`, a list of accepted `hd` values (Workspace domains).
 - `sessionMaxHours` (default 8) and `revalidateAfterMinutes` (default 15, `0` disables).
-- `backchannelLogout` (default on when the provider advertises it).
+- `backchannelLogout` (default `true`; enable delivery separately at a provider that supports it).
 
 **Login flow.**
 
-- `/login/<provider>` stores a single-use flow (5 minutes) bound to a browser cookie, with state, nonce and PKCE verifier.
+- `/login/<provider>` stores a single-use flow (5 minutes) bound to the hash of the `__Host-forge-flow` browser cookie. State is hashed in D1; nonce and PKCE verifier are derived from state rather than stored. The verifier is derived using `FORGE_COOKIE_KEY`.
 - The callback consumes the flow atomically (`DELETE … RETURNING`), validates as above, then admits (below) and creates a session.
 - The session cookie `__Host-forge-session` (HttpOnly, Secure, SameSite=Lax) is opaque; D1 stores only its hash. It records provider, subject, `sid` and `auth_time`.
 
 **Admission** at first sign-in, first match wins:
 
-1. **Bootstrap**: while the instance has no active admin, a verified email listed in `ADMIN_EMAILS` becomes admin. Once an admin exists, the list is ignored.
-2. **Invite link** opened before signing in: its role. Single use, 7 days.
+1. **Bootstrap**: while the instance has no active admin, a verified email listed in `ADMIN_EMAILS` becomes admin. This happens at most once per instance, even if the original admin is later removed or demoted.
+2. **Invite link** (Phase 1) opened before signing in: its role. Single use, 7 days.
 3. **Provider auto-join**: `autoJoinRole` of the provider, once its claims (and `hostedDomains` for Google) hold.
-4. Otherwise: pending, until an admin adds the person.
+4. Otherwise: create a member with `status = pending`. An administrator can admit them with a role.
 
 A removed member keeps `status = removed` and is never admitted again automatically; only an admin can reinstate them. Each identity is its own member: a matching email never hands an account to another provider's identity. Bots are created by admins in the UI; they have no sign-in, only API tokens.
 
 **Keeping sessions true to the identity manager.**
 
 - **Hard cap.** A session never outlives `sessionMaxHours`.
-- **Silent revalidation** (OIDC). Once `revalidateAfterMinutes` have passed, the next top-level HTML navigation goes back to the provider with `prompt=none`. Success refreshes `validated_at` without extending the cap and rechecks the claims. `login_required` or a failed claim ends the session. API-style requests from the UI get `401` instead of a redirect. If the provider is unreachable, the request gets `503`, never access.
+- **Silent revalidation** (OIDC). Once `revalidateAfterMinutes` have passed, the next top-level `GET` document navigation goes back to the provider with `prompt=none`. Success refreshes `validated_at` without extending the cap and rechecks the claims. `login_required` or `interaction_required` ends that session; a verified claim failure for the same subject revokes that identity's sessions and prior grants. Stale requests that are not `GET` document navigations get `401`; mutation requests are never replayed. If the provider is unreachable, the request gets `503`, never access.
 - **Back-channel logout** (OIDC). `POST /login/<provider>/backchannel-logout` accepts a signed `logout_token`. It must pass issuer, audience and dates, carry the back-channel event, have no `nonce` and an unseen `jti`. The token is recorded in `identity_revocations`:
-  - with a `sid`, it ends that session;
-  - with only a `sub` (for example a deactivated account), it ends every session of that identity and every OAuth grant issued before it.
+  - with a `sid`, it ends that session and the OAuth grants approved from it;
+  - with only a `sub` (for example a deactivated account), it ends every session of that identity and refuses every OAuth grant issued at or before the revocation.
 - **Local sign-out** (`POST /logout`, origin-checked) ends the current Forge session only. The identity manager's session and other devices stay.
 - GitHub has no revalidation or logout channel: its sessions rely on the cap and on Forge membership.
 
@@ -311,11 +316,11 @@ Pages:
 
 ## 12. Configuration, branding, deployment
 
-| Kind | Names |
-|---|---|
-| Vars | `FORGE_NAME`, `READ_ORIGIN`, `MANAGE_ORIGIN`, `LOCALE`, `PUBLIC_INDEX`, `ADMIN_EMAILS`, `AUTH_PROVIDERS` (JSON list of provider settings, §10), limits |
-| Secrets | `FORGE_SEAL_KEY`, `FORGE_COOKIE_KEY`, one `AUTH_<ID>_CLIENT_SECRET` per provider |
-| Bindings | `DB` (D1), `BLOBS` (R2), `OAUTH_KV` (KV), optional rate-limit binding |
+| Kind     | Names                                                                                                                                                                                                                                  |
+| -------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Vars     | `FORGE_NAME`, `READ_ORIGIN`, `MANAGE_ORIGIN`, `ADMIN_EMAILS`, `AUTH_PROVIDERS` (JSON list of provider settings, §10), optional `MCP_ALLOWED_ORIGINS` and `ALLOW_DCR` (default `false`); `LOCALE`, `PUBLIC_INDEX` and limits in Phase 1 |
+| Secrets  | `FORGE_SEAL_KEY`, `FORGE_COOKIE_KEY`, one `AUTH_<ID>_CLIENT_SECRET` per provider                                                                                                                                                       |
+| Bindings | `DB` (D1), `BLOBS` (R2), `OAUTH_KV` (KV), optional rate-limit binding                                                                                                                                                                  |
 
 - Configuration is parsed once. Any invalid value makes every request answer 503 and logs the list of errors.
 - **Branding** is data: name, logo, favicon, colours and landing text, from configuration and `brand/`. Page structure, sign-in and consent markup belong to Forge, so forks merge upstream without touching security-relevant templates.
@@ -323,7 +328,8 @@ Pages:
 Deployment needs a Cloudflare zone for the two hostnames, plus at least one identity provider. Order:
 
 1. Register Forge as a client of each provider. The callback is `https://<manage>/login/<id>/callback`; for OIDC managers that support it, the back-channel logout URI is `https://<manage>/login/<id>/backchannel-logout`.
-2. Either click **Deploy to Cloudflare** (it forks the repository, provisions D1, R2 and KV from `wrangler.jsonc`, asks for secrets and runs the migration command), or use the CLI: clone → `npm ci` → set origins and providers in `wrangler.jsonc` → `npx wrangler secret put …` → `npm run deploy` (provisions missing resources, applies migrations, deploys).
+2. For Gate 0, create D1 and KV first. Clone → `npm ci` → configure origins, providers and binding IDs → set secrets → `npm run deploy`. The script applies migrations and deploys; it does not provision resources.
+   The `0002_oauth_code_redemption.sql` migration upgrades databases that already applied `0001_init.sql`, including those where the redemption table was manually added.
 3. Attach the two custom domains.
 4. Sign in with an `ADMIN_EMAILS` address.
 
@@ -343,7 +349,9 @@ Known limits, stated in `docs/security.md`:
 
 - Artefact JavaScript runs on the read origin with the viewer's cookie and can fetch any artefact that viewer can read. Publishers are trusted; never publish untrusted third-party HTML. Per-artefact origins are the upgrade path.
 - A share key travels in the URL. `Referrer-Policy` keeps it from third parties by default, but artefact HTML can override the policy, artefact JavaScript can read its own URL, and Cloudflare request logs may record paths. Anyone holding a link can forward it until revocation.
-- Back-channel logout is best effort: a lost notification leaves a session alive until revalidation or the cap, and an MCP grant until its refresh lifetime ends.
+- Back-channel logout is best effort. A missing notification can leave the Forge session alive until revalidation or the cap. If the IdP session ends without a logout notification, the grant is only caught by subject-wide revocation, member removal or the 7-day grant end.
+- The OAuth provider accepts the previous refresh token until the next one is used, without reuse detection. The 7-day absolute grant end bounds a stolen refresh token.
+- If all replay-marker writes fail, replay revocation relies on the provider deleting the KV grant. Other Cloudflare locations can keep seeing that grant for 60 seconds or more (KV `cacheTtl`). During that window the first exchange's access token is accepted there, and a refresh there writes the grant back to KV, which restores it everywhere until another revocation or the 7-day grant end. The same outcome follows if the KV grant deletion fails. Exploiting it requires redeeming a code first, which needs its PKCE verifier, plus the D1 write failure.
 - Bytes already downloaded cannot be recalled.
 
 ## 14. Repository and process
@@ -363,27 +371,27 @@ Known limits, stated in `docs/security.md`:
 
 ## 15. Delivery
 
-| Step | Content | Exit |
-|---|---|---|
-| **Gate 0** | Skeleton on a test zone, configured as production (CIMD advertised, DCR off): GitHub, Google and one external OIDC manager with a required claim; sessions; OAuth server; consent; `whoami`. | claude.ai custom connector, Claude Desktop, Claude Code, Codex, OMP and Hermes (API token) connect. Refresh works. A removed member is refused at refresh and call. A deactivation at the external manager ends the session and the MCP grant. DCR need decided per client; OAuth library confirmed. |
-| **Phase 1** | Data model, publish/edit/read, uploads, delivery, access, share links, handoff, admin UI, members, bots, invites, API tokens, cron, docs, deploy button. | Acceptance criteria below. |
-| **Phase 2** | First production instances, from private operator material. | Outside this repository. |
+| Step        | Content                                                                                                                                                                                                                                                                       | Exit                                                                                                                                                                                                                                                                                                 |
+| ----------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Gate 0**  | Skeleton on a test zone, configured as production (CIMD advertised, DCR off): GitHub, Google and one external OIDC manager with a required claim; sessions; pending/member/bot administration and API tokens; OAuth server; consent; `whoami`; public read-host landing only. | claude.ai custom connector, Claude Desktop, Claude Code, Codex, OMP and Hermes (API token) connect. Refresh works. A removed member is refused at refresh and call. A deactivation at the external manager ends the session and the MCP grant. DCR need decided per client; OAuth library confirmed. |
+| **Phase 1** | Artefact data model, publish/edit/read, uploads, delivery, access, share links, handoff, invites, cron, docs, deploy button, and complete admin UI.                                                                                                                           | Acceptance criteria below.                                                                                                                                                                                                                                                                           |
+| **Phase 2** | First production instances, from private operator material.                                                                                                                                                                                                                   | Outside this repository.                                                                                                                                                                                                                                                                             |
 
 ## 16. Acceptance criteria
 
-| # | Criterion |
-|---|---|
-| C1 | From claude.ai, a member signed in with GitHub publishes a single HTML file in one tool call and gets its URL; the artefact is private. |
-| C2 | The same member reads the file, changes one sentence with `edit_file` at the read revision, and the URL serves the change. An `edit_file` with a stale revision fails with `conflict`; two concurrent publishes yield one winner and one `conflict`, with no partial revision. |
-| C3 | An anonymous browser opens a share link, including relative CSS, JS and images. After `revoke_share_link`, the next request returns 404, even if the artefact is public. |
-| C4 | Anonymous: a public artefact is readable; a private one starts the login handoff. Signed-in non-member: pending page. Viewer: reads private, cannot publish. |
-| C5 | A member removed by an admin loses read, UI, MCP and refresh access on the next request, and is not re-admitted by bootstrap or auto-join. |
-| C6 | Sign-in works with GitHub, Google (with `hostedDomains`) and an external OIDC manager. A person lacking a required claim is refused. Deactivating the person at the manager ends their Forge sessions and MCP grant, through back-channel logout or at the next revalidation. |
-| C7 | Claude Code, Codex, OMP and Hermes use the same `/mcp`; a bot member publishes with its publisher token and cannot call admin tools. |
-| C8 | A newcomer follows the README on a fresh Cloudflare account with a zone, and reaches a working instance whose first admin comes from `ADMIN_EMAILS`. |
-| C9 | A 50 MB binary goes through `create_uploads` and `curl -T`, is published, and serves with Range support; replaying the upload URL fails. |
-| C10 | A script on the read origin cannot change anything on the manage host; a handoff code or login flow redeemed in another browser does not create a session. |
-| C11 | The repository holds no instance data or migration tooling; the runtime line count is reported in the README. |
+| #   | Criterion                                                                                                                                                                                                                                                                      |
+| --- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| C1  | From claude.ai, a member signed in with GitHub publishes a single HTML file in one tool call and gets its URL; the artefact is private.                                                                                                                                        |
+| C2  | The same member reads the file, changes one sentence with `edit_file` at the read revision, and the URL serves the change. An `edit_file` with a stale revision fails with `conflict`; two concurrent publishes yield one winner and one `conflict`, with no partial revision. |
+| C3  | An anonymous browser opens a share link, including relative CSS, JS and images. After `revoke_share_link`, the next request returns 404, even if the artefact is public.                                                                                                       |
+| C4  | Anonymous: a public artefact is readable; a private one starts the login handoff. Signed-in non-member: pending page. Viewer: reads private, cannot publish.                                                                                                                   |
+| C5  | A member removed by an admin loses read, UI, MCP and refresh access on the next request, and is not re-admitted by bootstrap or auto-join.                                                                                                                                     |
+| C6  | Sign-in works with GitHub, Google (with `hostedDomains`) and an external OIDC manager. A person lacking a required claim is refused. Deactivating the person at the manager ends their Forge sessions and MCP grant, through back-channel logout or at the next revalidation.  |
+| C7  | Claude Code, Codex, OMP and Hermes use the same `/mcp`; a bot member publishes with its publisher token and cannot call admin tools.                                                                                                                                           |
+| C8  | A newcomer follows the README on a fresh Cloudflare account with a zone, and reaches a working instance whose first admin comes from `ADMIN_EMAILS`.                                                                                                                           |
+| C9  | A 50 MB binary goes through `create_uploads` and `curl -T`, is published, and serves with Range support; replaying the upload URL fails.                                                                                                                                       |
+| C10 | A script on the read origin cannot change anything on the manage host; a handoff code or login flow redeemed in another browser does not create a session.                                                                                                                     |
+| C11 | The repository holds no instance data or migration tooling; the runtime line count is reported in the README.                                                                                                                                                                  |
 
 ## 17. Open questions
 

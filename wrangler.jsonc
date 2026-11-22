@@ -1,0 +1,30 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "unkill-forge",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-08-01",
+  "compatibility_flags": ["nodejs_compat", "global_fetch_strictly_public"],
+  "workers_dev": false,
+  "preview_urls": false,
+  "routes": [
+    { "pattern": "forge.example.com", "custom_domain": true },
+    { "pattern": "manage.forge.example.com", "custom_domain": true }
+  ],
+  "vars": {
+    "FORGE_NAME": "Forge",
+    "READ_ORIGIN": "https://forge.example.com",
+    "MANAGE_ORIGIN": "https://manage.forge.example.com",
+    "ADMIN_EMAILS": "admin@example.com",
+    "AUTH_PROVIDERS": "[{\"id\":\"github\",\"type\":\"github\",\"label\":\"GitHub\",\"clientId\":\"replace-with-client-id\"}]",
+    "ALLOW_DCR": "false"
+  },
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "forge",
+      "database_id": "replace-with-d1-id",
+      "migrations_dir": "migrations"
+    }
+  ],
+  "kv_namespaces": [{ "binding": "OAUTH_KV", "id": "replace-with-kv-id" }]
+}

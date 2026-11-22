@@ -1,0 +1,12 @@
+pre-commit:
+  parallel: true
+  commands:
+    biome:
+      glob: "*.{ts,tsx,mjs,json,jsonc}"
+      run: npx biome check --staged
+    typecheck:
+      run: npm run typecheck
+commit-msg:
+  commands:
+    conventional:
+      run: bash scripts/check-conventional-commit.sh {1}
