@@ -317,7 +317,11 @@ describe('OAuth with DCR enabled for this runtime only', () => {
       body: `${new URLSearchParams(grant.params)}&code=${encodeURIComponent(grant.code)}`,
     })
     expect(response.status).toBe(400)
-    expect(await response.json()).toMatchObject({ error: 'invalid_request' })
+    // The provider refuses duplicates too; the description proves Forge refused before it.
+    expect(await response.json()).toEqual({
+      error: 'invalid_request',
+      error_description: 'Token request has more than one code',
+    })
     await tokens(await grant.exchange())
   })
 
