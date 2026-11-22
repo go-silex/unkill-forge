@@ -212,8 +212,10 @@ Endpoint `https://<manage>/mcp`: Streamable HTTP, stateless, JSON responses. Two
 - Clients identify by Client ID Metadata Document (fetched with `global_fetch_strictly_public`), advertised together with `none` client authentication so Claude uses it. Dynamic Client Registration stays off unless Gate 0 shows that a required client cannot use CIMD.
 - Redirect URIs match exactly, except loopback hosts, which match on any port.
 - Authorization runs on the manage host: the person signs in (§10) and approves the consent page. Consent is always shown, with the verified client identity (the CIMD URL host, or "unverified client" otherwise) and the redirect host. Loopback redirects get an explicit warning. Approval consumes a single-use form token bound to the login session and authorization request.
-- Access tokens are bound to the `/mcp` resource and last one hour. Refresh tokens rotate and last 7 days, then the person signs in again.
-- Every token exchange, refresh and MCP request rechecks that the member is active and that there is no subject-wide identity revocation at or after the grant was issued (§10).
+- Access tokens are bound to `/mcp` and last one hour. Refresh tokens rotate; the grant ends at most 7 days after the code exchange.
+- Authorization codes are single-use. Every exchange, refresh and MCP request rechecks active membership and subject or session revocations at or after the grant was approved (§10).
+
+Gate 0 records the consumed `grant_id` (primary key) and `redeemed_at` in D1's `oauth_code_redemptions` table.
 
 **API tokens, for bots and autonomous agents** (Hermes, CI, scheduled jobs).
 
@@ -291,7 +293,7 @@ A removed member keeps `status = removed` and is never admitted again automatica
 - **Hard cap.** A session never outlives `sessionMaxHours`.
 - **Silent revalidation** (OIDC). Once `revalidateAfterMinutes` have passed, the next top-level `GET` document navigation goes back to the provider with `prompt=none`. Success refreshes `validated_at` without extending the cap and rechecks the claims. `login_required` or `interaction_required` ends that session; a verified claim failure for the same subject revokes that identity's sessions and prior grants. Stale requests that are not `GET` document navigations get `401`; mutation requests are never replayed. If the provider is unreachable, the request gets `503`, never access.
 - **Back-channel logout** (OIDC). `POST /login/<provider>/backchannel-logout` accepts a signed `logout_token`. It must pass issuer, audience and dates, carry the back-channel event, have no `nonce` and an unseen `jti`. The token is recorded in `identity_revocations`:
-  - with a `sid`, it ends that session;
+  - with a `sid`, it ends that session and the OAuth grants approved from it;
   - with only a `sub` (for example a deactivated account), it ends every session of that identity and refuses every OAuth grant issued at or before the revocation.
 - **Local sign-out** (`POST /logout`, origin-checked) ends the current Forge session only. The identity manager's session and other devices stay.
 - GitHub has no revalidation or logout channel: its sessions rely on the cap and on Forge membership.
@@ -324,7 +326,7 @@ Pages:
 Deployment needs a Cloudflare zone for the two hostnames, plus at least one identity provider. Order:
 
 1. Register Forge as a client of each provider. The callback is `https://<manage>/login/<id>/callback`; for OIDC managers that support it, the back-channel logout URI is `https://<manage>/login/<id>/backchannel-logout`.
-2. Either click **Deploy to Cloudflare** (it forks the repository, provisions D1, R2 and KV from `wrangler.jsonc`, asks for secrets and runs the migration command), or use the CLI: clone → `npm ci` → set origins and providers in `wrangler.jsonc` → `npx wrangler secret put …` → `npm run deploy` (provisions missing resources, applies migrations, deploys).
+2. For Gate 0, create D1 and KV first. Clone → `npm ci` → configure origins, providers and binding IDs → set secrets → `npm run deploy`. The script applies migrations and deploys; it does not provision resources.
 3. Attach the two custom domains.
 4. Sign in with an `ADMIN_EMAILS` address.
 
@@ -344,7 +346,8 @@ Known limits, stated in `docs/security.md`:
 
 - Artefact JavaScript runs on the read origin with the viewer's cookie and can fetch any artefact that viewer can read. Publishers are trusted; never publish untrusted third-party HTML. Per-artefact origins are the upgrade path.
 - A share key travels in the URL. `Referrer-Policy` keeps it from third parties by default, but artefact HTML can override the policy, artefact JavaScript can read its own URL, and Cloudflare request logs may record paths. Anyone holding a link can forward it until revocation.
-- Back-channel logout is best effort: a lost notification leaves a session alive until revalidation or the cap, and an MCP grant until its refresh lifetime ends.
+- Back-channel logout is best effort. A missing notification can leave the Forge session alive until revalidation or the cap. If the IdP session ends without a logout notification, the grant is only caught by subject-wide revocation, member removal or the 7-day grant end.
+- The OAuth provider accepts the previous refresh token until the next one is used, without reuse detection. The 7-day absolute grant end bounds a stolen refresh token.
 - Bytes already downloaded cannot be recalled.
 
 ## 14. Repository and process

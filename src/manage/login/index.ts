@@ -234,6 +234,8 @@ async function callback(
     }))
   )
     return respond(401, 'Sign-in refused')
+  const priorCookie = readCookie(req, sessionCookie)
+  if (priorCookie) await revokeSession(db, await hashSecret(priorCookie), validatedAt)
   return respond(302, null, path, writeCookie(sessionCookie, session, Math.floor(cap / 1_000)))
 }
 

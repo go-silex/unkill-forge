@@ -1,6 +1,6 @@
 import { configuration, type Env } from './config'
 import { loginRoute } from './manage/login'
-import { oauthFetch } from './manage/oauth'
+import { localClientDocument, localClientPath, oauthFetch } from './manage/oauth'
 import { checkManageOrigin, manageHeaders } from './manage/origin'
 import { manageUi } from './manage/ui'
 import { read } from './read'
@@ -17,9 +17,10 @@ export default {
 
     const path = url.pathname
     const blocked = checkManageOrigin(request, path, config)
-    if (blocked) return manageHeaders(blocked, false)
+    if (blocked) return manageHeaders(blocked)
     const runtime = { config, env }
     try {
+      if (request.method === 'GET' && path === localClientPath) return localClientDocument(config)
       if (
         path === '/mcp' ||
         path === '/authorize' ||
@@ -27,16 +28,16 @@ export default {
         path === '/register' ||
         path.startsWith('/.well-known/oauth-')
       ) {
-        return manageHeaders(await oauthFetch(request, runtime, ctx), path === '/authorize')
+        return manageHeaders(await oauthFetch(request, runtime, ctx))
       }
       const response =
         path.startsWith('/login/') || path === '/logout'
           ? await loginRoute(request, runtime)
           : await manageUi.fetch(request, runtime, ctx)
-      return manageHeaders(response, false)
+      return manageHeaders(response)
     } catch (error) {
       console.error('Forge request failed', error instanceof Error ? error.name : 'unknown')
-      return manageHeaders(new Response('Forge is unavailable', { status: 503 }), false)
+      return manageHeaders(new Response('Forge is unavailable', { status: 503 }))
     }
   },
 }

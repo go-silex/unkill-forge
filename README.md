@@ -4,7 +4,7 @@ Forge is a self-hosted service for publishing HTML artefacts at stable URLs, con
 
 **Gate 0:** this build implements sign-in, member and bot administration, and the MCP `whoami` tool. No artefact storage or publishing yet. Live identity-provider and MCP-client compatibility still needs to be validated on a test zone. See [the specification](docs/spec.md).
 
-Gate 0 runtime: 1,914 lines under `src/`.
+Gate 0 runtime: 1,977 lines under `src/`.
 
 ## Configure sign-in
 
@@ -49,8 +49,14 @@ The first eligible verified address in `ADMIN_EMAILS` can bootstrap an administr
 
 ## Connect an agent
 
-- **OAuth:** give the MCP client `https://<manage>/mcp` as its Streamable HTTP server URL. Use a client with Client ID Metadata Documents (CIMD), then sign in and approve the request on the manage origin.
-- **API token:** create a bot and its token on **Bots and API tokens**. Copy the token when shown and send `Authorization: Bearer fgt_<token>` to the same `/mcp` URL. A revoked token or a removed member cannot call `whoami`.
+- **Claude and Codex:** Use their native CIMD support with the Streamable HTTP URL `https://<manage>/mcp`, then sign in and approve the request.
+- **OMP:** Use the Forge-hosted CIMD document with a loopback callback:
+
+  ```json
+  {"type":"http","url":"https://<manage>/mcp","oauth":{"clientId":"https://<manage>/oauth/clients/local.json","redirectUri":"http://127.0.0.1:3000/callback"}}
+  ```
+
+- **Hermes:** Create a bot and token under **Bots and API tokens**, copy the token when shown, and send `Authorization: Bearer fgt_<token>` to the same `/mcp` URL.
 - For browser-based MCP clients, add their exact HTTPS origins to the optional comma-separated `MCP_ALLOWED_ORIGINS`. Leave it unset for clients that do not send an `Origin` header.
 
 ## License

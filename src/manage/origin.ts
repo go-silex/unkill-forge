@@ -15,16 +15,18 @@ export function checkManageOrigin(request: Request, path: string, config: Config
   return null
 }
 
-export function manageHeaders(response: Response, consent: boolean): Response {
+export function manageHeaders(response: Response, formTarget?: string): Response {
   const headers = new Headers(response.headers)
   headers.set('Cache-Control', 'no-store')
   headers.set('X-Content-Type-Options', 'nosniff')
   headers.set('Referrer-Policy', 'no-referrer')
   // Chrome checks the POST redirect against form-action as well as the form target.
-  headers.set(
-    'Content-Security-Policy',
-    "default-src 'none'; style-src 'self'; base-uri 'none'; frame-ancestors 'none'" +
-      (consent ? '' : "; form-action 'self'"),
-  )
+  if (!headers.has('Content-Security-Policy')) {
+    const formAction = formTarget ? `; form-action 'self' ${formTarget}` : "; form-action 'self'"
+    headers.set(
+      'Content-Security-Policy',
+      `default-src 'none'; style-src 'self'; base-uri 'none'; frame-ancestors 'none'${formAction}`,
+    )
+  }
   return new Response(response.body, { status: response.status, statusText: response.statusText, headers })
 }

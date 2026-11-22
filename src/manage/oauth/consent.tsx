@@ -7,6 +7,7 @@ import {
 import type { Runtime } from '../../config'
 import { consumeConsent, type Grant, hashSecret, putConsent, randomSecret, readSession } from '../../core'
 import { requireBrowserSession } from '../login'
+import { manageHeaders } from '../origin'
 import { Page } from '../ui'
 
 export async function authorize(
@@ -68,9 +69,15 @@ export async function authorize(
           </form>
         </Page>
       )
-      return new Response(`<!doctype html>${await page.toString()}`, {
-        headers: { 'Content-Type': 'text/html; charset=utf-8' },
-      })
+      const redirect = new URL(authRequest.redirectUri)
+      const target =
+        redirect.protocol === 'https:' || redirect.protocol === 'http:' ? redirect.origin : redirect.protocol
+      return manageHeaders(
+        new Response(`<!doctype html>${await page.toString()}`, {
+          headers: { 'Content-Type': 'text/html; charset=utf-8' },
+        }),
+        target,
+      )
     }
     let form: FormData
     try {
@@ -102,6 +109,7 @@ export async function authorize(
       memberId: current.member.id,
       provider: current.provider,
       subject: current.subject,
+      sid: current.sid,
       grantedAt,
     }
     const { redirectTo } = await helpers.completeAuthorization({
@@ -112,6 +120,10 @@ export async function authorize(
       scope: authRequest.scope,
       revokeExistingGrants: false,
     })
+    // KV requires one second between this grant write and the code exchange's rewrite.
+    const { promise, resolve } = Promise.withResolvers<void>()
+    setTimeout(resolve, 1_000)
+    await promise
     return Response.redirect(redirectTo, 303)
   } catch (error) {
     if (error instanceof AuthorizationError) {

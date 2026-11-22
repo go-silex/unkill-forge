@@ -27,6 +27,8 @@ describe('Worker boundary', () => {
   it.each([
     ['identical origins', { READ_ORIGIN: manage }],
     ['non-HTTPS origin', { READ_ORIGIN: 'http://read.forge.example' }],
+    ['malformed origin', { READ_ORIGIN: 'not a URL' }],
+    ['malformed issuer', { AUTH_PROVIDERS: JSON.stringify([{ ...provider, issuer: 'not a URL' }]) }],
     ['no providers', { AUTH_PROVIDERS: '[]' }],
     ['duplicate providers', { AUTH_PROVIDERS: JSON.stringify([provider, provider]) }],
     ['missing provider secret', { AUTH_TEAM_CLIENT_SECRET: undefined }],
@@ -117,6 +119,7 @@ describe('browser sign-in', () => {
     ['unaccepted hosted domain', { token: { hd: 'other.test' } }],
     ['different UserInfo subject', { userinfo: { sub: 'different-user' } }],
     ['wrong ID token nonce', { token: { nonce: 'not-this-flow' } }],
+    ['wrong ID token authorized party', { token: { azp: 'different-client' } }],
   ] as const)('refuses %s', async (reason, identity) => {
     const send = runtime()
     const b = new Browser(send)
@@ -168,6 +171,18 @@ describe('browser sign-in', () => {
     expect(location(await send('/', { headers: { ...navigation, cookie: original } })).pathname).toBe(
       '/login',
     )
+  })
+
+  it('replaces the previous session only after a successful sign-in', async () => {
+    const send = runtime()
+    const idp = mockProvider()
+    const b = await idp.signedIn(send, 'prior-account')
+    const original = b.cookieHeader()
+    expect((await idp.login(b, 'different-account', { token: { azp: 'different-client' } })).status).toBe(401)
+    expect((await send('/', { headers: { cookie: original } })).status).toBe(200)
+    expect((await idp.login(b, 'different-account')).status).toBe(302)
+    expect(await (await b.request('/')).text()).toContain('different-account')
+    expect(location(await send('/', { headers: { cookie: original } })).pathname).toBe('/login')
   })
 })
 

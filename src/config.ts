@@ -2,10 +2,10 @@ import { z } from 'zod'
 
 const origin = z
   .url({ protocol: /^https$/ })
-  .refine((value) => new URL(value).origin === value, 'Expected a canonical HTTPS origin')
+  .refine((value) => URL.parse(value)?.origin === value, 'Expected a canonical HTTPS origin')
 const issuer = z.url({ protocol: /^https$/ }).refine((value) => {
-  const url = new URL(value)
-  return !url.username && !url.password && !url.search && !url.hash
+  const url = URL.parse(value)
+  return url !== null && !url.username && !url.password && !url.search && !url.hash
 }, 'Expected an HTTPS issuer URL without credentials, query or fragment')
 const csv = z.string().transform((value) =>
   value

@@ -27,7 +27,13 @@ export type BrowserSession = {
   expiresAt: number
   member: Member
 }
-export type Grant = { memberId: string; provider: string; subject: string; grantedAt: number }
+export type Grant = {
+  memberId: string
+  provider: string
+  subject: string
+  sid: string | null
+  grantedAt: number
+}
 
 function base64url(bytes: Uint8Array): string {
   return btoa(String.fromCharCode(...bytes))
@@ -284,10 +290,24 @@ export function grantMember(db: D1Database, grant: Grant): Promise<Member | null
   return db
     .prepare(`SELECT m.id, m.kind, m.name, m.email, m.role, m.status FROM members m
     JOIN identities i ON m.id = i.member_id WHERE m.id = ? AND i.provider = ? AND i.subject = ? AND m.status = 'active'
-    AND NOT EXISTS (SELECT 1 FROM identity_revocations r WHERE r.provider = i.provider AND r.subject = i.subject
-      AND r.sid IS NULL AND r.received_at >= ?)`)
-    .bind(grant.memberId, grant.provider, grant.subject, grant.grantedAt)
+    AND NOT EXISTS (SELECT 1 FROM identity_revocations r WHERE r.provider = i.provider AND r.received_at >= ?
+      AND ((r.sid IS NULL AND r.subject = i.subject) OR (r.sid = ? AND (r.subject IS NULL OR r.subject = i.subject))))`)
+    .bind(grant.memberId, grant.provider, grant.subject, grant.grantedAt, grant.sid)
     .first<Member>()
+}
+
+export async function redeemAuthorizationCode(
+  db: D1Database,
+  grantId: string,
+  now: number,
+): Promise<boolean> {
+  const { meta } = await db
+    .prepare(
+      'INSERT INTO oauth_code_redemptions (grant_id, redeemed_at) VALUES (?, ?) ON CONFLICT DO NOTHING',
+    )
+    .bind(grantId, now)
+    .run()
+  return meta.changes === 1
 }
 
 export async function putConsent(

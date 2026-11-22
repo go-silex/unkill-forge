@@ -1,19 +1,37 @@
 import { OAuthError, type OAuthHelpers, OAuthProvider } from '@cloudflare/workers-oauth-provider'
 import { z } from 'zod'
 import type { Config, Env, Runtime } from '../../config'
-import { activeMember, grantMember, type Member } from '../../core'
+import { activeMember, grantMember, type Member, redeemAuthorizationCode } from '../../core'
 import { useApiToken } from '../../core/admin'
 import { handleMcp } from '../mcp'
+import { manageHeaders } from '../origin'
 import { authorize } from './consent'
 
 const grant = z.object({
   memberId: z.uuid(),
   provider: z.string(),
   subject: z.string(),
+  sid: z.string().nullable(),
   grantedAt: z.number(),
 })
 const apiToken = z.object({ memberId: z.uuid(), viaToken: z.literal(true) })
 const providers = new WeakMap<Config, OAuthProvider<Env>>()
+export const localClientPath = '/oauth/clients/local.json'
+
+export function localClientDocument(config: Config): Response {
+  const response = manageHeaders(
+    Response.json({
+      client_id: config.manageOrigin + localClientPath,
+      client_name: 'Local MCP client',
+      redirect_uris: ['http://127.0.0.1/callback', 'http://localhost/callback'],
+      grant_types: ['authorization_code', 'refresh_token'],
+      response_types: ['code'],
+      token_endpoint_auth_method: 'none',
+    }),
+  )
+  response.headers.set('Cache-Control', 'public, max-age=300')
+  return response
+}
 
 export function oauthFetch(request: Request, runtime: Runtime, ctx: ExecutionContext): Promise<Response> {
   const { config, env } = runtime
@@ -36,14 +54,18 @@ export function oauthFetch(request: Request, runtime: Runtime, ctx: ExecutionCon
         authorization_servers: [config.manageOrigin],
         resource_name: config.name,
       },
-      async tokenExchangeCallback({ props, userId, env: bindings }) {
+      async tokenExchangeCallback({ grantType, grantId, props, userId, env: bindings }) {
         const parsed = grant.safeParse(props)
         if (!parsed.success || parsed.data.memberId !== userId) {
           throw new OAuthError('invalid_grant', { description: 'Invalid authorization grant' })
         }
         let member: Member | null
+        let redeemed = true
         try {
           member = await grantMember(bindings.DB, parsed.data)
+          if (member && grantType === 'authorization_code') {
+            redeemed = await redeemAuthorizationCode(bindings.DB, grantId, Date.now())
+          }
         } catch {
           throw new OAuthError('temporarily_unavailable', {
             description: 'Authorization unavailable',
@@ -51,6 +73,8 @@ export function oauthFetch(request: Request, runtime: Runtime, ctx: ExecutionCon
           })
         }
         if (!member) throw new OAuthError('invalid_grant', { description: 'Authorization revoked' })
+        if (!redeemed)
+          throw new OAuthError('invalid_grant', { description: 'Authorization code already used' })
       },
       async resolveExternalToken({ token, env: bindings }) {
         const memberId = await useApiToken(bindings.DB, token, Date.now())
@@ -74,6 +98,8 @@ export function oauthFetch(request: Request, runtime: Runtime, ctx: ExecutionCon
               },
             })
           }
+          if (req.method === 'GET')
+            return new Response(null, { status: 405, headers: { Allow: 'POST, DELETE' } })
           return handleMcp(req, config, member)
         },
       },

@@ -161,6 +161,7 @@ export async function oidcIdentity(
       }),
     })
     if (!nonempty(payload.sub)) throw new InvalidProviderResponse()
+    if (payload.azp !== undefined && payload.azp !== provider.clientId) throw new InvalidProviderResponse()
     if (expectedSubject !== undefined && payload.sub !== expectedSubject) throw new SessionDenied()
 
     const responseInfo = await oauth.userInfoRequest(as, client, tokens.access_token, oauthTransport)

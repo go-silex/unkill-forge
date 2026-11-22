@@ -59,7 +59,13 @@ async function tokens(response: Response) {
   return body
 }
 
-async function authorize(send: Handle, b: Browser, verifyExplicitApproval: boolean, clientId?: string) {
+async function authorize(
+  send: Handle,
+  b: Browser,
+  verifyExplicitApproval: boolean,
+  clientId?: string,
+  callback = redirectUri,
+) {
   if (!clientId) {
     const registered = await register(send)
     expect(registered.status).toBe(201)
@@ -72,7 +78,7 @@ async function authorize(send: Handle, b: Browser, verifyExplicitApproval: boole
   const state = 'gate-0-client-state'
   const query = new URLSearchParams({
     client_id: clientId,
-    redirect_uri: redirectUri,
+    redirect_uri: callback,
     response_type: 'code',
     state,
     code_challenge_method: 'S256',
@@ -83,6 +89,12 @@ async function authorize(send: Handle, b: Browser, verifyExplicitApproval: boole
   async function consent() {
     const response = await b.request(`/authorize?${query}`)
     expect(response.status).toBe(200)
+    const csp = response.headers
+      .get('content-security-policy')
+      ?.split(';')
+      .map((directive) => directive.trim())
+    expect(csp).toContain(`form-action 'self' ${new URL(callback).origin}`)
+    expect(csp).toContain("frame-ancestors 'none'")
     return formValue(await response.text(), 'consent')
   }
   if (verifyExplicitApproval) {
@@ -93,7 +105,7 @@ async function authorize(send: Handle, b: Browser, verifyExplicitApproval: boole
   const approved = await b.post('/authorize', { consent: await consent(), decision: 'approve' })
   expect([302, 303]).toContain(approved.status)
   const redirect = location(approved)
-  expect(redirect.origin + redirect.pathname).toBe(redirectUri)
+  expect(redirect.origin + redirect.pathname).toBe(callback)
   expect(redirect.searchParams.get('state')).toBe(state)
   const code = redirect.searchParams.get('code')
   if (!code) throw new Error('Expected authorization code')
@@ -103,7 +115,7 @@ async function authorize(send: Handle, b: Browser, verifyExplicitApproval: boole
         grant_type: 'authorization_code',
         client_id: clientId,
         code,
-        redirect_uri: redirectUri,
+        redirect_uri: callback,
         code_verifier: verifier,
         resource,
       }),
@@ -165,6 +177,32 @@ describe('MCP discovery and bot credentials', () => {
     expect(await whoami(send, issued.access_token)).toMatchObject({ kind: 'human', role: 'admin' })
   })
 
+  it('serves a local CIMD document and accepts a loopback callback with a dynamic port', async () => {
+    const send = runtime()
+    const idp = mockProvider()
+    const clientId = `${manage}/oauth/clients/local.json`
+    const document = await send(clientId)
+    expect(document.status).toBe(200)
+    expect(document.headers.get('content-type')).toContain('application/json')
+    expect(document.headers.get('cache-control')).toBe('public, max-age=300')
+    expect(await document.json()).toEqual({
+      client_id: clientId,
+      client_name: 'Local MCP client',
+      redirect_uris: ['http://127.0.0.1/callback', 'http://localhost/callback'],
+      grant_types: ['authorization_code', 'refresh_token'],
+      response_types: ['code'],
+      token_endpoint_auth_method: 'none',
+    })
+    const fetchIdp = fetch
+    vi.stubGlobal('fetch', (input: RequestInfo | URL, init?: RequestInit) =>
+      input === clientId ? send(clientId) : fetchIdp(input, init),
+    )
+    const owner = await idp.signedIn(send, admin)
+    const grant = await authorize(send, owner, false, clientId, 'http://127.0.0.1:41993/callback')
+    const issued = await tokens(await grant.exchange())
+    expect(await whoami(send, issued.access_token)).toMatchObject({ role: 'admin' })
+  })
+
   it('authenticates a bot only on MCP, then enforces token revocation and member removal', async () => {
     const send = runtime()
     const owner = await mockProvider().signedIn(send, admin)
@@ -184,6 +222,10 @@ describe('MCP discovery and bot credentials', () => {
     const second = await mint('Second token')
     expect(second).not.toBe(first)
     expect(await whoami(send, first)).toEqual({ id: memberId, name, kind: 'bot', role: 'publisher' })
+    const browserStream = await send('/mcp', { headers: { authorization: `Bearer ${first}` } })
+    expect(browserStream.status).toBe(405)
+    expect(browserStream.headers.get('allow')).toBe('POST, DELETE')
+    expect((await send('/mcp')).status).toBe(401)
     expect((await mcpCall(send, first, read)).status).toBe(403)
     const ui = await send('/admin/bots', { headers: { authorization: `Bearer ${first}` } })
     expect(location(ui).pathname).toBe('/login')
@@ -205,6 +247,36 @@ describe('MCP discovery and bot credentials', () => {
 })
 
 describe('OAuth with DCR enabled for this runtime only', () => {
+  it('rejects a reused authorization code and revokes the issued grant', async () => {
+    const send = runtime({ ALLOW_DCR: 'true' })
+    const b = await mockProvider().signedIn(send, 'oauth-replayed')
+    const grant = await authorize(send, b, false)
+    const issued = await tokens(await grant.exchange())
+    expect(await whoami(send, issued.access_token)).toMatchObject({ name: 'oauth-replayed' })
+    await expectInvalidGrant(await grant.exchange())
+    expect((await mcpCall(send, issued.access_token)).status).toBe(401)
+    await expectInvalidGrant(await grant.refresh(issued.refresh_token))
+  })
+
+  it('revokes the consent session and its grants for a logout carrying both sub and sid', async () => {
+    const send = runtime({ ALLOW_DCR: 'true' })
+    const idp = mockProvider()
+    const subject = 'oauth-etheros'
+    const sid = 'signed-in-session'
+    const b = await idp.signedIn(send, subject, { sid })
+    const other = await idp.signedIn(send, subject, { sid: 'other-session' })
+    const grant = await authorize(send, b, false)
+    const issued = await tokens(await grant.exchange())
+    const otherGrant = await authorize(send, other, false)
+    const otherIssued = await tokens(await otherGrant.exchange())
+    expect((await idp.backchannel(send, 'oauth-sid-revocation', { sub: subject, sid })).status).toBe(200)
+    expect(location(await b.request('/')).pathname).toBe('/login')
+    expect((await mcpCall(send, issued.access_token)).status).toBe(401)
+    await expectInvalidGrant(await grant.refresh(issued.refresh_token))
+    expect((await other.request('/')).status).toBe(200)
+    expect(await whoami(send, otherIssued.access_token)).toMatchObject({ name: subject })
+  })
+
   it('exchanges a consented PKCE code and rotates tokens, then refuses refresh and calls after removal', async () => {
     const send = runtime({ ALLOW_DCR: 'true' })
     const idp = mockProvider()
