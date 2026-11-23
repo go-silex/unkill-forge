@@ -4,7 +4,7 @@ Forge is a self-hosted service for publishing HTML artefacts at stable URLs, con
 
 **Phase 1:** Forge publishes public and private artefacts with share links, revision history, rename redirects and soft deletion. MCP supports publishing, editing, reading and streamed binary uploads. The English/French manage UI covers artefact management, member and bot administration, personal API tokens, admin restoration and purge, and redirects. See [the specification](docs/spec.md).
 
-The runtime is 6,790 lines under `src/`.
+The runtime is 7,010 lines under `src/`.
 
 ## Configure sign-in
 
@@ -48,7 +48,19 @@ Only an admin can reinstate a removed member. Reinstatement restores the role, n
 
 ## Configure locale and branding
 
-Set `LOCALE` to `en` (the default) or `fr`. Set `FORGE_NAME` to the display name. The optional `BRAND` variable is a JSON object, for example `{\"accent\":\"#a7481c\",\"landingText\":\"Our published work\"}`. `accent` must be a six-digit hex colour; `landingText` is plain text for the read host when `PUBLIC_INDEX=false`. Replace the SVG logo and favicon in [`brand/defaults.ts`](brand/defaults.ts) and rebuild to change the artwork; no template edits are needed.
+In `wrangler.jsonc`, merge these entries into your existing `vars`:
+
+```json
+{
+  "vars": {
+    "LOCALE": "fr",
+    "FORGE_NAME": "Ember Studio",
+    "BRAND": "{\"accent\":\"#a7481c\",\"landingText\":\"Our published work\"}"
+  }
+}
+```
+
+`LOCALE` defaults to `en` and accepts `fr`. `BRAND` is optional. Its `accent` must be a six-digit hex colour; `landingText` is plain text for the read host when `PUBLIC_INDEX=false`. Replace the SVG logo and favicon in [`brand/defaults.ts`](brand/defaults.ts) and rebuild to change the artwork; no template edits are needed.
 
 ## Configure the read host
 
@@ -93,20 +105,21 @@ Before upgrading to the share-link release, set `FORGE_SEAL_KEY` on the target W
 
 Migration `0008_redirects.sql` adds redirects and purge bookkeeping, including leases so interrupted purge batches can be retried. The previous Worker can still publish and serve content after migration. Do not run purge during mixed-version rollout or roll back with an active purge.
 
-Apply `0009_ui_flashes.sql` before deploying the admin UI. It adds short-lived, session-bound notices used to display newly issued credentials once after a form POST.
+Apply `0009_ui_flashes.sql` before deploying the admin UI. It adds one-use notices for browser form redirects and indexes for the artefact catalogue.
 
 ## Connect an agent
 
 Open **Connect an agent** at `https://<manage>/connect` for instance-specific steps for claude.ai, Claude Desktop, Claude Code, Codex, OMP and Hermes.
 
-- **Claude and Codex:** Use their native CIMD support with the Streamable HTTP URL `https://<manage>/mcp`, then sign in and approve the request.
+- **claude.ai and Claude Desktop:** Follow [Claude’s remote connector instructions](https://support.claude.com/en/articles/11175166-get-started-with-custom-connectors-using-remote-mcp). Individuals start in **Customize → Connectors**. On Team and Enterprise, an authorized organization administrator first adds it under **Organization settings → Connectors → Add → Custom → Web**; members then connect under **Customize → Connectors**. Enter `https://<manage>/mcp`, choose **Use Claude’s published identity** (CIMD), then sign in to Forge and approve access. Desktop uses the same remote connector, not its local configuration file.
+- **Claude Code and Codex:** Use their native CIMD support with the Streamable HTTP URL `https://<manage>/mcp`, then sign in and approve the request.
 - **OMP:** Use the Forge-hosted CIMD document with a loopback callback:
 
   ```json
   {"type":"http","url":"https://<manage>/mcp","oauth":{"clientId":"https://<manage>/oauth/clients/local.json","redirectUri":"http://127.0.0.1:3000/callback"}}
   ```
 
-  Consent shows this generic client as an unverified local application and shows the loopback port.
+  Run `/mcp reload`, then `/mcp reauth forge`, and approve access. Consent shows this generic client as an unverified local application and shows the loopback port.
 
 - **Hermes:** Create a bot and token under **Bots and API tokens**, copy the token when shown, and send `Authorization: Bearer fgt_<token>` to the same `/mcp` URL.
 - For browser-based MCP clients, add their exact HTTPS origins to the optional comma-separated `MCP_ALLOWED_ORIGINS`. Leave it unset for clients that do not send an `Origin` header.

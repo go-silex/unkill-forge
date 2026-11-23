@@ -1,26 +1,40 @@
 import type { Runtime } from '../config'
-import { ArtefactError, requireAdmin } from './artefacts'
+import { ArtefactError, checkSlug, requireAdmin } from './artefacts'
 import type { Member } from './index'
 
-// Each step processes at most 256 file rows or 64 hashes, irrespective of artefact size.
-const fileStep = 256
+// Bound each relational cleanup and each R2 delete independently of artefact size.
+const rowStep = 256
 const blobStep = 64
 const attemptLeaseMs = 15 * 60 * 1000
 
 /** Drive an explicit purge by stable artefact ID until `done`. A live artefact must be deleted first. */
-export async function purgeArtefact({ env: { DB: db, BLOBS: blobs } }: Runtime, member: Member, id: string) {
+export async function purgeArtefact(
+  { env: { DB: db, BLOBS: blobs } }: Runtime,
+  member: Member,
+  id: string,
+  expectedSlug?: string,
+) {
   requireAdmin(member)
-  const [, job] = await db.batch<{ slug: string; deleted: number }>([
+  if (expectedSlug !== undefined) checkSlug(expectedSlug)
+  const [, , job] = await db.batch<{ slug: string; deleted: number }>([
     db
       .prepare(`INSERT INTO artefact_purges (slug, artefact_id)
-        SELECT slug, id FROM artefacts WHERE id = ? AND deleted_at IS NOT NULL ON CONFLICT DO NOTHING`)
-      .bind(id),
+        SELECT slug, id FROM artefacts WHERE id = ?1 AND deleted_at IS NOT NULL
+          AND (?2 IS NULL OR slug = ?2) ON CONFLICT DO NOTHING`)
+      .bind(id, expectedSlug ?? null),
+    db
+      .prepare(`INSERT INTO audit_log (id, at, member_id, action, artefact_id, detail_json)
+        SELECT ?, ?, ?, 'artefact.purge_start', artefact_id, json_object('slug', slug)
+        FROM artefact_purges WHERE artefact_id = ? AND changes() = 1`)
+      .bind(crypto.randomUUID(), Date.now(), member.id, id),
     db
       .prepare(`SELECT p.slug, a.id IS NULL AS deleted FROM artefact_purges p
         LEFT JOIN artefacts a ON a.id = p.artefact_id WHERE p.artefact_id = ?`)
       .bind(id),
   ])
   const pending = job.results[0]
+  if (expectedSlug !== undefined && pending?.slug !== expectedSlug)
+    throw new ArtefactError('conflict', 'The deleted artefact has changed')
   if (!pending) {
     if (await db.prepare('SELECT 1 FROM artefacts WHERE id = ?').bind(id).first())
       throw new ArtefactError('conflict', 'Delete the artefact before purging')
@@ -28,27 +42,42 @@ export async function purgeArtefact({ env: { DB: db, BLOBS: blobs } }: Runtime, 
   }
   const { slug } = pending
   if (!pending.deleted) {
-    const [, , hardDelete] = await db.batch([
+    const [, , , , , hardDelete] = await db.batch([
       db
         .prepare(`INSERT OR IGNORE INTO purge_candidates (slug, sha256)
           SELECT ?1, sha256 FROM (
             SELECT sha256 FROM files WHERE artefact_id = ?2 ORDER BY revision, path LIMIT ?3
           ) WHERE EXISTS (SELECT 1 FROM artefact_purges WHERE slug = ?1 AND artefact_id = ?2)`)
-        .bind(slug, id, fileStep),
+        .bind(slug, id, rowStep),
       db
         .prepare(`DELETE FROM files WHERE rowid IN (
           SELECT rowid FROM files WHERE artefact_id = ?1 ORDER BY revision, path LIMIT ?2
         ) AND EXISTS (SELECT 1 FROM artefact_purges WHERE artefact_id = ?1)`)
-        .bind(id, fileStep),
+        .bind(id, rowStep),
+      db
+        .prepare(`DELETE FROM share_links WHERE rowid IN (
+          SELECT rowid FROM share_links WHERE artefact_id = ?1 ORDER BY rowid LIMIT ?2
+        ) AND EXISTS (SELECT 1 FROM artefact_purges WHERE artefact_id = ?1)`)
+        .bind(id, rowStep),
+      db
+        .prepare(`DELETE FROM redirects WHERE rowid IN (
+          SELECT rowid FROM redirects WHERE target_artefact_id = ?1 ORDER BY rowid LIMIT ?2
+        ) AND EXISTS (SELECT 1 FROM artefact_purges WHERE artefact_id = ?1)`)
+        .bind(id, rowStep),
+      db
+        .prepare(`DELETE FROM revisions WHERE rowid IN (
+          SELECT rowid FROM revisions WHERE artefact_id = ?1 ORDER BY number LIMIT ?2
+        ) AND NOT EXISTS (SELECT 1 FROM files WHERE artefact_id = ?1)
+        AND EXISTS (SELECT 1 FROM artefact_purges WHERE artefact_id = ?1)`)
+        .bind(id, rowStep),
       db
         .prepare(`DELETE FROM artefacts WHERE id = ?1 AND deleted_at IS NOT NULL
           AND NOT EXISTS (SELECT 1 FROM files WHERE artefact_id = ?1)
+          AND NOT EXISTS (SELECT 1 FROM share_links WHERE artefact_id = ?1)
+          AND NOT EXISTS (SELECT 1 FROM redirects WHERE target_artefact_id = ?1)
+          AND NOT EXISTS (SELECT 1 FROM revisions WHERE artefact_id = ?1)
           AND EXISTS (SELECT 1 FROM artefact_purges WHERE artefact_id = ?1)`)
         .bind(id),
-      db
-        .prepare(`INSERT INTO audit_log (id, at, member_id, action, artefact_id, detail_json)
-          SELECT ?, ?, ?, 'artefact.purge', ?, '{}' WHERE changes() = 1`)
-        .bind(crypto.randomUUID(), Date.now(), member.id, id),
     ])
     if (hardDelete.meta.changes === 0) return { done: false }
   }
@@ -64,13 +93,18 @@ export async function purgeArtefact({ env: { DB: db, BLOBS: blobs } }: Runtime, 
   if (attempt.meta.changes === 0) return { done: false }
   try {
     await deleteBlobPage(db, blobs, id, slug, token)
-    const finished = await db
-      .prepare(`DELETE FROM artefact_purges WHERE artefact_id = ?1
-        AND EXISTS (SELECT 1 FROM purge_attempts WHERE artefact_id = ?1 AND token = ?2)
-        AND NOT EXISTS (SELECT 1 FROM purge_candidates WHERE slug = artefact_purges.slug)
-        AND NOT EXISTS (SELECT 1 FROM artefacts WHERE id = ?1)`)
-      .bind(id, token)
-      .run()
+    const [finished] = await db.batch([
+      db
+        .prepare(`DELETE FROM artefact_purges WHERE artefact_id = ?1
+          AND EXISTS (SELECT 1 FROM purge_attempts WHERE artefact_id = ?1 AND token = ?2)
+          AND NOT EXISTS (SELECT 1 FROM purge_candidates WHERE slug = artefact_purges.slug)
+          AND NOT EXISTS (SELECT 1 FROM artefacts WHERE id = ?1)`)
+        .bind(id, token),
+      db
+        .prepare(`INSERT INTO audit_log (id, at, member_id, action, artefact_id, detail_json)
+          SELECT ?, ?, ?, 'artefact.purge', ?, ? WHERE changes() = 1`)
+        .bind(crypto.randomUUID(), Date.now(), member.id, id, JSON.stringify({ slug })),
+    ])
     return {
       done:
         finished.meta.changes === 1 ||

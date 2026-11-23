@@ -127,7 +127,7 @@ app.get('/', async (c) => {
     return page(
       c,
       session,
-      text.pendingAccess,
+      common.pending,
       <p>
         {text.signedIn} {member.name}. {text.approvalRequired}
       </p>,
@@ -250,7 +250,7 @@ app.get('/admin/members', async (c) => {
           {invites.map((invite) => (
             <tr key={invite.id}>
               <td>{common.roles[invite.role]}</td>
-              <td>{time(invite.expiresAt)}</td>
+              <td>{time(config.locale, invite.expiresAt)}</td>
               <td>
                 <form action="/admin/members" method="post">
                   <input type="hidden" name="id" value={invite.id} />
@@ -426,10 +426,16 @@ app.post('/admin/bots', async (c) => {
   const actor = session.member.id
   const now = Date.now()
   if (data.action === 'token') {
-    const token = await createApiToken(db, actor, data.id, data.name, now)
+    const issued = await createApiToken(db, actor, data.id, data.name, now)
     const path = withQuery('/admin/bots', { after, bot: data.id })
-    return token
-      ? flash(c, session, path, text.credentialCreated, token)
+    return issued
+      ? flash(
+          c,
+          session,
+          path,
+          text.credentialCreated.replace('{bot}', () => issued.ownerName),
+          issued.token,
+        )
       : flash(c, session, path, text.credentialNotAllowed)
   }
   if (data.action === 'create') {

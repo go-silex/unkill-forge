@@ -65,9 +65,8 @@ export async function createBot(
   return result.meta.changes === 1
 }
 
-export type TokenSummary = {
+type TokenSummary = {
   id: string
-  memberId: string
   name: string
   prefix: string
   revokedAt: number | null
@@ -75,7 +74,7 @@ export type TokenSummary = {
 }
 async function tokenPage(db: D1Database, memberId: string, after: string, limit: number) {
   const { results } = await db
-    .prepare(`SELECT id, member_id AS memberId, name, prefix, revoked_at AS revokedAt, last_used_at AS lastUsedAt
+    .prepare(`SELECT id, name, prefix, revoked_at AS revokedAt, last_used_at AS lastUsedAt
       FROM api_tokens WHERE member_id = ? AND id > ? ORDER BY id LIMIT ?`)
     .bind(memberId, after, limit)
     .all<TokenSummary>()
@@ -102,12 +101,13 @@ export async function createApiToken(
   memberId: string,
   name: string,
   now: number,
-): Promise<string | null> {
-  return createToken(db, actor, memberId, name, now, false)
+): Promise<{ token: string; ownerName: string } | null> {
+  const issued = await createToken(db, actor, memberId, name, now, false)
+  return issued?.ownerName != null ? { token: issued.token, ownerName: issued.ownerName } : null
 }
 
 export async function createOwnToken(db: D1Database, actor: string, name: string, now: number) {
-  return createToken(db, actor, actor, name, now, true)
+  return (await createToken(db, actor, actor, name, now, true))?.token ?? null
 }
 
 async function createToken(
@@ -120,17 +120,19 @@ async function createToken(
 ) {
   const token = `fgt_${randomSecret()}`
   const id = crypto.randomUUID()
-  const [result] = await db.batch([
+  const [result] = await db.batch<{ ownerName: string | null }>([
     db
       .prepare(`INSERT INTO api_tokens (id, member_id, name, prefix, token_hash, created_at)
       SELECT ?1, target.id, ?2, ?3, ?4, ?5 FROM members target JOIN members actor ON actor.id = ?6
       WHERE target.id = ?7 AND target.status = 'active' AND actor.status = 'active'
       AND (?8 = 1 AND target.id = actor.id AND actor.role IN ('admin','publisher')
-        OR ?8 = 0 AND target.kind = 'bot' AND actor.role = 'admin')`)
+        OR ?8 = 0 AND target.kind = 'bot' AND actor.role = 'admin')
+      RETURNING CASE WHEN ?8 = 0 THEN (SELECT name FROM members WHERE id = ?7) END AS ownerName`)
       .bind(id, name, token.slice(0, 12), await hashSecret(token), now, actor, memberId, Number(own)),
     auditChange(db, now, actor, 'token.create', { id, memberId }),
   ])
-  return result.meta.changes === 1 ? token : null
+  const issued = result.results[0]
+  return issued ? { token, ownerName: issued.ownerName } : null
 }
 
 export async function revokeApiToken(

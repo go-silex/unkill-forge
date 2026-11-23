@@ -1,11 +1,13 @@
 import { env } from 'cloudflare:test'
 import { base64url } from 'jose'
-import { expect, it } from 'vitest'
+import { expect, it, vi } from 'vitest'
 import type { Env } from '../src/config'
 import { hashSecret } from '../src/core'
+import { createOwnToken, revokeOwnToken } from '../src/core/admin'
 import {
   admin,
   Browser,
+  flashNavigation,
   formValue,
   type Handle,
   listedId,
@@ -39,13 +41,19 @@ async function post(browser: Browser, path: string, values: Record<string, strin
   const destination = location(response)
   expect(destination.origin).toBe(manage)
   expect(destination.href).not.toMatch(/fgt_|\/invite\/|\/s\//)
-  return html(browser, destination)
+  const page = await browser.request(destination, { headers: flashNavigation })
+  expect(page.status).toBe(200)
+  return page.text()
 }
 
 async function html(browser: Browser, path: string | URL, status = 200) {
   const response = await browser.request(path)
   expect(response.status).toBe(status)
   return response.text()
+}
+
+async function artefactId(browser: Browser, path = detail) {
+  return formValue(await html(browser, path), 'artefactId')
 }
 
 async function issueToken(browser: Browser, name: string) {
@@ -109,21 +117,22 @@ it('refuses every browser mutation without the manage origin and refuses insuffi
   await post(owner, members, { action: 'role', id: publisherId, role: 'publisher' })
   const token = await issueToken(owner, 'Fixture token')
   await publish(send, token, slug, 'Quarterly report')
+  const selectedId = await artefactId(owner)
   const id = crypto.randomUUID()
   const mutations = [
-    [detail, { action: 'restore-revision', revision: '1' }],
-    [detail, { action: 'visibility', visibility: 'public' }],
-    [detail, { action: 'create-share', label: 'Test share' }],
+    [detail, { action: 'restore-revision', revision: '1', artefactId: selectedId }],
+    [detail, { action: 'visibility', visibility: 'public', artefactId: selectedId }],
+    [detail, { action: 'create-share', label: 'Test share', artefactId: selectedId }],
     [detail, { action: 'reveal-share', id }],
     [detail, { action: 'revoke-share', id }],
-    [detail, { action: 'rename', slug: 'modified' }],
-    [detail, { action: 'delete' }],
+    [detail, { action: 'rename', slug: 'modified', artefactId: selectedId }],
+    [detail, { action: 'delete', artefactId: selectedId }],
     [tokens, { action: 'create', name: 'Forbidden' }],
     [tokens, { action: 'revoke', id }],
   ] as const
   const adminOnly = [
-    [deleted, { action: 'restore', slug }],
-    [deleted, { action: 'purge', id }],
+    [deleted, { action: 'restore', slug, artefactId: selectedId }],
+    [deleted, { action: 'purge', slug, id: selectedId }],
     [redirects, { action: 'add', fromPrefix: '/a/alias/', toPrefix: `/a/${slug}/` }],
     [redirects, { action: 'remove', fromPrefix: '/a/alias/' }],
     [members, { action: 'admit', id, role: 'viewer' }],
@@ -158,12 +167,21 @@ it('refuses every browser mutation without the manage origin and refuses insuffi
   expect(await html(publisher, '/artefacts')).toContain(`href="${tokens}"`)
   expect((await viewer.request(tokens)).status).toBe(403)
   expect((await viewer.request(detail)).status).toBe(200)
-  expect((await publisher.post(detail, { action: 'create-share', key: 'supplied-key-1234' })).status).toBe(
-    403,
-  )
+  expect(
+    (
+      await publisher.post(detail, {
+        action: 'create-share',
+        key: 'supplied-key-1234',
+        artefactId: selectedId,
+      })
+    ).status,
+  ).toBe(403)
   expect(await html(owner, detail)).toContain('Quarterly report')
   await post(owner, members, { action: 'role', id: publisherId, role: 'viewer' })
-  expect((await publisher.post(detail, { action: 'visibility', visibility: 'public' })).status).toBe(403)
+  expect(
+    (await publisher.post(detail, { action: 'visibility', visibility: 'public', artefactId: selectedId }))
+      .status,
+  ).toBe(403)
 })
 
 it('shows a personal token exactly once, stores its hash, records use and enforces ownership', async () => {
@@ -171,6 +189,10 @@ it('shows a personal token exactly once, stores its hash, records use and enforc
   const idp = mockProvider()
   const owner = await idp.signedIn(send, admin)
   const publisher = await idp.signedIn(send, 'publisher')
+  await idp.signedIn(send, 'viewer')
+  const viewer = await listedId(owner, members, 'viewer@example.test')
+  expect(await createOwnToken(db, viewer, 'Denied direct issuance', Date.now())).toBeNull()
+  expect(await db.prepare('SELECT id FROM api_tokens WHERE member_id = ?').bind(viewer).first()).toBeNull()
   const member = await listedId(owner, members, 'publisher@example.test')
   await post(owner, members, { action: 'role', id: member, role: 'publisher' })
   const token = await issueToken(publisher, 'Terminal token')
@@ -182,6 +204,11 @@ it('shows a personal token exactly once, stores its hash, records use and enforc
     .first<{ id: string; hash: string; used: number | null }>()
   expect(row).toEqual({ id: expect.any(String), hash: await hashSecret(token), used: null })
   if (!row) throw new Error('Expected a persisted token hash')
+  const ownerId = await listedId(owner, members, 'owner@example.test')
+  expect(await revokeOwnToken(db, ownerId, row.id, Date.now())).toBe(false)
+  expect(await db.prepare('SELECT revoked_at FROM api_tokens WHERE id = ?').bind(row.id).first()).toEqual({
+    revoked_at: null,
+  })
   expect((await whoami(send, token)).id).toBe(member)
   const used = await db
     .prepare('SELECT last_used_at FROM api_tokens WHERE id = ?')
@@ -189,7 +216,7 @@ it('shows a personal token exactly once, stores its hash, records use and enforc
     .first<number>('last_used_at')
   if (used === null) throw new Error('Expected a timestamp after using the token')
   const list = await html(publisher, tokens)
-  expect(list).toContain(new Date(used).toISOString())
+  expect(list).toMatch(/\d{2}\/\d{2}\/\d{4}, \d{2}:\d{2} UTC/)
   expect(list).not.toContain(token)
   await post(owner, tokens, { action: 'revoke', id: row.id })
   await post(owner, bots, { action: 'revoke', id: row.id })
@@ -207,7 +234,12 @@ it('searches by slug or title prefix with visibility and keeps a stable paginati
   await publish(send, token, slug, 'Reports quarterly')
   await publish(send, token, 'recent', 'Quarterly briefs')
   await publish(send, token, 'other', 'Midyear quarterly summaries')
-  await post(owner, '/artefacts/recent', { action: 'visibility', visibility: 'public' })
+  const recentPath = '/artefacts/recent'
+  await post(owner, recentPath, {
+    action: 'visibility',
+    visibility: 'public',
+    artefactId: await artefactId(owner, recentPath),
+  })
   const list = await html(owner, '/artefacts?q=quarterly')
   expect(list).toContain('Reports quarterly')
   expect(list).toContain('Quarterly briefs')
@@ -231,13 +263,91 @@ it('searches by slug or title prefix with visibility and keeps a stable paginati
   expect(second).not.toContain('quarterly-fixture-48')
 })
 
+it('uses bounded index seeks for missing and sparse matches in a large catalogue', async () => {
+  const send = runtime()
+  const owner = await mockProvider().signedIn(send, admin)
+  await publish(send, await issueToken(owner, 'Catalogue seed'), slug, 'Exact Élément %_')
+  await db
+    .prepare(`WITH RECURSIVE numbers(n) AS (SELECT 1 UNION ALL SELECT n + 1 FROM numbers WHERE n < 1500)
+    INSERT INTO artefacts (id, slug, title, visibility, current_revision, created_by, created_at, updated_at)
+    SELECT printf('10000000-0000-4000-8000-%012d', n), printf('common-%04d', n), 'Exact other title', 'public',
+    current_revision, created_by, created_at, updated_at FROM artefacts, numbers WHERE slug = ?`)
+    .bind(slug)
+    .run()
+  let reads = 0
+  const planStatements: D1PreparedStatement[] = []
+  const measured = new Proxy(db, {
+    get(target, key) {
+      if (key === 'prepare')
+        return (sql: string) => {
+          const statement = target.prepare(sql)
+          if (!sql.includes('visibility = ?')) return statement
+          return new Proxy(statement, {
+            get(prepared, prop) {
+              if (prop === 'bind')
+                return (...args: unknown[]) => {
+                  planStatements.push(target.prepare(`EXPLAIN QUERY PLAN ${sql}`).bind(...args))
+                  return prepared.bind(...args)
+                }
+              return Reflect.get(prepared, prop, prepared)
+            },
+          })
+        }
+      if (key === 'batch')
+        return async (statements: D1PreparedStatement[]) => {
+          const results = await target.batch(statements)
+          reads += results.reduce((sum, result) => sum + result.meta.rows_read, 0)
+          return results
+        }
+      const value = Reflect.get(target, key, target)
+      return typeof value === 'function' ? value.bind(target) : value
+    },
+  })
+  const browsing = runtime({ DB: measured })
+  const fetch = (query: string, visibility?: string) =>
+    browsing(
+      `/artefacts?${new URLSearchParams({
+        q: query,
+        ...(visibility ? { visibility } : {}),
+      })}`,
+      { headers: { Cookie: owner.cookieHeader() } },
+    )
+  const empty = await fetch('missing')
+  expect(empty.status).toBe(200)
+  expect(await empty.text()).toContain('No results.')
+  const sparse = await fetch('eXaCt Élément %_')
+  expect(sparse.status).toBe(200)
+  expect(await sparse.text()).toContain('Exact Élément %_')
+  const filtered = await fetch('', 'private')
+  expect(filtered.status).toBe(200)
+  expect(await filtered.text()).toContain('Exact Élément %_')
+  expect(reads).toBeGreaterThan(0)
+  expect(reads).toBeLessThan(20)
+  const plans = (await db.batch<{ detail: string }>(planStatements)).flatMap((result) =>
+    result.results.map((row) => row.detail),
+  )
+  for (const suffix of ['slug', 'title', 'recent']) {
+    expect(
+      plans.some((plan) => plan.includes(`SEARCH artefacts USING INDEX artefacts_catalogue_${suffix}`)),
+    ).toBe(true)
+  }
+})
+
 it('restores a revision, reveals and revokes share links, then renames and restores the deleted artefact', async () => {
   const send = runtime()
   const owner = await mockProvider().signedIn(send, admin)
   const token = await issueToken(owner, 'Revision publisher')
   await publish(send, token, slug, 'Quarterly report', 1, '<p>Original version</p>')
   await publish(send, token, slug, 'Quarterly report', 1, '<p>Revised version</p>')
-  const first = await post(owner, detail, { action: 'create-share', label: 'Early readers' })
+  const identity = { artefactId: await artefactId(owner) }
+  const history = await html(owner, detail)
+  const author = await db
+    .prepare('SELECT name FROM members WHERE id = (SELECT created_by FROM artefacts WHERE id = ?)')
+    .bind(identity.artefactId)
+    .first<string>('name')
+  expect(history).toContain(`<td>${author}</td>`)
+  expect(history).toMatch(/\d{2}\/\d{2}\/\d{4}, \d{2}:\d{2} UTC/)
+  const first = await post(owner, detail, { action: 'create-share', label: 'Early readers', ...identity })
   const url = /<code>(https:\/\/read\.forge\.example\/s\/quarterly\/[A-Za-z0-9_-]+\/)<\/code>/.exec(
     first,
   )?.[1]
@@ -248,12 +358,12 @@ it('restores a revision, reveals and revokes share links, then renames and resto
   if (!shareId) throw new Error('Expected a share link ID')
   expect(await post(owner, detail, { action: 'reveal-share', id: shareId })).toContain(url)
   expect(await (await send(url)).text()).toBe('<p>Revised version</p>')
-  await post(owner, detail, { action: 'restore-revision', revision: '1' })
+  await post(owner, detail, { action: 'restore-revision', revision: '1', ...identity })
   expect(await (await send(url)).text()).toBe('<p>Original version</p>')
   await post(owner, detail, { action: 'revoke-share', id: shareId })
   expect((await send(url)).status).toBe(404)
-  await post(owner, detail, { action: 'visibility', visibility: 'public' })
-  await post(owner, detail, { action: 'rename', slug: 'renamed-report' })
+  await post(owner, detail, { action: 'visibility', visibility: 'public', ...identity })
+  await post(owner, detail, { action: 'rename', slug: 'renamed-report', ...identity })
   expect(location(await send(`${read}/a/${slug}/`)).pathname).toBe('/a/renamed-report/')
   await post(owner, redirects, {
     action: 'add',
@@ -264,10 +374,10 @@ it('restores a revision, reveals and revokes share links, then renames and resto
   expect(await html(owner, redirects)).toContain('/a/report-alias/')
   await post(owner, redirects, { action: 'remove', fromPrefix: '/a/report-alias/' })
   expect((await send(`${read}/a/report-alias/`)).status).toBe(404)
-  await post(owner, '/artefacts/renamed-report', { action: 'delete' })
+  await post(owner, '/artefacts/renamed-report', { action: 'delete', ...identity })
   expect((await send(`${read}/a/renamed-report/`)).status).toBe(404)
   expect(await html(owner, deleted)).toContain('Quarterly report')
-  await post(owner, deleted, { action: 'restore', slug: 'renamed-report' })
+  await post(owner, deleted, { action: 'restore', slug: 'renamed-report', ...identity })
   expect(await (await send(`${read}/a/renamed-report/`)).text()).toBe('<p>Original version</p>')
 })
 
@@ -278,13 +388,13 @@ it('continues an interrupted purge after its artefact row has already been remov
   await publish(send, token, slug, 'Purge this artefact', 65)
   const before = await blobs.list({ prefix: 'blobs/' })
   expect(before.objects).toHaveLength(65)
-  await post(owner, detail, { action: 'delete' })
+  await post(owner, detail, { action: 'delete', artefactId: await artefactId(owner) })
   const id = formValue(await html(owner, deleted), 'id')
-  const intermediate = await post(owner, deleted, { action: 'purge', id })
+  const intermediate = await post(owner, deleted, { action: 'purge', id, slug })
   expect(intermediate).toContain('Continue purge')
   expect(intermediate).not.toContain('Restore artefact')
   expect((await blobs.list({ prefix: 'blobs/' })).objects).toHaveLength(1)
-  const finished = await post(owner, deleted, { action: 'purge', id })
+  const finished = await post(owner, deleted, { action: 'purge', id, slug })
   expect(finished).toContain('Artefact permanently purged.')
   expect(finished).not.toContain('Continue purge')
   expect((await blobs.list({ prefix: 'blobs/' })).objects).toHaveLength(0)
@@ -326,6 +436,18 @@ it.each(['en', 'fr'] as const)(
       expect(document, path).toContain(`lang="${locale}"`)
       expect(document, path).toContain('Ember Studio')
     }
+    const invalidInvite = await html(anonymous, '/invite/invalid', 404)
+    expect(invalidInvite).toContain(french ? 'Invitation invalide ou expirée' : 'Invite invalid or expired')
+    const connect = await html(owner, '/connect')
+    for (const [client, command] of [
+      ['claude.ai', 'CIMD'],
+      ['Claude Desktop', 'JSON'],
+      ['Claude Code', 'claude mcp add'],
+      ['Codex', 'codex mcp login'],
+      ['OMP', '/mcp reauth forge'],
+      ['Hermes', 'FORGE_API_TOKEN'],
+    ])
+      expect(connect).toMatch(new RegExp(`<h2>${client}</h2>(?:(?!<h2>)[^])*?${command}`))
     const sample = await html(owner, detail)
     expect(sample).toContain('src="/logo.svg"')
     expect(sample).toContain('href="/favicon.svg"')
@@ -340,6 +462,13 @@ it.each(['en', 'fr'] as const)(
         'New slug',
       ])
         expect(sample).not.toContain(english)
+    const publicSend = runtime({ LOCALE: locale, PUBLIC_INDEX: 'true' })
+    const identity = { artefactId: await artefactId(owner) }
+    await post(owner, detail, { action: 'visibility', visibility: 'public', ...identity })
+    const publicIndex = await html(new Browser(publicSend), `${read}/`)
+    expect(publicIndex).toContain(french ? 'Artefacts publics' : 'Public artefacts')
+    expect(publicIndex).toContain('Quarterly report')
+    await post(owner, detail, { action: 'visibility', visibility: 'private', ...identity })
     const css = await send('/style.css')
     expect(await css.text()).toContain('--brand-accent:#123a6f')
     for (const origin of [read, manage]) {
@@ -406,7 +535,18 @@ it.each(['en', 'fr'] as const)(
       resource: `${manage}/mcp`,
       scope: 'mcp',
     })}`
-    expect(await html(owner, authorize)).toContain(french ? 'Autoriser' : 'Allow')
+    const consent = await html(owner, authorize)
+    expect(consent).toContain(french ? 'Autoriser' : 'Allow')
+    expect(consent).toContain('Locale test client')
+    const local = new URL(authorize, manage)
+    const localClientId = `${manage}/oauth/clients/local.json`
+    const fetchIdp = fetch
+    vi.stubGlobal('fetch', (input: RequestInfo | URL, init?: RequestInit) =>
+      input === localClientId ? send(localClientId) : fetchIdp(input, init),
+    )
+    local.searchParams.set('client_id', localClientId)
+    local.searchParams.set('redirect_uri', 'http://127.0.0.1:3000/callback')
+    expect(await html(owner, local)).toContain(french ? 'Client MCP local' : 'Local MCP client')
   },
 )
 

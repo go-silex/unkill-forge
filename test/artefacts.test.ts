@@ -8,7 +8,17 @@ import type { Member } from '../src/core'
 import { restoreDeletedArtefact, setRedirects } from '../src/core/artefacts'
 import { purgeArtefact } from '../src/core/purge'
 import { sealShareKey, unsealShareKey } from '../src/core/share-keys'
-import { admin, configuredEnv, type Handle, listedId, location, read, runtime, setupStorage } from './http'
+import {
+  admin,
+  configuredEnv,
+  flashNavigation,
+  type Handle,
+  listedId,
+  location,
+  read,
+  runtime,
+  setupStorage,
+} from './http'
 import { mockProvider, setupOidc } from './oidc'
 
 setupStorage()
@@ -42,7 +52,7 @@ async function bot(send: Handle, role: 'viewer' | 'publisher' = 'publisher', nam
   const id = await listedId(owner, '/admin/members', name)
   const response = await owner.post('/admin/bots', { action: 'token', id, name: 'Artefact token' })
   expect(response.status).toBe(303)
-  const tokenPage = await owner.request(location(response))
+  const tokenPage = await owner.request(location(response), { headers: flashNavigation })
   const token = /<code>(fgt_[A-Za-z0-9_-]+)<\/code>/.exec(await tokenPage.text())?.[1]
   if (!token) throw new Error('Expected a bot token')
   return {
@@ -1918,6 +1928,70 @@ it('resumes purge in bounded chunks, keeping blobs shared by files or an unexpir
   })
 })
 
+it('authorizes and audits bounded purge steps for historical share links and redirects', async () => {
+  const { call } = await bot(runtime())
+  const { member, core } = await coreAdmin()
+  const slug = 'purge-dependents'
+  await call('publish', { slug, mode: 'replace', files: [file('index.html')] })
+  const id = await artefactId(slug)
+  // A long-lived page can accumulate revoked links and redirects far beyond the active share cap.
+  const numbers = 'WITH RECURSIVE numbers(n) AS (SELECT 1 UNION ALL SELECT n + 1 FROM numbers WHERE n < 513)'
+  await db.batch([
+    db
+      .prepare(`${numbers}
+        INSERT INTO share_links (id, artefact_id, key_hash, key_sealed, created_by, created_at, revoked_at)
+        SELECT 'link-' || n, ?, printf('%064x', n), 'sealed', ?, 1, CASE WHEN n > 1 THEN 2 END
+        FROM numbers`)
+      .bind(id, member.id),
+    db
+      .prepare(`${numbers}
+        INSERT INTO redirects (from_prefix, source_slug, target_artefact_id, target_path, created_at, created_by)
+        SELECT '/a/alias-' || n || '/', 'alias-' || n, ?, '', 1, ? FROM numbers`)
+      .bind(id, member.id),
+  ])
+  await call('delete_artefact', { slug })
+
+  const state = () =>
+    db
+      .prepare(`SELECT
+        (SELECT count(*) FROM artefacts WHERE id = ?1 AND deleted_at IS NOT NULL) AS deleted,
+        (SELECT count(*) FROM files WHERE artefact_id = ?1) AS files,
+        (SELECT count(*) FROM share_links WHERE artefact_id = ?1) AS links,
+        (SELECT count(*) FROM redirects WHERE target_artefact_id = ?1) AS redirects,
+        (SELECT count(*) FROM artefact_purges WHERE artefact_id = ?1) AS jobs`)
+      .bind(id)
+      .first()
+  const audit = async () =>
+    (
+      await db
+        .prepare(`SELECT action, member_id AS actor, artefact_id AS id, json_extract(detail_json, '$.slug') AS slug
+          FROM audit_log WHERE artefact_id = ? AND action IN ('artefact.purge_start', 'artefact.purge')
+          ORDER BY rowid`)
+        .bind(id)
+        .all()
+    ).results
+
+  await expect(purgeArtefact(core, { ...member, role: 'publisher' }, id, slug)).rejects.toMatchObject({
+    code: 'forbidden',
+  })
+  await expect(purgeArtefact(core, member, id, 'different-slug')).rejects.toMatchObject({ code: 'conflict' })
+  expect(await state()).toEqual({ deleted: 1, files: 1, links: 513, redirects: 513, jobs: 0 })
+  expect(await audit()).toEqual([])
+  expect(await bucket.head(`blobs/${uploadHash}`)).not.toBeNull()
+
+  const start = { action: 'artefact.purge_start', actor: member.id, id, slug }
+  for (const remaining of [257, 1]) {
+    expect(await purgeArtefact(core, member, id, slug)).toEqual({ done: false })
+    expect(await state()).toEqual({ deleted: 1, files: 0, links: remaining, redirects: remaining, jobs: 1 })
+    expect(await audit()).toEqual([start])
+  }
+  expect(await purgeArtefact(core, member, id, slug)).toEqual({ done: true })
+  expect(await purgeArtefact(core, member, id)).toEqual({ done: true })
+  expect(await state()).toEqual({ deleted: 0, files: 0, links: 0, redirects: 0, jobs: 0 })
+  expect(await audit()).toEqual([start, { action: 'artefact.purge', actor: member.id, id, slug }])
+  expect(await bucket.head(`blobs/${uploadHash}`)).toBeNull()
+})
+
 it('rejects a publish that deduplicated a blob before a concurrent purge deleted it', async () => {
   const send = runtime()
   const { call } = await bot(send)
@@ -2157,6 +2231,14 @@ it('retries an owned purge claim after a failed R2 delete and releases the hash 
     },
   }
   await expect(purgeArtefact(fault, member, id)).rejects.toThrow('R2 delete failed')
+  expect(
+    (
+      await db
+        .prepare("SELECT action FROM audit_log WHERE artefact_id = ? AND action LIKE 'artefact.purge%'")
+        .bind(id)
+        .all()
+    ).results,
+  ).toEqual([{ action: 'artefact.purge_start' }])
   expect(await bucket.head(`blobs/${uploadHash}`)).not.toBeNull()
   expect(await call('publish', { ...input, slug: 'reuse-retry' })).toMatchObject({ error: 'conflict' })
   expect(await purgeArtefact(core, member, id)).toEqual({ done: true })

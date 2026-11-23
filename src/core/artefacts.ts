@@ -41,9 +41,7 @@ type Publish = {
   message?: string
 }
 
-const listCursorFields = [z.int().nonnegative(), z.uuid(), z.string()] as const
-const listCursor = z.tuple(listCursorFields)
-const filteredCursor = z.tuple([...listCursorFields, z.enum(['private', 'public']).nullable(), z.boolean()])
+const listCursor = z.tuple([z.int().nonnegative(), z.uuid(), z.string()])
 const fileCursor = z.tuple([z.uuid(), z.int().positive(), z.string()])
 const revisionCursor = z.tuple([z.uuid(), z.int().positive()])
 
@@ -110,9 +108,15 @@ function head(db: D1Database, slug: string) {
     .first<Artefact>()
 }
 
-async function liveHead(db: D1Database, slug: string) {
+function checkArtefactId(artefact: Artefact | null, expectedId?: string) {
+  if (artefact && expectedId !== undefined && artefact.id !== expectedId)
+    throw new ArtefactError('conflict', 'The slug now belongs to a different artefact')
+}
+
+async function liveHead(db: D1Database, slug: string, expectedId?: string) {
   checkSlug(slug)
   const artefact = await head(db, slug)
+  checkArtefactId(artefact, expectedId)
   if (!artefact || artefact.deletedAt !== null) throw new ArtefactError('not_found', 'Artefact not found')
   return artefact
 }
@@ -176,7 +180,7 @@ function entryUrl(origin: string, slug: string, path: string) {
   return path === 'index.html' ? base : base + encodeFilePath(path)
 }
 
-function encodeFilePath(path: string) {
+export function encodeFilePath(path: string) {
   return path.split('/').map(encodeURIComponent).join('/')
 }
 
@@ -212,51 +216,44 @@ export async function listArtefacts(
   member: Member,
   query = '',
   cursor?: string,
-  filter?: { visibility?: Visibility; prefix?: boolean },
 ) {
   checkMember(member)
-  const visibility = filter?.visibility ?? null
-  const prefix = filter?.prefix ?? false
-  const after =
-    cursor === undefined
-      ? null
-      : filter
-        ? decodeCursor(cursor, filteredCursor)
-        : decodeCursor(cursor, listCursor)
-  if (after && (after[2] !== query || (filter && (after[3] !== visibility || after[4] !== prefix))))
+  const after = cursor === undefined ? null : decodeCursor(cursor, listCursor)
+  if (after && after[2] !== query)
     throw new ArtefactError('invalid_input', 'Cursor belongs to a different query')
-  const like = `${prefix ? '' : '%'}${query.replace(/[!%_]/g, '!$&')}%`
+  const like = `%${query.replace(/[!%_]/g, '!$&')}%`
   // D1 caps LIKE patterns at 50 bytes; use the equivalent literal search for longer patterns.
   const pattern = new TextEncoder().encode(like).length <= 50 ? like : null
   const { results } = await db
     .prepare(`SELECT id, slug, title, visibility, current_revision AS revision, updated_at AS updatedAt
-    FROM artefacts WHERE deleted_at IS NULL AND (?5 IS NULL OR visibility = ?5) AND CASE WHEN ?1 IS NOT NULL
+    FROM artefacts WHERE deleted_at IS NULL AND CASE WHEN ?1 IS NOT NULL
       THEN slug LIKE ?1 ESCAPE '!' OR title LIKE ?1 ESCAPE '!'
-      WHEN ?6 = 1 THEN instr(lower(slug), lower(?4)) = 1 OR instr(lower(title), lower(?4)) = 1
       ELSE instr(lower(slug), lower(?4)) > 0 OR instr(lower(title), lower(?4)) > 0 END
     AND (?2 IS NULL OR updated_at < ?2 OR (updated_at = ?2 AND id > ?3))
     ORDER BY updated_at DESC, id LIMIT 51`)
-    .bind(pattern, after?.[0] ?? null, after?.[1] ?? null, query, visibility, Number(prefix))
+    .bind(pattern, after?.[0] ?? null, after?.[1] ?? null, query)
     .all<Pick<Artefact, 'id' | 'slug' | 'title' | 'visibility' | 'revision' | 'updatedAt'>>()
   const more = results.length > 50
   if (more) results.pop()
   const last = results.at(-1)
   return {
     artefacts: results.map(({ id: _id, ...row }) => row),
-    nextCursor:
-      more && last
-        ? base64url.encode(
-            JSON.stringify(
-              filter
-                ? [last.updatedAt, last.id, query, visibility, prefix]
-                : [last.updatedAt, last.id, query],
-            ),
-          )
-        : undefined,
+    nextCursor: more && last ? base64url.encode(JSON.stringify([last.updatedAt, last.id, query])) : undefined,
   }
 }
 
 export async function getArtefact(
+  runtime: Runtime,
+  member: Member,
+  slug: string,
+  cursor?: string,
+  ctx?: ExecutionContext,
+) {
+  const { id: _id, ...artefact } = await getArtefactDetails(runtime, member, slug, cursor, ctx)
+  return artefact
+}
+
+export async function getArtefactDetails(
   runtime: Runtime,
   member: Member,
   slug: string,
@@ -290,7 +287,7 @@ export async function getArtefact(
   const nextCursor = more
     ? base64url.encode(JSON.stringify([id, revision, files[files.length - 1].path]))
     : undefined
-  return { ...artefact, files, url: entryUrl(config.readOrigin, slug, path), shareLinks, nextCursor }
+  return { id, ...artefact, files, url: entryUrl(config.readOrigin, slug, path), shareLinks, nextCursor }
 }
 
 async function findFile(db: D1Database, id: string, revision: number, path: string) {
@@ -628,17 +625,24 @@ export async function listRevisions(
   member: Member,
   slug: string,
   cursor?: string,
+  forManagement?: { expectedId: string },
 ) {
   checkMember(member)
-  const artefact = await liveHead(db, slug)
+  const artefact = await liveHead(db, slug, forManagement?.expectedId)
   const after = cursor === undefined ? null : decodeCursor(cursor, revisionCursor)
   if (after && after[0] !== artefact.id)
     throw new ArtefactError('invalid_input', 'Cursor belongs to a different artefact')
   const { results } = await db
-    .prepare(`SELECT number, created_by AS author, created_at AS createdAt, message
-      FROM revisions WHERE artefact_id = ?1 AND number > ?2 AND (?3 IS NULL OR number < ?3)
-      ORDER BY number DESC LIMIT 21`)
-    .bind(artefact.id, artefact.revision - config.revisionRetention, after?.[1] ?? null)
+    .prepare(`SELECT r.number, CASE WHEN ?4 THEN m.name ELSE r.created_by END AS author,
+      r.created_at AS createdAt, r.message FROM revisions r JOIN members m ON m.id = r.created_by
+      WHERE r.artefact_id = ?1 AND r.number > ?2 AND (?3 IS NULL OR r.number < ?3)
+      ORDER BY r.number DESC LIMIT 21`)
+    .bind(
+      artefact.id,
+      artefact.revision - config.revisionRetention,
+      after?.[1] ?? null,
+      Number(!!forManagement),
+    )
     .all<{ number: number; author: string; createdAt: number; message: string | null }>()
   const more = results.length > 20
   if (more) results.pop()
@@ -654,13 +658,14 @@ export async function restoreRevision(
   slug: string,
   source: number,
   ctx?: ExecutionContext,
+  expectedId?: string,
 ) {
   checkMember(member, true)
   const {
     env: { DB: db },
     config,
   } = runtime
-  const { id, revision: current } = await liveHead(db, slug)
+  const { id, revision: current } = await liveHead(db, slug, expectedId)
   if (
     source <= current - config.revisionRetention ||
     source > current ||
@@ -687,7 +692,8 @@ export async function restoreRevision(
     return { revision }
   } catch (error) {
     if (!revisionCommitConflict(error)) throw error
-    throw conflict((await head(db, slug))?.revision ?? 0)
+    const currentHead = await head(db, slug)
+    throw conflict(currentHead?.id === id ? currentHead.revision : 0)
   }
 }
 
@@ -931,16 +937,16 @@ export async function setVisibility(
   member: Member,
   slug: string,
   visibility: Visibility,
+  expectedId?: string,
 ) {
   checkMember(member, true)
-  const { id } = await liveHead(db, slug)
+  const { id } = await liveHead(db, slug, expectedId)
   const now = Date.now()
   const [result] = await db.batch([
     db
-      .prepare(
-        'UPDATE artefacts SET visibility = ?, updated_at = MAX(?, updated_at) WHERE id = ? AND deleted_at IS NULL',
-      )
-      .bind(visibility, now, id),
+      .prepare(`UPDATE artefacts SET visibility = ?, updated_at = MAX(?, updated_at)
+        WHERE id = ? AND slug = ? AND deleted_at IS NULL`)
+      .bind(visibility, now, id, slug),
     audit(db, now, member, id, 'artefact.visibility', { visibility }),
   ])
   if (result.meta.changes !== 1) throw new ArtefactError('not_found', 'Artefact not found')
@@ -952,10 +958,11 @@ export async function renameArtefact(
   member: Member,
   slug: string,
   newSlug: string,
+  expectedId?: string,
 ) {
   checkMember(member, true)
   checkSlug(newSlug)
-  const { id, revision } = await liveHead(db, slug)
+  const { id, revision } = await liveHead(db, slug, expectedId)
   if (slug === newSlug) throw new ArtefactError('invalid_input', 'Choose a different slug')
   const now = Date.now()
   try {
@@ -994,9 +1001,14 @@ export async function renameArtefact(
   }
 }
 
-export async function deleteArtefact({ env: { DB: db } }: Runtime, member: Member, slug: string) {
+export async function deleteArtefact(
+  { env: { DB: db } }: Runtime,
+  member: Member,
+  slug: string,
+  expectedId?: string,
+) {
   checkMember(member, true)
-  const { id } = await liveHead(db, slug)
+  const { id } = await liveHead(db, slug, expectedId)
   const now = Date.now()
   const [deleted] = await db.batch([
     db
@@ -1039,19 +1051,25 @@ export async function listDeletedArtefacts({ env: { DB: db } }: Runtime, member:
   }
 }
 
-export async function restoreDeletedArtefact({ env: { DB: db } }: Runtime, member: Member, slug: string) {
+export async function restoreDeletedArtefact(
+  { env: { DB: db } }: Runtime,
+  member: Member,
+  slug: string,
+  expectedId?: string,
+) {
   requireAdmin(member)
   checkSlug(slug)
   const artefact = await head(db, slug)
+  checkArtefactId(artefact, expectedId)
   if (!artefact || artefact.deletedAt === null)
     throw new ArtefactError('not_found', 'Deleted artefact not found')
   const now = Date.now()
   const [restored] = await db.batch([
     db
       .prepare(`UPDATE artefacts SET deleted_at = NULL, updated_at = MAX(?1, updated_at)
-        WHERE id = ?2 AND deleted_at = ?3 AND deleted_at > ?4
+        WHERE id = ?2 AND deleted_at = ?3 AND deleted_at > ?4 AND slug = ?5
         AND NOT EXISTS (SELECT 1 FROM artefact_purges WHERE artefact_id = ?2)`)
-      .bind(now, artefact.id, artefact.deletedAt, now - deletedRetentionMs),
+      .bind(now, artefact.id, artefact.deletedAt, now - deletedRetentionMs, slug),
     audit(db, now, member, artefact.id, 'artefact.restore_deleted', {}),
   ])
   if (restored.meta.changes !== 1) throw new ArtefactError('conflict', 'The artefact is no longer restorable')
@@ -1143,6 +1161,7 @@ export async function createShareLink(
   { env: { DB: db }, config }: Runtime,
   member: Member,
   { slug, label, key: suppliedKey }: { slug: string; label?: string; key?: unknown },
+  expectedId?: string,
 ) {
   checkMember(member, true)
   if (suppliedKey !== undefined && member.role !== 'admin') {
@@ -1151,7 +1170,7 @@ export async function createShareLink(
   if (suppliedKey !== undefined && (typeof suppliedKey !== 'string' || !validShareKey(suppliedKey))) {
     throw new ArtefactError('invalid_input', 'Share keys must contain 16–128 URL-safe characters')
   }
-  const artefact = await liveHead(db, slug)
+  const artefact = await liveHead(db, slug, expectedId)
   const key = suppliedKey ?? generateShareKey()
   const id = crypto.randomUUID()
   const now = Date.now()
@@ -1162,16 +1181,16 @@ export async function createShareLink(
   const [insert] = await db.batch([
     db
       .prepare(`INSERT INTO share_links (id, artefact_id, label, key_hash, key_sealed, created_by, created_at)
-        SELECT ?, id, ?, ?, ?, ?, ? FROM artefacts WHERE id = ? AND deleted_at IS NULL
+        SELECT ?, id, ?, ?, ?, ?, ? FROM artefacts WHERE id = ? AND slug = ? AND deleted_at IS NULL
           AND NOT EXISTS (
             SELECT 1 FROM share_links WHERE artefact_id = artefacts.id AND revoked_at IS NULL LIMIT 1 OFFSET ?
           )
         ON CONFLICT(key_hash) DO NOTHING`)
-      .bind(id, label ?? null, keyHash, sealed, member.id, now, artefact.id, maxActiveShareLinks - 1),
+      .bind(id, label ?? null, keyHash, sealed, member.id, now, artefact.id, slug, maxActiveShareLinks - 1),
     audit(db, now, member, artefact.id, 'share.create', { id }),
   ])
   if (insert.meta.changes !== 1) {
-    const current = await liveHead(db, slug)
+    const current = await liveHead(db, slug, expectedId)
     if (current.id !== artefact.id) throw new ArtefactError('not_found', 'Artefact not found')
     const keyExists = await db.prepare('SELECT id FROM share_links WHERE key_hash = ?').bind(keyHash).first()
     if (keyExists) throw new ArtefactError('conflict', 'Share key is unavailable')

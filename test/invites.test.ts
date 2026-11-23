@@ -3,6 +3,7 @@ import { expect, it, vi } from 'vitest'
 import {
   admin,
   Browser,
+  flashNavigation,
   listedId,
   location,
   manage,
@@ -40,15 +41,15 @@ async function createInvite(owner: Browser, role: string) {
   expect(response.status).toBe(303)
   expect(response.headers.get('Cache-Control')).toBe('no-store')
   const destination = location(response)
-  expect(destination.href).toBe(manage + members)
+  expect(destination.origin + destination.pathname).toBe(manage + members)
   expect(await response.text()).not.toContain('/invite/')
-  const landing = await owner.request(destination)
+  const landing = await owner.request(destination, { headers: flashNavigation })
   expect(landing.status).toBe(200)
   expect(landing.headers.get('Cache-Control')).toBe('no-store')
   const link = /<code>(https:\/\/[^<]+\/invite\/[A-Za-z0-9_-]{43})<\/code>/.exec(await landing.text())?.[1]
   if (!link) throw new Error('No invite URL was shown')
   expect(new URL(link).origin).toBe(manage)
-  expect(await (await owner.request(destination)).text()).not.toContain(link)
+  expect(await (await owner.request(destination, { headers: flashNavigation })).text()).not.toContain(link)
   return link
 }
 
@@ -211,7 +212,9 @@ it('lists and claims invites using D1 time and can revoke an expired unused invi
   expect((await owner.post(members, { action: 'revoke-invite', id })).status).toBe(303)
   const conflict = await owner.post(members, { action: 'revoke-invite', id })
   expect(conflict.status).toBe(303)
-  expect(await (await owner.request(location(conflict))).text()).toContain('Member action not allowed')
+  expect(await (await owner.request(location(conflict), { headers: flashNavigation })).text()).toContain(
+    'Member action not allowed',
+  )
 })
 
 it('does not re-admit a removed identity by invite, auto-join or a listed bootstrap email', async () => {
@@ -266,7 +269,9 @@ it('restricts invite creation and revocation to same-origin admins and audits a 
   expect((await owner.post(members, revoke)).status).toBe(303)
   const conflict = await owner.post(members, revoke)
   expect(conflict.status).toBe(303)
-  expect(await (await owner.request(location(conflict))).text()).toContain('Member action not allowed')
+  expect(await (await owner.request(location(conflict), { headers: flashNavigation })).text()).toContain(
+    'Member action not allowed',
+  )
   expect((await send(link)).status).toBe(404)
   expect((await browser.request(callback)).status).toBe(302)
   expect(await (await browser.request('/')).text()).toContain('revoked-invitee (viewer)')

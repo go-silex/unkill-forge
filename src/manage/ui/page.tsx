@@ -4,13 +4,14 @@ import type { Child } from 'hono/jsx'
 import type { Config, Runtime } from '../../config'
 import type { BrowserSession, Member } from '../../core'
 import { putUiFlash, takeUiFlash } from '../../core/ui-flash'
-import { messages } from '../../i18n'
+import { DocumentHead } from '../../head'
+import { type Locale, messages } from '../../i18n'
 
 export type UiContext = Context<{ Bindings: Runtime }>
 
 const copyScript =
-  'document.addEventListener("click",async(e)=>{const b=e.target.closest("button[data-copy]");if(!b)return;try{await navigator.clipboard.writeText(b.previousElementSibling.textContent);b.textContent=b.dataset.copied}catch{b.textContent=b.dataset.failed}});'
-export const copyScriptSource = "'sha256-289tKwNP19oh7lJ9RAhbp6791v5VPAVjFdzyrcgFcDE='"
+  'document.addEventListener("click",async(e)=>{const b=e.target.closest("button[data-copy]");if(!b)return;try{await navigator.clipboard.writeText(b.previousElementSibling.textContent);b.textContent=b.dataset.copied}catch{b.textContent=b.dataset.failed}});addEventListener("pageshow",(e)=>{if(e.persisted)document.querySelector("[data-secret-flash]")?.remove()});'
+export const copyScriptSource = "'sha256-YpBfT0WFfrJI9blwi4A0xOODReRSb4tKB5oO3wQz02k='"
 
 const nav = [
   ['/artefacts', 'artefacts'],
@@ -40,15 +41,7 @@ export function Page({
       : nav.slice(0, member.role === 'admin' ? nav.length : member.role === 'publisher' ? 3 : 2)
   return (
     <html lang={config.locale}>
-      <head>
-        <meta charset="utf-8" />
-        <meta name="viewport" content="width=device-width, initial-scale=1" />
-        <title>
-          {title} · {config.name}
-        </title>
-        <link rel="icon" href="/favicon.svg" />
-        <link rel="stylesheet" href="/style.css" />
-      </head>
+      <DocumentHead title={`${title} · ${config.name}`} />
       <body>
         <header>
           <a class="brand" href="/">
@@ -77,8 +70,14 @@ export function Page({
   )
 }
 
-export function time(timestamp: number | null) {
-  return timestamp === null ? '—' : new Date(timestamp).toISOString()
+const utcOptions = { dateStyle: 'short', timeStyle: 'short', timeZone: 'UTC', hour12: false } as const
+const utc = {
+  en: new Intl.DateTimeFormat('en-GB', utcOptions),
+  fr: new Intl.DateTimeFormat('fr-FR', utcOptions),
+}
+
+export function time(locale: Locale, timestamp: number | null) {
+  return timestamp === null ? '—' : `${utc[locale].format(timestamp)} UTC`
 }
 
 export async function flash(
@@ -88,20 +87,41 @@ export async function flash(
   message: string,
   secret?: string,
 ) {
-  const path = new URL(location, c.env.config.manageOrigin).pathname
-  await putUiFlash(c.env, session, path, message, secret)
-  return c.redirect(location, 303)
+  const { pathname, search, hash } = new URL(location, c.env.config.manageOrigin)
+  const path = pathname + search
+  const id = await putUiFlash(c.env, session, path, message, secret)
+  return c.redirect(`${path}${search ? '&' : '?'}flash-id=${id}${hash}`, 303)
+}
+
+async function navigationFlash(c: UiContext, session: BrowserSession) {
+  const request = c.req.raw
+  if (
+    request.method !== 'GET' ||
+    request.headers.get('Sec-Fetch-Site') !== 'same-origin' ||
+    request.headers.get('Sec-Fetch-Dest') !== 'document'
+  )
+    return null
+
+  const { pathname, search } = new URL(request.url)
+  // Keep the exact spelling and order of the remaining query, rather than re-encoding it.
+  const query = search.slice(1).split('&')
+  const index = query.findIndex((part) => part.startsWith('flash-id='))
+  if (index === -1) return null
+  const id = query[index].slice('flash-id='.length)
+  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(id)) return null
+  query.splice(index, 1)
+  return takeUiFlash(c.env, session, id, query.length ? `${pathname}?${query.join('&')}` : pathname)
 }
 
 export async function page(c: UiContext, session: BrowserSession, title: string, children: Child) {
   const { config } = c.env
   const t = messages(config)
-  const notice = c.req.raw.method === 'GET' ? await takeUiFlash(c.env, session, c.req.path) : null
+  const notice = await navigationFlash(c, session)
   const secret = notice?.secret
   return c.html(
     <Page config={config} title={title} member={session.member}>
       {notice && (
-        <aside role="status" aria-label={t.notice}>
+        <aside role="status" aria-label={t.notice} data-secret-flash={secret === undefined ? undefined : ''}>
           <p>{notice.message}</p>
           {secret !== undefined && (
             <p>

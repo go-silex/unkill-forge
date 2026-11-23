@@ -11,6 +11,7 @@ const en = {
   redirects: 'Redirects',
   signOut: 'Sign out',
   signIn: 'Sign in',
+  pending: 'Pending access',
   copy: 'Copy',
   copied: 'Copied',
   copyFailed: 'Copy manually',
@@ -25,7 +26,6 @@ const en = {
   read: {
     incomplete: 'Sign-in did not complete',
     retry: 'Try signing in again',
-    pending: 'Pending access',
     askAdmin: 'Ask a Forge administrator to approve your membership.',
     artefacts: 'Public artefacts',
   },
@@ -40,9 +40,9 @@ const en = {
   },
   consent: {
     methodNotAllowed: 'Method not allowed',
-    pending: 'Pending access',
     verified: 'Verified client domain:',
     unverifiedLocal: 'Unverified client (local application)',
+    localClient: 'Local MCP client',
     unverified: 'Unverified client',
     client: 'Client:',
     destination: 'Redirect destination:',
@@ -58,7 +58,6 @@ const en = {
   },
   legacy: {
     invalidInvite: 'Invite invalid or expired',
-    pendingAccess: 'Pending access',
     signedIn: 'Signed in as',
     approvalRequired: 'An administrator needs to approve your access.',
     mcpUrl: 'MCP URL:',
@@ -100,7 +99,7 @@ const en = {
     invalidBotAction: 'Invalid bot action',
     credentialNotAllowed: 'Token action not allowed',
     botNotAllowed: 'Bot action not allowed',
-    credentialCreated: 'API token created. Copy it now: it will not be shown again.',
+    credentialCreated: 'API token created for {bot}. Copy it now: it will not be shown again.',
     botCreated: 'Bot created.',
     credentialRevoked: 'API token revoked.',
     nextMembers: 'Next members',
@@ -109,7 +108,6 @@ const en = {
     nextCredentials: 'Next tokens',
   },
   admin: {
-    artefacts: 'Artefacts',
     search: 'Search',
     searchQuery: 'Start of title or slug',
     visibility: 'Visibility',
@@ -123,7 +121,7 @@ const en = {
     revision: 'Revision',
     currentRevision: 'Current revision',
     revisions: 'Revisions',
-    author: 'Author ID',
+    author: 'Author',
     message: 'Message',
     restoreRevision: 'Restore revision',
     open: 'Open artefact',
@@ -148,7 +146,6 @@ const en = {
     delete: 'Delete artefact',
     deleteHelp:
       'Deleted artefacts are no longer readable. An administrator can restore them for 30 days unless purge has started.',
-    deleted: 'Deleted artefacts',
     deletedAt: 'Deleted on',
     restoreDeleted: 'Restore artefact',
     purge: 'Permanently purge',
@@ -159,7 +156,6 @@ const en = {
     expired: 'Restore period expired',
     restorable: 'Restorable',
     status: 'Status',
-    tokens: 'API tokens',
     ownCredentialHelp:
       'These tokens act as you on the MCP endpoint. Copy a new token before leaving the page: it is shown only once.',
     ownCredentialName: 'Token name',
@@ -167,24 +163,22 @@ const en = {
     createCredential: 'Create token',
     revokeCredential: 'Revoke token',
     revokedAt: 'Revoked on',
-    redirects: 'Redirects',
     redirectHelp:
       'Use URL-encoded path prefixes with trailing slashes. Both prefixes must use the same namespace and different slugs; the destination must be a live artefact. Share redirects replace only the slug.',
     fromPrefix: 'Source prefix',
     toPrefix: 'Destination prefix',
     addRedirect: 'Save redirect',
     removeRedirect: 'Remove redirect',
-    connect: 'Connect an agent',
     endpoint: 'MCP endpoint (Streamable HTTP)',
     verifyAgent: 'After connecting, run the whoami tool to check the instance and your role.',
     claudeAi:
-      'In Settings → Connectors, add a custom connector. Enter an instance name and the MCP URL, connect, then sign in to Forge and approve access.',
+      'Individual accounts: in Customize → Connectors, choose + Add → Add custom connector. Team and Enterprise: have an organization owner add it under Organization settings → Connectors → Add → Custom → Web; members then select it under Customize → Connectors and click Connect. Enter a name and the MCP URL, choose “Use Claude’s published identity” (CIMD), then sign in to Forge and approve access.',
     claudeDesktop:
-      'In Settings → Connectors, add a custom connector with the MCP URL, then sign in to Forge and approve access. If you already added the connector on claude.ai with the same account, connect to it from Desktop.',
+      'Remote connectors use the same setup and account as claude.ai. Follow the steps above, then enable the connector in Claude Desktop. Do not add it to the local Desktop JSON configuration.',
     claudeCode: 'Run this command. In Claude Code, open /mcp, select forge, and authenticate in the browser.',
     codex:
       'Add the server and sign in when prompted. If needed, start the sign-in separately with the second command.',
-    omp: 'Merge this configuration into .omp/mcp.json for your project or ~/.omp/agent/mcp.json for your account. Run /mcp reload, then approve the local application in Forge when prompted.',
+    omp: 'Merge this configuration into .omp/mcp.json for your project or ~/.omp/agent/mcp.json for your account. Run /mcp reload, then /mcp reauth forge. Sign in and approve the local application in Forge.',
     hermes:
       'Ask an administrator to create a bot and token under Bots and API tokens. Set the environment variable shown below in ~/.hermes/.env, then add this block to ~/.hermes/config.yaml.',
     noResults: 'No results.',
@@ -226,6 +220,7 @@ const fr: typeof en = {
   signIn: 'Se connecter',
   copy: 'Copier',
   copied: 'Copié',
+  pending: 'Accès en attente',
   copyFailed: 'Copier manuellement',
   navigation: 'Gestion de Forge',
   notice: 'Notification',
@@ -238,7 +233,6 @@ const fr: typeof en = {
   read: {
     incomplete: 'La connexion n’a pas abouti',
     retry: 'Réessayer de se connecter',
-    pending: 'Accès en attente',
     askAdmin: 'Demandez à un administrateur de Forge d’approuver votre accès.',
     artefacts: 'Artefacts publics',
   },
@@ -253,9 +247,9 @@ const fr: typeof en = {
   },
   consent: {
     methodNotAllowed: 'Méthode non autorisée',
-    pending: 'Accès en attente',
     verified: 'Domaine vérifié du client :',
     unverifiedLocal: 'Client non vérifié (application locale)',
+    localClient: 'Client MCP local',
     unverified: 'Client non vérifié',
     client: 'Client :',
     destination: 'Destination de la redirection :',
@@ -271,7 +265,6 @@ const fr: typeof en = {
   },
   legacy: {
     invalidInvite: 'Invitation invalide ou expirée',
-    pendingAccess: 'Accès en attente',
     signedIn: 'Compte connecté :',
     approvalRequired: 'Un administrateur doit approuver votre accès.',
     mcpUrl: 'URL MCP :',
@@ -313,7 +306,7 @@ const fr: typeof en = {
     invalidBotAction: 'Action invalide sur ce robot',
     credentialNotAllowed: 'Action sur ce jeton non autorisée',
     botNotAllowed: 'Action sur ce robot non autorisée',
-    credentialCreated: 'Jeton API créé. Copiez-le maintenant : il ne sera plus affiché.',
+    credentialCreated: 'Jeton API créé pour {bot}. Copiez-le maintenant : il ne sera plus affiché.',
     botCreated: 'Robot créé.',
     credentialRevoked: 'Jeton API révoqué.',
     nextMembers: 'Membres suivants',
@@ -322,7 +315,6 @@ const fr: typeof en = {
     nextCredentials: 'Jetons suivants',
   },
   admin: {
-    artefacts: 'Artefacts',
     search: 'Rechercher',
     searchQuery: 'Début du titre ou de l’identifiant',
     visibility: 'Visibilité',
@@ -336,7 +328,7 @@ const fr: typeof en = {
     revision: 'Version',
     currentRevision: 'Version actuelle',
     revisions: 'Versions',
-    author: 'ID de l’auteur',
+    author: 'Auteur',
     message: 'Message',
     restoreRevision: 'Restaurer la version',
     open: 'Ouvrir l’artefact',
@@ -361,7 +353,6 @@ const fr: typeof en = {
     delete: 'Supprimer l’artefact',
     deleteHelp:
       'Un artefact supprimé n’est plus accessible. Un administrateur peut le restaurer pendant 30 jours, tant que la purge n’a pas commencé.',
-    deleted: 'Artefacts supprimés',
     deletedAt: 'Supprimé le',
     restoreDeleted: 'Restaurer l’artefact',
     purge: 'Purger définitivement',
@@ -372,7 +363,6 @@ const fr: typeof en = {
     expired: 'Délai de restauration expiré',
     restorable: 'Restaurable',
     status: 'État',
-    tokens: 'Jetons API',
     ownCredentialHelp:
       'Ces jetons agissent en votre nom sur le point d’accès MCP. Copiez tout nouveau jeton avant de quitter la page : il ne sera affiché qu’une fois.',
     ownCredentialName: 'Nom du jeton',
@@ -380,25 +370,23 @@ const fr: typeof en = {
     createCredential: 'Créer un jeton',
     revokeCredential: 'Révoquer le jeton',
     revokedAt: 'Révoqué le',
-    redirects: 'Redirections',
     redirectHelp:
       'Utilisez des préfixes de chemin encodés pour les URL, terminés par une barre oblique. Les deux préfixes doivent avoir le même espace de noms et des identifiants différents ; la cible doit être un artefact actif. Les redirections de partage ne remplacent que l’identifiant.',
     fromPrefix: 'Préfixe source',
     toPrefix: 'Préfixe de destination',
     addRedirect: 'Enregistrer la redirection',
     removeRedirect: 'Supprimer la redirection',
-    connect: 'Connecter un agent',
     endpoint: 'Point d’accès MCP (Streamable HTTP)',
     verifyAgent: 'Une fois connecté, lancez l’outil whoami pour vérifier l’instance et votre rôle.',
     claudeAi:
-      'Dans Paramètres → Connecteurs, ajoutez un connecteur personnalisé. Indiquez un nom et l’URL MCP, connectez-vous à Forge puis autorisez l’accès.',
+      'Compte individuel : dans Personnaliser → Connecteurs, sélectionnez + Ajouter → Ajouter un connecteur personnalisé. Team et Enterprise : le propriétaire de l’organisation l’ajoute dans Paramètres de l’organisation → Connecteurs → Ajouter → Personnalisé → Web. Les membres le sélectionnent ensuite dans Personnaliser → Connecteurs et cliquent sur Connecter. Saisissez un nom et l’URL MCP, choisissez « Utiliser l’identité publiée de Claude » (CIMD), puis connectez-vous à Forge et autorisez l’accès.',
     claudeDesktop:
-      'Dans Paramètres → Connecteurs, ajoutez un connecteur personnalisé avec l’URL MCP. Connectez-vous à Forge puis autorisez l’accès. Si vous l’avez déjà ajouté sur claude.ai avec le même compte, connectez-le depuis la version de bureau.',
+      'Les connecteurs distants utilisent la même configuration et le même compte que claude.ai. Suivez les étapes ci-dessus, puis activez le connecteur dans Claude Desktop. Ne l’ajoutez pas au fichier JSON local de Claude Desktop.',
     claudeCode:
       'Exécutez cette commande. Dans Claude Code, ouvrez /mcp, sélectionnez forge et identifiez-vous dans le navigateur.',
     codex:
       'Ajoutez le serveur et identifiez-vous à l’invitation. Si nécessaire, lancez l’identification séparément avec la seconde commande.',
-    omp: 'Ajoutez cette configuration à .omp/mcp.json pour le projet ou à ~/.omp/agent/mcp.json pour votre compte. Lancez /mcp reload, puis autorisez l’application locale dans Forge quand OMP vous y invite.',
+    omp: 'Ajoutez cette configuration à .omp/mcp.json pour le projet ou à ~/.omp/agent/mcp.json pour votre compte. Lancez /mcp reload, puis /mcp reauth forge. Connectez-vous et autorisez l’application locale dans Forge.',
     hermes:
       'Demandez à un administrateur de créer un bot et un jeton dans Bots et jetons API. Définissez la variable indiquée ci-dessous dans ~/.hermes/.env, puis ajoutez ce bloc à ~/.hermes/config.yaml.',
     noResults: 'Aucun résultat.',
@@ -432,10 +420,19 @@ export function messages({ locale }: { locale: Locale }) {
   return locale === 'fr' ? fr : en
 }
 
-export type AdminMessage = keyof typeof en.admin
+export type AdminMessage =
+  | keyof typeof en.admin
+  | 'artefacts'
+  | 'connect'
+  | 'deleted'
+  | 'redirects'
+  | 'tokens'
 export type AdminTranslate = (key: AdminMessage) => string
 
 export function adminMessages(locale: Locale): AdminTranslate {
-  const labels = messages({ locale }).admin
-  return (key) => labels[key]
+  const labels = messages({ locale })
+  return (key) =>
+    key === 'artefacts' || key === 'connect' || key === 'deleted' || key === 'redirects' || key === 'tokens'
+      ? labels[key]
+      : labels.admin[key]
 }

@@ -4,6 +4,7 @@ import { describe, expect, it, vi } from 'vitest'
 import {
   admin,
   Browser,
+  flashNavigation,
   formValue,
   type Handle,
   jsonHeaders,
@@ -302,7 +303,7 @@ describe('MCP discovery and bot credentials', () => {
       expect(destination.pathname).toBe(path)
       expect(destination.searchParams.get('bot')).toBe(memberId)
       expect(await response.text()).not.toContain('fgt_')
-      const landing = await owner.request(destination)
+      const landing = await owner.request(destination, { headers: flashNavigation })
       expect(landing.status).toBe(200)
       expect(landing.headers.get('Cache-Control')).toBe('no-store')
       const credential = /<code>(fgt_[A-Za-z0-9_-]+)<\/code>/.exec(await landing.text())?.[1]

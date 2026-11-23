@@ -5,6 +5,7 @@ import { canonicalRead, publicArtefacts, shareRead } from '../core/artefacts'
 import { handoffChallenge, readBoundSession, redeemHandoff, validHandoffState } from '../core/handoffs'
 import { randomSecret } from '../core/index'
 import { artefactPath, maxReadReturnLength, readReturnPath, sharePath } from '../core/read-path'
+import { DocumentHead } from '../head'
 import { isDocumentNavigation, readBoundedBody } from '../http'
 import { messages } from '../i18n'
 import { serveFile } from './file'
@@ -47,13 +48,7 @@ function notFound(config: Config, head = false) {
 function page(config: Config, title: string, children: Child, head: boolean, status = 200) {
   const html = (
     <html lang={config.locale}>
-      <head>
-        <meta charset="utf-8" />
-        <meta name="viewport" content="width=device-width, initial-scale=1" />
-        <link rel="icon" href="/favicon.svg" />
-        <link rel="stylesheet" href="/style.css" />
-        <title>{title}</title>
-      </head>
+      <DocumentHead title={title} />
       <body>
         <main>{children}</main>
       </body>
@@ -124,7 +119,8 @@ export async function read(
 ): Promise<Response> {
   const head = request.method === 'HEAD'
   const { config } = runtime
-  const text = messages(config).read
+  const common = messages(config)
+  const text = common.read
   try {
     if (request.method === 'POST' && url.pathname === callback) return await completeHandoff(request, runtime)
     if (request.method !== 'GET' && !head) return notFound(config)
@@ -164,9 +160,9 @@ export async function read(
         case 'pending':
           return page(
             config,
-            `${text.pending} — ${config.name}`,
+            `${common.pending} — ${config.name}`,
             <>
-              <h1>{text.pending}</h1>
+              <h1>{common.pending}</h1>
               <p>{text.askAdmin}</p>
             </>,
             head,

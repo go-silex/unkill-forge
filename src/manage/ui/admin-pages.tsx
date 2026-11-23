@@ -7,9 +7,9 @@ import {
   ArtefactError,
   createShareLink,
   deleteArtefact,
-  getArtefact,
+  encodeFilePath,
+  getArtefactDetails,
   getShareLink,
-  listArtefacts,
   listDeletedArtefacts,
   listRedirects,
   listRevisions,
@@ -20,6 +20,7 @@ import {
   setRedirects,
   setVisibility,
 } from '../../core/artefacts'
+import { searchArtefacts } from '../../core/catalogue'
 import type { BrowserSession, Member, Role } from '../../core/index'
 import { purgeArtefact } from '../../core/purge'
 import { artefactPath, maxRedirectPrefix } from '../../core/read-path'
@@ -54,20 +55,21 @@ const prefix = z.string().max(maxRedirectPrefix)
 const maxNameLength = 120
 const maxShareLabelLength = 200
 const artefactAction = z.discriminatedUnion('action', [
-  z.strictObject({ action: z.literal('visibility'), visibility }),
-  z.strictObject({ action: z.literal('restore-revision'), revision }),
+  z.strictObject({ action: z.literal('visibility'), visibility, artefactId: id }),
+  z.strictObject({ action: z.literal('restore-revision'), revision, artefactId: id }),
   z.strictObject({
     action: z.literal('create-share'),
+    artefactId: id,
     label: z.string().trim().max(maxShareLabelLength).optional(),
     key: z.string().optional(),
   }),
   z.strictObject({ action: z.enum(['reveal-share', 'revoke-share']), id }),
-  z.strictObject({ action: z.literal('rename'), slug }),
-  z.strictObject({ action: z.literal('delete') }),
+  z.strictObject({ action: z.literal('rename'), slug, artefactId: id }),
+  z.strictObject({ action: z.literal('delete'), artefactId: id }),
 ])
 const deletedAction = z.discriminatedUnion('action', [
-  z.strictObject({ action: z.literal('restore'), slug }),
-  z.strictObject({ action: z.literal('purge'), id }),
+  z.strictObject({ action: z.literal('restore'), slug, artefactId: id }),
+  z.strictObject({ action: z.literal('purge'), slug, id }),
 ])
 const tokenAction = z.discriminatedUnion('action', [
   z.strictObject({ action: z.literal('create'), name: z.string().trim().min(1).max(maxNameLength) }),
@@ -215,10 +217,7 @@ adminPages.get(
     const filter = visibility.safeParse(rawVisibility)
     if (rawVisibility && !filter.success) return c.text(t('malformed'), 400)
     const selected = filter.data
-    const { artefacts, nextCursor } = await listArtefacts(c.env, actor, q, c.req.query('cursor'), {
-      visibility: selected,
-      prefix: true,
-    })
+    const { artefacts, nextCursor } = await searchArtefacts(c.env, actor, q, selected, c.req.query('cursor'))
     const params = new URLSearchParams()
     if (q) params.set('q', q)
     if (selected) params.set('visibility', selected)
@@ -251,7 +250,7 @@ adminPages.get(
               </td>
               <td>{t(entry.visibility)}</td>
               <td>{entry.revision}</td>
-              <td>{time(entry.updatedAt)}</td>
+              <td>{time(c.env.config.locale, entry.updatedAt)}</td>
             </tr>
           )),
           t,
@@ -271,10 +270,10 @@ adminPages.get(
     const path = detailPath(currentSlug)
     const fileCursor = c.req.query('files')
     const revisionCursor = c.req.query('revisions')
-    const [artefact, history] = await Promise.all([
-      getArtefact(c.env, actor, currentSlug, fileCursor),
-      listRevisions(c.env, actor, currentSlug, revisionCursor),
-    ])
+    const artefact = await getArtefactDetails(c.env, actor, currentSlug, fileCursor)
+    const history = await listRevisions(c.env, actor, currentSlug, revisionCursor, {
+      expectedId: artefact.id,
+    })
     const canWrite = actor.role !== 'viewer'
     const params = new URLSearchParams()
     if (fileCursor) params.set('files', fileCursor)
@@ -303,6 +302,7 @@ adminPages.get(
         </dl>
         {canWrite && (
           <form method="post">
+            <input type="hidden" name="artefactId" value={artefact.id} />
             <label>
               {t('visibility')}{' '}
               <select name="visibility">
@@ -320,7 +320,7 @@ adminPages.get(
           artefact.files.map((file) => (
             <tr>
               <td>
-                <a href={readBase + file.path.split('/').map(encodeURIComponent).join('/')}>
+                <a href={readBase + encodeFilePath(file.path)}>
                   <code>{file.path}</code>
                 </a>
               </td>
@@ -338,7 +338,7 @@ adminPages.get(
             <tr>
               <td>{entry.number}</td>
               <td>{entry.author}</td>
-              <td>{time(entry.createdAt)}</td>
+              <td>{time(c.env.config.locale, entry.createdAt)}</td>
               <td>{entry.message}</td>
               {canWrite && (
                 <td>
@@ -346,7 +346,7 @@ adminPages.get(
                     <Action
                       action="restore-revision"
                       label={t('restoreRevision')}
-                      fields={{ revision: entry.number }}
+                      fields={{ revision: entry.number, artefactId: artefact.id }}
                     />
                   )}
                 </td>
@@ -361,6 +361,7 @@ adminPages.get(
             <h2>{t('shareLinks')}</h2>
             <p>{t('shareWarning')}</p>
             <form method="post">
+              <input type="hidden" name="artefactId" value={artefact.id} />
               <label>
                 {t('shareLabel')} <input name="label" maxlength={maxShareLabelLength} />
               </label>
@@ -385,8 +386,8 @@ adminPages.get(
               artefact.shareLinks.map((share) => (
                 <tr>
                   <td>{share.label || t('unlabeled')}</td>
-                  <td>{time(share.createdAt)}</td>
-                  <td>{time(share.lastUsedAt)}</td>
+                  <td>{time(c.env.config.locale, share.createdAt)}</td>
+                  <td>{time(c.env.config.locale, share.lastUsedAt)}</td>
                   <td>
                     <Action action="reveal-share" label={t('showShare')} fields={{ id: share.id }} />
                     <Action action="revoke-share" label={t('revokeShare')} fields={{ id: share.id }} />
@@ -397,6 +398,7 @@ adminPages.get(
             )}
             <h2>{t('rename')}</h2>
             <form method="post">
+              <input type="hidden" name="artefactId" value={artefact.id} />
               <label>
                 {t('newSlug')} <input name="slug" required maxlength={64} />
               </label>
@@ -406,7 +408,7 @@ adminPages.get(
             </form>
             <h2>{t('delete')}</h2>
             <p>{t('deleteHelp')}</p>
-            <Action action="delete" label={t('delete')} />
+            <Action action="delete" label={t('delete')} fields={{ artefactId: artefact.id }} />
           </>
         )}
       </>,
@@ -429,17 +431,18 @@ adminPages.post(
       async (input) => {
         switch (input.action) {
           case 'visibility':
-            await setVisibility(c.env, actor, currentSlug, input.visibility)
+            await setVisibility(c.env, actor, currentSlug, input.visibility, input.artefactId)
             return { message: 'visibilitySaved' }
           case 'restore-revision':
-            await restoreRevision(c.env, actor, currentSlug, input.revision)
+            await restoreRevision(c.env, actor, currentSlug, input.revision, undefined, input.artefactId)
             return { message: 'revisionRestored' }
           case 'create-share': {
-            const share = await createShareLink(c.env, actor, {
-              slug: currentSlug,
-              label: input.label || undefined,
-              key: input.key || undefined,
-            })
+            const share = await createShareLink(
+              c.env,
+              actor,
+              { slug: currentSlug, label: input.label || undefined, key: input.key || undefined },
+              input.artefactId,
+            )
             return { message: 'shareCreated', secret: share.url }
           }
           case 'reveal-share': {
@@ -450,10 +453,10 @@ adminPages.post(
             await revokeShareLink(c.env, actor, input.id, currentSlug)
             return { message: 'shareRevoked' }
           case 'rename':
-            await renameArtefact(c.env, actor, currentSlug, input.slug)
+            await renameArtefact(c.env, actor, currentSlug, input.slug, input.artefactId)
             return { message: 'artefactRenamed', path: detailPath(input.slug) }
           case 'delete':
-            await deleteArtefact(c.env, actor, currentSlug)
+            await deleteArtefact(c.env, actor, currentSlug, input.artefactId)
             return { message: 'artefactDeleted', path: cataloguePath }
         }
       },
@@ -480,16 +483,20 @@ adminPages.get(
               <td>
                 <code>{entry.slug}</code>
               </td>
-              <td>{time(entry.deletedAt)}</td>
+              <td>{time(c.env.config.locale, entry.deletedAt)}</td>
               <td>{t(entry.purging ? 'purging' : entry.restorable ? 'restorable' : 'expired')}</td>
               <td>
                 {entry.restorable && (
-                  <Action action="restore" label={t('restoreDeleted')} fields={{ slug: entry.slug }} />
+                  <Action
+                    action="restore"
+                    label={t('restoreDeleted')}
+                    fields={{ slug: entry.slug, artefactId: entry.id }}
+                  />
                 )}
                 <Action
                   action="purge"
                   label={t(entry.purging ? 'resumePurge' : 'purge')}
-                  fields={{ id: entry.id }}
+                  fields={{ id: entry.id, slug: entry.slug }}
                 />
               </td>
             </tr>
@@ -509,10 +516,10 @@ adminPages.post(
     const path = cursor ? `${deletedPath}?${new URLSearchParams({ cursor })}` : deletedPath
     return runAction(c, session, t, path, deletedAction, async (input) => {
       if (input.action === 'restore') {
-        await restoreDeletedArtefact(c.env, actor, input.slug)
+        await restoreDeletedArtefact(c.env, actor, input.slug, input.artefactId)
         return { message: 'artefactRestored', path: detailPath(input.slug) }
       }
-      const { done } = await purgeArtefact(c.env, actor, input.id)
+      const { done } = await purgeArtefact(c.env, actor, input.id, input.slug)
       return { message: done ? 'purgeDone' : 'purgePending' }
     })
   }),
@@ -544,8 +551,8 @@ adminPages.get(
               <td>
                 <code>{token.prefix}</code>
               </td>
-              <td>{time(token.lastUsedAt)}</td>
-              <td>{time(token.revokedAt)}</td>
+              <td>{time(c.env.config.locale, token.lastUsedAt)}</td>
+              <td>{time(c.env.config.locale, token.revokedAt)}</td>
               <td>
                 {token.revokedAt === null && (
                   <Action action="revoke" label={t('revokeCredential')} fields={{ id: token.id }} />

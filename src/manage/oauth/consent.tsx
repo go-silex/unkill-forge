@@ -25,7 +25,7 @@ export async function authorize(
   }
   const session = await requireBrowserSession(request, runtime)
   if (session instanceof Response) return session
-  if (session.member.status !== 'active') return new Response(text.pending, { status: 403 })
+  if (session.member.status !== 'active') return new Response(common.pending, { status: 403 })
   const {
     config,
     env: { DB },
@@ -56,7 +56,7 @@ export async function authorize(
             <p>{local ? text.unverifiedLocal : text.unverified}</p>
           )}
           <p>
-            {text.client} {consent.clientName}
+            {text.client} {local ? text.localClient : consent.clientName}
           </p>
           <p>
             {text.destination}{' '}
