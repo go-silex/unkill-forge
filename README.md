@@ -10,8 +10,8 @@ Forge is a self-hosted service for publishing HTML artefacts at stable URLs, cho
 
 1. Get a Cloudflare account with an active zone. Choose distinct read and manage hostnames. Install Node.js 24+.
 2. Use the button to provision D1, R2 and KV, or create them manually using the [self-hosting guide](docs/self-hosting.md). Clone your checkout and run `npm ci`.
-3. Copy `wrangler.jsonc` to a private file. Configure the bindings, origins, identity provider and a verified bootstrap address in `ADMIN_EMAILS`. Keep `routes` empty; if you did not use the button, run `npm run deploy -- --config /path/to/private/wrangler.jsonc` to apply migrations and deploy the unrouted Worker.
-4. Following the [self-hosting guide](docs/self-hosting.md), install the `upload-verification/` R2 lifecycle rule and set Worker secrets. Add both Custom Domains to `routes`, run the deploy command with the same private config, then sign in at the manage origin and verify your admin role.
+3. Copy `wrangler.jsonc` to a private file. Configure the bindings, origins and a verified bootstrap address in `ADMIN_EMAILS`. Install the `upload-verification/` R2 lifecycle rule and register your identity provider as described in the [self-hosting guide](docs/self-hosting.md).
+4. For manual provisioning, leave `routes` empty and run `npm run deploy -- --config /path/to/private/wrangler.jsonc` to apply migrations and deploy the unrouted Worker. Set Worker secrets, add both Custom Domains to `routes`, and deploy with the same private config. Sign in at the manage origin and verify your admin role.
 5. Open **Connect an agent** on the manage host or follow the [MCP guide](docs/mcp.md) to publish your first private page.
 
 ## Reference

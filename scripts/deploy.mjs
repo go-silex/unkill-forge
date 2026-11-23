@@ -25,7 +25,7 @@ try {
       cwd: root,
       encoding: 'utf8',
       stdio: ['inherit', listing ? 'pipe' : 'inherit', 'inherit'],
-      ...(listing ? { env: { ...process.env, FORCE_COLOR: '0' } } : {}),
+      ...(listing ? { env: { ...process.env, FORCE_COLOR: '0', WRANGLER_LOG: 'log' } } : {}),
     })
     if (listing) process.stdout.write(result.stdout ?? '')
     if (result.status !== 0) {

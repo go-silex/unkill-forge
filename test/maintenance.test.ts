@@ -354,6 +354,48 @@ it('rechecks revision heads and purge eligibility between selection and D1 batch
   expect(await db.prepare('SELECT artefact_id FROM artefact_purges').first()).toBeNull()
 })
 
+it('keeps the manifest when an artefact is soft-deleted after revision selection', async () => {
+  await db.batch([
+    artefact('history', null, 3),
+    db.prepare(`INSERT INTO revisions (artefact_id, number, created_by, created_at)
+      VALUES ('history', 1, 'member', 0)`),
+    db.prepare(`INSERT INTO files (artefact_id, revision, path, sha256, size, content_type)
+      VALUES ('history', 1, 'index.html', 'history-hash', 1, 'text/html')`),
+  ])
+  await run({
+    REVISION_RETENTION: '2',
+    DB: observeD1(async (sql) => {
+      if (sql.some((statement) => statement.startsWith('DELETE FROM revisions'))) {
+        await db.prepare("UPDATE artefacts SET deleted_at = ? WHERE id = 'history'").bind(now).run()
+      }
+    }),
+  })
+  expect(await db.prepare("SELECT deleted_at FROM artefacts WHERE id = 'history'").first()).toEqual({
+    deleted_at: now,
+  })
+  const revision = db.prepare("SELECT number FROM revisions WHERE artefact_id = 'history'")
+  const file = db.prepare("SELECT path FROM files WHERE artefact_id = 'history'")
+  expect(await revision.first('number')).toBe(1)
+  expect(await file.first('path')).toBe('index.html')
+})
+
+it('gives a restored and re-deleted artefact a fresh 30-day purge window', async () => {
+  await artefact('re-deleted', deletedCutoff - 1).run()
+  await run({
+    DB: observeD1(async (sql) => {
+      if (!sql.some((statement) => statement.startsWith('INSERT INTO artefact_purges'))) return
+      await db.batch([
+        db.prepare("UPDATE artefacts SET deleted_at = NULL WHERE id = 're-deleted'"),
+        db.prepare("UPDATE artefacts SET deleted_at = ? WHERE id = 're-deleted'").bind(now),
+      ])
+    }),
+  })
+  expect(await db.prepare("SELECT deleted_at FROM artefacts WHERE id = 're-deleted'").first()).toEqual({
+    deleted_at: now,
+  })
+  expect(await db.prepare('SELECT artefact_id FROM artefact_purges').first()).toBeNull()
+})
+
 it('keeps expired sessions for in-flight writes without still authenticating them', async () => {
   await db.prepare("UPDATE sessions SET expires_at = ? WHERE id_hash = 'active-session'").bind(now).run()
   const authorized = await readSession(db, 'active-session', now - 1)

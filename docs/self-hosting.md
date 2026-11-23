@@ -22,7 +22,7 @@ npx wrangler r2 bucket create forge-blobs
 npx wrangler kv namespace create forge-oauth
 ```
 
-Use the emitted D1 database ID and KV namespace ID, plus the R2 bucket name. If Wrangler offers to update the repository template, decline. If you have multiple Cloudflare accounts, select the same account for each command and deployment; you can set `CLOUDFLARE_ACCOUNT_ID` in your local shell to select it. Do not commit that ID.
+If Wrangler offers to update the repository template, decline. Copy the IDs and bucket name from Wrangler's output, but keep the template binding names `DB`, `BLOBS` and `OAUTH_KV`. If you have multiple Cloudflare accounts, select the same account for each command and deployment; you can set `CLOUDFLARE_ACCOUNT_ID` in your local shell to select it. Do not commit that ID.
 
 **Both paths:** work from the checkout (`npm ci` there if not already installed). Copy the populated `wrangler.jsonc` to a private path outside the repository, for example:
 
@@ -88,7 +88,7 @@ npx wrangler secret put FORGE_SEAL_KEY --name "$FORGE_WORKER"
 npx wrangler secret put AUTH_GITHUB_CLIENT_SECRET --name "$FORGE_WORKER"
 ```
 
-The last command prompts for the OAuth client secret. Repeat for every provider: use `AUTH_<ID>_CLIENT_SECRET`, uppercasing the ID and replacing non-alphanumerics with `_`, e.g. `AUTH_GOOGLE_CLIENT_SECRET`. Changing the cookie key invalidates signed read cookies. A restore needs the exact original seal key to reveal existing share keys; changing it does not revoke their URLs.
+The last command prompts for the OAuth client secret; GitHub asks you to confirm sudo mode (passkey or 2FA) before generating it. Repeat for every provider: use `AUTH_<ID>_CLIENT_SECRET`, uppercasing the ID and replacing non-alphanumerics with `_`, e.g. `AUTH_GOOGLE_CLIENT_SECRET`. Changing the cookie key invalidates signed read cookies. A restore needs the exact original seal key to reveal existing share keys; changing it does not revoke their URLs.
 
 ## 4. Open the instance and bootstrap
 
