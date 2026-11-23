@@ -8,9 +8,9 @@ Install Node.js 24+, Git and OpenSSL. In **R2 Object Storage**, complete the R2 
 
 ## 2. Provision and configure
 
-**Deploy button:** [Deploy to Cloudflare](https://deploy.workers.cloudflare.com/?url=https://github.com/go-silex/unkill-forge) creates a repository in your Git account, sets up Workers Builds and provisions `DB` (D1), `BLOBS` (R2) and `OAUTH_KV` (KV). Keep `npm run deploy` as the deploy command so it applies the schema before deploying. The first deploy deliberately has no public route. The button does not configure your Custom Domains, identity provider, production vars, Worker secrets or bucket lifecycle rule. Continue below with the generated repository and its populated bindings; do not provision duplicate resources. If switching to CLI deploys with a private config, disable automatic builds so a later template deploy cannot overwrite your routes or vars. See [Cloudflare's deploy button documentation](https://developers.cloudflare.com/workers/platform/deploy-buttons/).
+**Deploy button:** [Deploy to Cloudflare](https://deploy.workers.cloudflare.com/?url=https://github.com/go-silex/unkill-forge) is an alternative to manual provisioning. It uses [Workers Builds](https://developers.cloudflare.com/workers/platform/deploy-buttons/) to create a repository and provision the template's D1, R2 and KV bindings. Keep `npm run deploy` as the build's deploy command so it applies migrations before deploying the unrouted Worker. The fresh-instance walkthrough was verified using manual provisioning, not the button.
 
-Clone the generated repository, run `npm ci` and `npx wrangler login`, and select the same Cloudflare account the button used. Disable the button-created automatic Workers Builds deployment before continuing with this guide's private CLI configuration.
+Clone the generated repository, run `npm ci` and `npx wrangler login`, and select the same Cloudflare account. Keep the generated bindings; do not provision duplicates. Disable the button-created automatic deployment before switching to the private CLI config. You still need to configure production vars, register an identity provider, set Worker secrets, install the R2 lifecycle rule, and attach both Custom Domains as described below.
 
 **Manual provisioning:** clone the repository, `cd` into it, then run:
 
@@ -88,6 +88,8 @@ npx wrangler secret put FORGE_SEAL_KEY --name "$FORGE_WORKER"
 npx wrangler secret put AUTH_GITHUB_CLIENT_SECRET --name "$FORGE_WORKER"
 ```
 
+If you pipe a secret through stdin instead of using the prompt, pass only the saved value with no trailing newline: `tr -d '\n' < saved-file | npx wrangler secret put FORGE_SEAL_KEY --name "$FORGE_WORKER"`. Use a protected file and never put the secret in shell arguments or history.
+
 The last command prompts for the OAuth client secret; GitHub asks you to confirm sudo mode (passkey or 2FA) before generating it. Repeat for every provider: use `AUTH_<ID>_CLIENT_SECRET`, uppercasing the ID and replacing non-alphanumerics with `_`, e.g. `AUTH_GOOGLE_CLIENT_SECRET`. Changing the cookie key invalidates signed read cookies. A restore needs the exact original seal key to reveal existing share keys; changing it does not revoke their URLs.
 
 ## 4. Open the instance and bootstrap
@@ -101,7 +103,11 @@ Set `routes` in the private config to the two hostnames (no scheme or path), mat
 ]
 ```
 
-Run `npm run deploy -- --config "$FORGE_CONFIG"` again. In Workers & Pages → your Worker → Settings → Domains & Routes, verify both Custom Domains are attached and certificates are active. Keep `workers_dev` and preview URLs off. Add a Cloudflare Configuration Rule matching the **read hostname** and turn off Email Obfuscation, Rocket Loader and Automatic HTTPS Rewrites; they may rewrite HTML or cause Cloudflare to drop its strong ETags. Do not add zone-level cache rules that bypass Forge's access checks.
+Run `npm run deploy -- --config "$FORGE_CONFIG"` again. In Workers & Pages → your Worker → Settings → Domains & Routes, verify both Custom Domains are attached. Certificates may still be provisioning just after this deploy; if HTTPS fails, wait until both certificates are active and retry. Keep `workers_dev` and preview URLs off.
+
+Add a Cloudflare Configuration Rule matching the **read hostname** and turn off Email Obfuscation, Rocket Loader and Automatic HTTPS Rewrites; they may rewrite HTML or cause Cloudflare to drop its strong ETags. Do not add zone-level cache rules that bypass Forge's access checks.
+
+For the [Rulesets API equivalent](https://developers.cloudflare.com/rules/configuration-rules/create-api/), add a rule to the zone's `http_config_settings` entrypoint. Set the expression to `http.host eq "forge.example.com"` (substitute your read hostname), the action to `set_config`, and `action_parameters` to `{"email_obfuscation": false, "rocket_loader": false, "automatic_https_rewrites": false}`.
 
 Set `ADMIN_EMAILS` **before** the intended admin ever signs in. The address needs to come from the provider as verified; GitHub uses only the primary verified address. On the manage origin, sign in with that new identity and confirm your admin role and the Members page. If that identity was already recorded as pending before bootstrap, changing `ADMIN_EMAILS` will not promote it on retry. Before anyone has bootstrapped, add another verified address and sign in with a not-yet-seen eligible provider identity; then approve or promote the original account from Members. After bootstrap, an existing admin must grant admin roles. A valid one-use invite beats OIDC auto-join; otherwise new members wait for approval. Invite URLs expire after seven days. Always keep an active admin. Removed members must get new sessions, OAuth grants and API tokens after reinstatement.
 
