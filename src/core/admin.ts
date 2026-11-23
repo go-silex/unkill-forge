@@ -104,11 +104,12 @@ export async function revokeApiToken(
   return result.meta.changes === 1
 }
 
-export async function useApiToken(db: D1Database, token: string, now: number): Promise<string | null> {
+export async function useApiToken(db: D1Database, token: string, now: number) {
   if (!/^fgt_[A-Za-z0-9_-]{43}$/.test(token)) return null
   return db
     .prepare(`UPDATE api_tokens SET last_used_at = ? WHERE token_hash = ? AND revoked_at IS NULL
-    AND member_id IN (SELECT id FROM members WHERE status = 'active') RETURNING member_id`)
+    AND member_id IN (SELECT id FROM members WHERE status = 'active')
+    RETURNING member_id AS memberId, (SELECT generation FROM members WHERE id = member_id) AS generation`)
     .bind(now, await hashSecret(token))
-    .first<string>('member_id')
+    .first<{ memberId: string; generation: number }>()
 }

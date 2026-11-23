@@ -29,11 +29,11 @@ type Artefact = {
   deletedAt: number | null
 }
 type File = { path: string; size: number; type: string; sha256: string }
-type InlineFile = { path: string; content: string; encoding?: 'utf8' | 'base64' }
+type InlineFile = { path: string; content: string; encoding?: 'utf8' | 'base64'; type?: string }
 type Publish = {
   slug: string
   title?: string
-  files: InlineFile[]
+  files: (InlineFile | { path: string; uploadId: string })[]
   mode: 'merge' | 'replace'
   delete?: string[]
   expectedRevision?: number
@@ -53,7 +53,7 @@ function decodeCursor<S extends z.ZodType>(cursor: string, schema: S): z.output<
   }
 }
 
-function checkMember(member: Member, write = false) {
+export function checkMember(member: Member, write = false) {
   if (member.status !== 'active' || (write && member.role === 'viewer')) {
     throw new ArtefactError(
       'forbidden',
@@ -62,7 +62,7 @@ function checkMember(member: Member, write = false) {
   }
 }
 
-function checkSlug(slug: string) {
+export function checkSlug(slug: string) {
   if (!/^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$/.test(slug)) {
     throw new ArtefactError(
       'invalid_input',
@@ -71,7 +71,7 @@ function checkSlug(slug: string) {
   }
 }
 
-function checkPath(path: string) {
+export function checkPath(path: string) {
   if (
     !/^.{1,512}$/su.test(path) ||
     !path.isWellFormed() ||
@@ -431,6 +431,7 @@ export async function publish(runtime: Runtime, member: Member, input: Publish, 
   for (const path of deletes) checkPath(path)
   const changedPaths = new Set<string>()
   const pending: { path: string; type: string; bytes: Uint8Array }[] = []
+  const uploaded: { path: string; uploadId: string }[] = []
   let remaining = maxBytes
   for (const file of input.files) {
     checkPath(file.path)
@@ -440,10 +441,14 @@ export async function publish(runtime: Runtime, member: Member, input: Publish, 
         'A path cannot be published twice or published and deleted together',
       )
     }
+    changedPaths.add(file.path)
+    if ('uploadId' in file) {
+      uploaded.push(file)
+      continue
+    }
     const bytes = inlineBytes(file, remaining, maxBytes)
     remaining -= bytes.length
-    changedPaths.add(file.path)
-    pending.push({ path: file.path, type: contentType(file.path), bytes })
+    pending.push({ path: file.path, type: file.type ?? contentType(file.path), bytes })
   }
   const newFiles: File[] = []
   let artefact = await head(db, input.slug)
@@ -528,6 +533,25 @@ export async function publish(runtime: Runtime, member: Member, input: Publish, 
           .bind(id, revision, JSON.stringify(newFiles.slice(start, start + 24))),
       )
     }
+    for (let start = 0; start < uploaded.length; start += 24) {
+      const chunk = JSON.stringify(uploaded.slice(start, start + 24))
+      // The LEFT JOIN deliberately inserts NULL metadata for an unusable ID. The file
+      // constraint rolls back the whole batch, including consumption of earlier chunks.
+      statements.push(
+        db
+          .prepare(`INSERT INTO files (artefact_id, revision, path, sha256, size, content_type)
+          SELECT ?, ?, json_extract(entry.value, '$.path'), u.sha256, u.size, u.content_type
+          FROM json_each(?) AS entry LEFT JOIN uploads AS u
+          ON u.upload_id = json_extract(entry.value, '$.uploadId')
+          AND u.path = json_extract(entry.value, '$.path')
+          AND u.slug = ? AND u.member_id = ? AND u.state = 'stored' AND u.expires_at > ?`)
+          .bind(id, revision, chunk, input.slug, member.id, now),
+        db
+          .prepare(`UPDATE uploads SET state = 'consumed'
+          WHERE upload_id IN (SELECT json_extract(value, '$.uploadId') FROM json_each(?))`)
+          .bind(chunk),
+      )
+    }
     statements.push(
       db
         .prepare(`UPDATE artefacts SET current_revision = ?, title = COALESCE(?, title),
@@ -541,6 +565,9 @@ export async function publish(runtime: Runtime, member: Member, input: Publish, 
       entry = (await db.batch<RevisionEntry>(statements)).at(-1)
     } catch (error) {
       const diagnostic = error instanceof Error ? `${error.message} ${error.cause}` : ''
+      if (uploaded.length > 0 && /NOT NULL constraint failed: files\.sha256\b/.test(diagnostic)) {
+        throw new ArtefactError('not_found', 'Stored upload not found for this file')
+      }
       if (
         !/UNIQUE constraint failed: (?:artefacts\.slug|revisions\.artefact_id, revisions\.number)\b/.test(
           diagnostic,
@@ -627,12 +654,21 @@ export async function editFile(
     previous = at + input.oldText.length
   }
   if (previous < text.length) parts.push(text.slice(previous))
+  let hasCharset = false
+  // Consume whole parameter values, including quoted semicolons.
+  let type = file.type.replace(/;[ \t]*([^=;]+)=(?:"(?:[^"\\]|\\.)*"|[^;]*)/g, (param, name: string) => {
+    if (name.toLowerCase() !== 'charset') return param
+    if (hasCharset) return ''
+    hasCharset = true
+    return '; charset=utf-8'
+  })
+  if (!hasCharset) type += '; charset=utf-8'
   return publish(
     runtime,
     member,
     {
       slug: input.slug,
-      files: [{ path: input.path, content: parts.join('') }],
+      files: [{ path: input.path, content: parts.join(''), type }],
       mode: 'merge',
       expectedRevision: input.expectedRevision,
     },

@@ -35,6 +35,41 @@ export function contentType(path: string): string {
   return Object.hasOwn(binaryTypes, extension) ? binaryTypes[extension] : 'application/octet-stream'
 }
 
+export async function referencedBlobs(db: D1Database, hashes: string[]) {
+  const lookups: D1PreparedStatement[] = []
+  // One bind per statement; 256 SHA-256 hex strings fit in under 18 KiB.
+  for (let start = 0; start < hashes.length; start += 256) {
+    lookups.push(
+      db
+        .prepare(`SELECT value AS sha256, (SELECT size FROM files WHERE sha256 = value LIMIT 1) AS size
+        FROM json_each(?)`)
+        .bind(JSON.stringify(hashes.slice(start, start + 256))),
+    )
+  }
+  const referenced = new Map<string, number>()
+  if (lookups.length > 0) {
+    for (const { results } of await db.batch<{ sha256: string; size: number | null }>(lookups)) {
+      for (const { sha256, size } of results) if (size !== null) referenced.set(sha256, size)
+    }
+  }
+  return referenced
+}
+
+export function hexChecksum(checksum: ArrayBuffer) {
+  return Array.from(new Uint8Array(checksum), (byte) => byte.toString(16).padStart(2, '0')).join('')
+}
+
+const onlyIfAbsent = new Headers({ 'If-None-Match': '*' })
+
+export function putBlob(
+  bucket: R2Bucket,
+  hash: string,
+  body: ReadableStream | Uint8Array,
+  checksum: ArrayBuffer | string,
+) {
+  return bucket.put(`blobs/${hash}`, body, { sha256: checksum, onlyIf: onlyIfAbsent })
+}
+
 export async function storeBlobs(
   db: D1Database,
   bucket: R2Bucket,
@@ -45,30 +80,16 @@ export async function storeBlobs(
   const hashes: string[] = []
   for (const { bytes } of pending) {
     const checksum = await crypto.subtle.digest('SHA-256', bytes)
-    const sha256 = Array.from(new Uint8Array(checksum), (byte) => byte.toString(16).padStart(2, '0')).join('')
+    const sha256 = hexChecksum(checksum)
     if (!unique.has(sha256)) unique.set(sha256, { checksum, bytes })
     hashes.push(sha256)
   }
-  // One bind per statement; 256 SHA-256 hex strings fit in under 18 KiB.
-  const keys = [...unique.keys()]
-  const lookups: D1PreparedStatement[] = []
-  for (let start = 0; start < keys.length; start += 256) {
-    lookups.push(
-      db
-        .prepare(
-          'SELECT value AS sha256 FROM json_each(?) WHERE EXISTS (SELECT 1 FROM files WHERE sha256 = value)',
-        )
-        .bind(JSON.stringify(keys.slice(start, start + 256))),
-    )
-  }
-  for (const { results } of await db.batch<{ sha256: string }>(lookups)) {
-    for (const { sha256 } of results) unique.delete(sha256)
-  }
+  const referenced = await referencedBlobs(db, [...unique.keys()])
+  for (const sha256 of referenced.keys()) unique.delete(sha256)
   if (unique.size > maxWrites) return null
 
-  const onlyIf = new Headers({ 'If-None-Match': '*' })
   for (const [sha256, { bytes, checksum }] of unique) {
-    await bucket.put(`blobs/${sha256}`, bytes, { sha256: checksum, onlyIf })
+    await putBlob(bucket, sha256, bytes, checksum)
   }
   return hashes
 }

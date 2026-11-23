@@ -30,6 +30,7 @@ import {
   setVisibility,
 } from '../../core/artefacts'
 import { shareKeyMax, shareKeyMin } from '../../core/share-keys'
+import { checkUploadCount, createUploads } from '../../core/uploads'
 
 function result(value: Record<string, unknown>, isError = false) {
   return {
@@ -81,6 +82,26 @@ const inlineFile = z.strictObject({
   path,
   content: z.string(),
   encoding: z.enum(['utf8', 'base64']).optional().describe('Defaults to utf8'),
+})
+const uploadFile = z.strictObject({ path, uploadId: z.uuid() })
+const uploadRequest = z.strictObject({
+  path: path.max(1024),
+  size: z.int().nonnegative(),
+  sha256: z
+    .string()
+    .length(64)
+    .regex(/^[a-f0-9]+$/),
+  contentType: z
+    .string()
+    .max(255)
+    .pipe(
+      z
+        .string()
+        .regex(
+          /^[!#$%&'*+.^_`|~\w-]+\/[!#$%&'*+.^_`|~\w-]+(?:[ \t]*;[ \t]*[!#$%&'*+.^_`|~\w-]+=(?:[!#$%&'*+.^_`|~\w-]+|"(?:[\t !#-[\]-~]|\\[\t -~])*"))*$/,
+        ),
+    )
+    .optional(),
 })
 
 function requestError(status: number, code: ErrorCode, message: string, error: string) {
@@ -137,7 +158,7 @@ function exceedsJsonBudget(text: string) {
 export async function handleMcp(
   request: Request,
   runtime: Runtime,
-  member: Member,
+  member: Member & { generation: number },
   ctx: ExecutionContext,
 ): Promise<Response> {
   const { config } = runtime
@@ -226,11 +247,11 @@ export async function handleMcp(
     ),
     tool(
       'publish',
-      'Create or publish a revision with inline files. New artefacts are private. Merge keeps unmentioned paths; replace drops them. Use expectedRevision to avoid overwriting a newer head. Tell the user the entry URL and revision.',
+      'Create or publish a revision with inline content or stored upload IDs. New artefacts are private. Merge keeps unmentioned paths; replace drops them. Use expectedRevision to avoid overwriting a newer head. Tell the user the entry URL and revision.',
       z.strictObject({
         slug,
         title: z.string().max(200).optional(),
-        files: z.array(inlineFile).max(MAX_ARTEFACT_FILES),
+        files: z.array(z.union([inlineFile, uploadFile])).max(MAX_ARTEFACT_FILES),
         mode: z.enum(['merge', 'replace']),
         delete: z.array(path).max(MAX_ARTEFACT_FILES).optional(),
         expectedRevision: z.int().nonnegative().optional().describe('Use 0 to require a new slug'),
@@ -240,6 +261,19 @@ export async function handleMcp(
       false,
       (args) => {
         if (typeof args === 'object' && args !== null) checkPublishArrayLengths(args)
+      },
+    ),
+    tool(
+      'create_uploads',
+      'Prepare binary or large files for a publish. PUT each file to its single-use URL with its exact Content-Length, unless alreadyStored is true. Use the returned uploadId and path in publish. Do not share the capability URLs.',
+      z.strictObject({
+        slug: slug.max(64),
+        files: z.array(uploadRequest).min(1).max(config.maxBlobWritesPerCall),
+      }),
+      (input) => createUploads(runtime, member, input),
+      false,
+      (args) => {
+        if (typeof args === 'object' && args !== null) checkUploadCount(args, config.maxBlobWritesPerCall)
       },
     ),
     tool(
