@@ -150,7 +150,11 @@ function exceedsJsonBudget(text: string) {
   return values + Number(afterString) > 64_000
 }
 
-export async function handleMcp(request: Request, runtime: Runtime, member: Member): Promise<Response> {
+export async function handleMcp(
+  request: Request,
+  runtime: Runtime,
+  member: Member & { generation: number },
+): Promise<Response> {
   const { config } = runtime
   let parsedBody: unknown
   const accept = request.headers.get('accept')

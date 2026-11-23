@@ -10,7 +10,7 @@ setupStorage()
 setupOidc()
 const { DB: db, BLOBS: bucket } = env as typeof env & Pick<Env, 'DB' | 'BLOBS'>
 
-function mcpPost(send: Handle, token: string, body: string, protocolVersion = '2025-11-25') {
+function mcpPost(send: Handle, token: string, body: BodyInit, protocolVersion = '2025-11-25') {
   return send('/mcp', {
     method: 'POST',
     headers: {
@@ -820,6 +820,58 @@ it('refuses a demoted, removed, or reinstated issuer even with the original capa
   expect(await bucket.head(`blobs/${uploadHash}`)).toBeNull()
 })
 
+it('refuses to issue uploads if the credential generation changes while reading the MCP body', async () => {
+  const send = runtime()
+  const { id, owner, token } = await bot(send)
+  const reading = Promise.withResolvers<void>()
+  const resume = Promise.withResolvers<void>()
+  const body = new ReadableStream<Uint8Array>(
+    {
+      async pull(controller) {
+        reading.resolve()
+        await resume.promise
+        const params = {
+          name: 'create_uploads',
+          arguments: { slug: 'stale-credential', files: [textUpload] },
+        }
+        controller.enqueue(
+          new TextEncoder().encode(JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call', params })),
+        )
+        controller.close()
+      },
+    },
+    { highWaterMark: 0 },
+  )
+  const pending = mcpPost(send, token, body)
+  await Promise.race([
+    reading.promise,
+    pending.then(() => {
+      throw new Error('MCP completed before reading its body')
+    }),
+  ])
+  try {
+    const members = '/admin/members'
+    expect((await owner.post(members, { id, action: 'remove' })).status).toBe(303)
+    expect((await owner.post(members, { id, action: 'reinstate', role: 'publisher' })).status).toBe(303)
+  } finally {
+    resume.resolve()
+  }
+  const result = await (await pending).json<{ result: { isError: boolean; content: { text: string }[] } }>()
+  expect(result.result.isError).toBe(true)
+  expect(JSON.parse(result.result.content[0].text)).toMatchObject({ error: 'forbidden' })
+  const uploads = await db
+    .prepare('SELECT count(*) AS n FROM uploads WHERE member_id = ?')
+    .bind(id)
+    .first('n')
+  expect(uploads).toBe(0)
+  expect(
+    await db
+      .prepare("SELECT count(*) AS n FROM audit_log WHERE action = 'upload.issue' AND member_id = ?")
+      .bind(id)
+      .first('n'),
+  ).toBe(0)
+})
+
 it('audits each issued upload and successful store without revealing capabilities', async () => {
   const send = runtime()
   const { call, id } = await bot(send)
@@ -1082,23 +1134,33 @@ it('verifies each PUT body before reusing an orphaned R2 object without overwrit
   expect((await bucket.list({ prefix: 'upload-verification/' })).objects).toEqual([])
 })
 
-it('edits uploaded text without changing its declared media type', async () => {
-  const send = runtime()
-  const { call } = await bot(send)
-  const slug = 'uploaded-media-type'
-  const { path, url, uploadId } = await uploadUrl(call, slug, {
-    ...textUpload,
-    path: 'page.bin',
-    contentType: 'text/plain',
-  })
-  expect((await putUpload(send, url)).status).toBe(204)
-  const input = { slug, mode: 'replace', files: [{ path, uploadId }] }
-  expect(await call('publish', input)).toMatchObject({ revision: 1 })
-  expect(
-    await call('edit_file', { slug, path, oldText: 'hello', newText: 'world', expectedRevision: 1 }),
-  ).toMatchObject({ revision: 2 })
-  expect(await call('read_file', { slug, path })).toMatchObject({ text: 'world', type: 'text/plain' })
-})
+it.each(['; charset=iso-8859-1', ''])(
+  'serves edited UTF-8 text with a corrected or added charset (%s)',
+  async (charset) => {
+    const send = runtime()
+    const { call } = await bot(send)
+    const slug = 'uploaded-media-type'
+    const mediaType = 'text/plain; note="keep; charset=quoted"'
+    const { path, url, uploadId } = await uploadUrl(call, slug, {
+      ...textUpload,
+      path: 'page.bin',
+      contentType: mediaType + charset,
+    })
+    expect((await putUpload(send, url)).status).toBe(204)
+    const input = { slug, mode: 'replace', files: [{ path, uploadId }] }
+    expect(await call('publish', input)).toMatchObject({ revision: 1 })
+    expect(
+      await call('edit_file', { slug, path, oldText: 'hello', newText: 'café', expectedRevision: 1 }),
+    ).toMatchObject({ revision: 2 })
+    const type = `${mediaType}; charset=utf-8`
+    expect(await call('read_file', { slug, path })).toMatchObject({ text: 'café', type })
+    expect(await call('set_visibility', { slug, visibility: 'public' })).toEqual({ visibility: 'public' })
+    const response = await send(`${read}/a/${slug}/${path}`)
+    expect(response.status).toBe(200)
+    expect(response.headers.get('content-type')).toBe(type)
+    expect(await response.text()).toBe('café')
+  },
+)
 
 it.each(['text/html', 'Text/HTML ; charset="utf-8"; title="test; value"'])(
   'ranks %s by base media type in MCP and the public index',

@@ -17,19 +17,12 @@ export function checkUploadCount(args: { files?: unknown }, limit: number) {
 
 export async function createUploads(
   { env: { DB: db }, config }: Runtime,
-  member: Member,
+  member: Member & { generation: number },
   { slug, files }: { slug: string; files: UploadRequest[] },
 ) {
   checkMember(member, true)
   checkSlug(slug)
   checkUploadCount({ files }, config.maxBlobWritesPerCall)
-  const issuer = await db
-    .prepare(
-      "SELECT generation FROM members WHERE id = ? AND status = 'active' AND role IN ('publisher', 'admin')",
-    )
-    .bind(member.id)
-    .first<{ generation: number }>()
-  if (!issuer) throw new ArtefactError('forbidden', 'An active publisher or admin is required')
   const paths = new Set<string>()
   const hashes = new Set<string>()
   for (const file of files) {
@@ -83,18 +76,20 @@ export async function createUploads(
       db
         .prepare(`INSERT INTO uploads (token_hash, upload_id, member_id, slug, path, sha256, size,
         content_type, state, expires_at, created_at, member_generation)
-        SELECT value ->> 0, value ->> 1, ?, ?, value ->> 2, value ->> 3, value ->> 4,
-          value ->> 5, value ->> 6, value ->> 7, ?, ? FROM json_each(?)`)
-        .bind(member.id, slug, now, issuer.generation, chunk),
+        SELECT value ->> 0, value ->> 1, m.id, ?1, value ->> 2, value ->> 3, value ->> 4,
+          value ->> 5, value ->> 6, value ->> 7, ?2, m.generation FROM members m CROSS JOIN json_each(?3)
+        WHERE m.id = ?4 AND m.generation = ?5 AND m.status = 'active' AND m.role IN ('publisher', 'admin')`)
+        .bind(slug, now, chunk, member.id, member.generation),
       db
         .prepare(`INSERT INTO audit_log (id, at, member_id, action, detail_json)
         SELECT value ->> 8, ?1, ?2, 'upload.issue',
           json_object('slug', ?3, 'path', value ->> 2, 'sha256', value ->> 3, 'size', value ->> 4)
-        FROM json_each(?4)`)
+        FROM json_each(?4) WHERE changes() > 0`)
         .bind(now, member.id, slug, chunk),
     )
   }
-  await db.batch(statements)
+  const [issued] = await db.batch(statements)
+  if (!issued.meta.changes) throw new ArtefactError('forbidden', 'An active publisher or admin is required')
   return { files: receipts }
 }
 

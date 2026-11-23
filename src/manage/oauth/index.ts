@@ -24,7 +24,11 @@ const grant = z.object({
   generation: z.number().int().nonnegative(),
   grantId: z.string().optional(),
 })
-const apiToken = z.object({ memberId: z.uuid(), viaToken: z.literal(true) })
+const apiToken = z.object({
+  memberId: z.uuid(),
+  generation: z.int().nonnegative(),
+  viaToken: z.literal(true),
+})
 type Redemption = { grantId?: string; retryableGrantWriteFailed: boolean }
 type OAuthEnv = Env & { redemption?: Redemption }
 const providers = new WeakMap<Config, OAuthProvider<OAuthEnv>>()
@@ -99,19 +103,20 @@ export async function oauthFetch(
         if (!parsed.data.grantId) return { newProps: { ...parsed.data, grantId } }
       },
       async resolveExternalToken({ token, env: bindings }) {
-        const memberId = await useApiToken(bindings.DB, token, Date.now())
-        return memberId ? { props: { memberId, viaToken: true }, audience: resource } : null
+        const credential = await useApiToken(bindings.DB, token, Date.now())
+        return credential ? { props: { ...credential, viaToken: true }, audience: resource } : null
       },
       apiHandler: {
         async fetch(req, bindings, auth) {
           const external = apiToken.safeParse(auth.props)
           const oauth = grant.safeParse(auth.props)
+          const credential = external.success ? external.data : oauth.data
           const member = external.success
             ? await activeMember(bindings.DB, external.data.memberId)
             : oauth.success && oauth.data.grantId
               ? await oauthMember(bindings, oauth.data, oauth.data.grantId)
               : null
-          if (!member) {
+          if (!member || !credential) {
             const metadata = `${config.manageOrigin}/.well-known/oauth-protected-resource/mcp`
             return new Response(null, {
               status: 401,
@@ -122,7 +127,7 @@ export async function oauthFetch(
           }
           if (req.method === 'GET')
             return new Response(null, { status: 405, headers: { Allow: 'POST, DELETE' } })
-          return handleMcp(req, { config, env: bindings }, member)
+          return handleMcp(req, { config, env: bindings }, { ...member, generation: credential.generation })
         },
       },
       defaultHandler: {
