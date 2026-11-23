@@ -33,6 +33,8 @@ describe('Worker boundary', () => {
     ['duplicate providers', { AUTH_PROVIDERS: JSON.stringify([provider, provider]) }],
     ['missing provider secret', { AUTH_TEAM_CLIENT_SECRET: undefined }],
     ['invalid cookie key', { FORGE_COOKIE_KEY: 'short' }],
+    ['missing seal key', { FORGE_SEAL_KEY: undefined }],
+    ['invalid seal key', { FORGE_SEAL_KEY: 'short' }],
   ] as const)('fails closed with %s', async (_name, overrides) => {
     expect((await runtime(overrides)('/login')).status).toBe(503)
   })

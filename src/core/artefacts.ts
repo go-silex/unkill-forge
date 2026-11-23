@@ -2,7 +2,8 @@ import { base64url } from 'jose'
 import { z } from 'zod'
 import { MAX_ARTEFACT_FILES, type Runtime } from '../config'
 import { blobText, contentType, MAX_TEXT_BYTES, storeBlobs, textSlice } from './blobs'
-import type { Member } from './index'
+import { hashSecret, type Member } from './index'
+import { generateShareKey, sealShareKey, unsealShareKey, validShareKey } from './share-keys'
 
 type ErrorCode = 'not_found' | 'forbidden' | 'conflict' | 'invalid_input' | 'too_large'
 export class ArtefactError extends Error {
@@ -107,30 +108,81 @@ async function liveHead(db: D1Database, slug: string) {
   return artefact
 }
 
-function selectEntry(db: D1Database, id: string, revision: number) {
+type RevisionEntry = { path: string | null }
+
+function selectRevisionEntry(db: D1Database, id: string, revision: number) {
   return db
-    .prepare(`SELECT path FROM files WHERE artefact_id = ? AND revision = ? ORDER BY CASE
-    WHEN path = 'index.html' THEN 0
-    WHEN lower(trim(substr(content_type, 1, instr(content_type || ';', ';') - 1), char(32, 9))) = 'text/html'
-    THEN 1 ELSE 2 END, path LIMIT 1`)
+    .prepare('SELECT entry_path AS path FROM revisions WHERE artefact_id = ? AND number = ?')
     .bind(id, revision)
+}
+
+function computeRevisionEntry(db: D1Database, id: string, revision: number) {
+  return db
+    .prepare(`SELECT COALESCE(
+      (SELECT path FROM files WHERE artefact_id = ?1 AND revision = ?2 AND path = 'index.html'),
+      (SELECT path FROM files WHERE artefact_id = ?1 AND revision = ?2
+       ORDER BY (lower(trim(substr(content_type, 1, instr(content_type || ';', ';') - 1), char(9) || ' '))
+         = 'text/html') DESC, path LIMIT 1)
+    ) AS path`)
+    .bind(id, revision)
+}
+
+async function cacheRevisionEntries(
+  db: D1Database,
+  entries: (RevisionEntry & { id: string; revision: number })[],
+  ctx?: ExecutionContext,
+) {
+  const persist = async () => {
+    const updates = []
+    for (const { id, revision, path } of entries) {
+      if (path === null) continue
+      updates.push(
+        db
+          .prepare(
+            'UPDATE revisions SET entry_path = ? WHERE artefact_id = ? AND number = ? AND entry_path IS NULL',
+          )
+          .bind(path, id, revision),
+      )
+    }
+    if (updates.length > 0) await db.batch(updates)
+  }
+  const update = persist().catch(() => console.error('Forge revision entry cache write failed'))
+  if (ctx) ctx.waitUntil(update)
+  else await update
+}
+
+async function revisionEntry(db: D1Database, id: string, revision: number, ctx?: ExecutionContext) {
+  const cached = await selectRevisionEntry(db, id, revision).first<string>('path')
+  if (cached !== null) return cached
+  const path = await computeRevisionEntry(db, id, revision).first<string>('path')
+  if (path !== null) await cacheRevisionEntries(db, [{ id, revision, path }], ctx)
+  return path
 }
 
 function entryUrl(origin: string, slug: string, path: string) {
   const base = `${origin}/a/${slug}/`
-  return path === 'index.html' ? base : base + path.split('/').map(encodeURIComponent).join('/')
+  return path === 'index.html' ? base : base + encodeFilePath(path)
 }
 
-export async function publicArtefacts({ env: { DB: db }, config }: Runtime) {
+function encodeFilePath(path: string) {
+  return path.split('/').map(encodeURIComponent).join('/')
+}
+
+export async function publicArtefacts({ env: { DB: db }, config }: Runtime, ctx?: ExecutionContext) {
   const { results } = await db
-    .prepare(`SELECT a.slug, a.title, (
-      SELECT f.path FROM files f WHERE f.artefact_id = a.id AND f.revision = a.current_revision
-      ORDER BY CASE WHEN f.path = 'index.html' THEN 0
-        WHEN lower(trim(substr(f.content_type, 1, instr(f.content_type || ';', ';') - 1), char(32, 9))) = 'text/html'
-        THEN 1 ELSE 2 END, f.path LIMIT 1
-    ) AS path FROM artefacts a WHERE a.deleted_at IS NULL AND a.visibility = 'public'
-    ORDER BY a.created_at DESC, a.slug LIMIT 200`)
-    .all<{ slug: string; title: string; path: string | null }>()
+    .prepare(`SELECT a.id, a.slug, a.title, r.number AS revision, r.entry_path AS path
+      FROM artefacts a JOIN revisions r ON r.artefact_id = a.id AND r.number = a.current_revision
+      WHERE a.deleted_at IS NULL AND a.visibility = 'public'
+      ORDER BY a.created_at DESC, a.slug LIMIT 200`)
+    .all<RevisionEntry & { id: string; slug: string; title: string; revision: number }>()
+  const legacy = results.filter(({ path }) => path === null)
+  if (legacy.length > 0) {
+    const entries = await db.batch<RevisionEntry>(
+      legacy.map(({ id, revision }) => computeRevisionEntry(db, id, revision)),
+    )
+    for (const [index, row] of legacy.entries()) row.path = entries[index].results[0]?.path ?? null
+    await cacheRevisionEntries(db, legacy, ctx)
+  }
   return results.flatMap(({ slug, title, path }) =>
     path === null ? [] : [{ title, url: entryUrl(config.readOrigin, slug, path) }],
   )
@@ -174,7 +226,13 @@ export async function listArtefacts(
   }
 }
 
-export async function getArtefact(runtime: Runtime, member: Member, slug: string, cursor?: string) {
+export async function getArtefact(
+  runtime: Runtime,
+  member: Member,
+  slug: string,
+  cursor?: string,
+  ctx?: ExecutionContext,
+) {
   checkMember(member)
   const {
     env: { DB: db },
@@ -186,14 +244,15 @@ export async function getArtefact(runtime: Runtime, member: Member, slug: string
   if (after && after[0] !== id)
     throw new ArtefactError('invalid_input', 'Cursor belongs to a different artefact')
   if (after) checkRevision(after[1], revision)
-  const [page, entry] = await db.batch<Pick<File, 'path' | 'size' | 'type'>>([
+  const [page, path, shareLinks] = await Promise.all([
     db
       .prepare(`SELECT path, size, content_type AS type FROM files
-      WHERE artefact_id = ? AND revision = ? AND path > ? ORDER BY path LIMIT 201`)
-      .bind(id, revision, after?.[2] ?? ''),
-    selectEntry(db, id, revision),
+        WHERE artefact_id = ? AND revision = ? AND path > ? ORDER BY path LIMIT 201`)
+      .bind(id, revision, after?.[2] ?? '')
+      .all<Pick<File, 'path' | 'size' | 'type'>>(),
+    revisionEntry(db, id, revision, ctx),
+    shareLinkMetadata(db, id),
   ])
-  const path = entry.results[0]?.path
   if (!path) throw new Error('Artefact head has no entry file')
   const files = page.results
   const more = files.length > 200
@@ -201,7 +260,7 @@ export async function getArtefact(runtime: Runtime, member: Member, slug: string
   const nextCursor = more
     ? base64url.encode(JSON.stringify([id, revision, files[files.length - 1].path]))
     : undefined
-  return { ...artefact, files, url: entryUrl(config.readOrigin, slug, path), shareLinks: [], nextCursor }
+  return { ...artefact, files, url: entryUrl(config.readOrigin, slug, path), shareLinks, nextCursor }
 }
 
 async function findFile(db: D1Database, id: string, revision: number, path: string) {
@@ -217,7 +276,7 @@ async function findFile(db: D1Database, id: string, revision: number, path: stri
 
 type CanonicalRead =
   | { kind: 'serve'; file: File; public: boolean }
-  | { kind: 'not-found' | 'sign-in' | 'pending' | 'revalidate' }
+  | { kind: 'not-found' | 'sign-in' | 'pending' | 'revalidate' | 'slash' }
 
 export async function canonicalRead(
   { env: { DB: db } }: Runtime,
@@ -234,15 +293,66 @@ export async function canonicalRead(
     if (!current.fresh) return { kind: 'revalidate' }
     if (current.member.status !== 'active') return { kind: 'pending' }
   }
+  const resolved = await resolveReadFile(db, artefact.id, artefact.revision, path)
+  return resolved.kind === 'serve' ? { ...resolved, public: isPublic } : resolved
+}
+
+async function resolveReadFile(db: D1Database, artefactId: string, revision: number, path: string) {
   const directory = path === '' || path.endsWith('/')
   const index = directory ? `${path}index.html` : `${path}/index.html`
   const file = await db
     .prepare(`SELECT path, size, content_type AS type, sha256 FROM files
       WHERE artefact_id = ?1 AND revision = ?2 AND path IN (?3, ?4, ?5)
       ORDER BY CASE path WHEN ?3 THEN 0 WHEN ?4 THEN 1 ELSE 2 END LIMIT 1`)
-    .bind(artefact.id, artefact.revision, directory ? null : path, index, directory ? null : `${path}.html`)
+    .bind(artefactId, revision, directory ? null : path, index, directory ? null : `${path}.html`)
     .first<File>()
-  return file ? { kind: 'serve', public: isPublic, file } : { kind: 'not-found' }
+  if (!file) return { kind: 'not-found' } as const
+  if (!directory && file.path === index) return { kind: 'slash' } as const
+  return { kind: 'serve', file } as const
+}
+
+const shareUseInterval = 60_000
+
+export async function shareRead(
+  { env: { DB: db } }: Runtime,
+  slug: string,
+  key: string,
+  path: string | undefined,
+  ctx: ExecutionContext,
+) {
+  const link = await db
+    .prepare(`SELECT s.id, s.artefact_id AS artefactId, s.last_used_at AS lastUsedAt,
+      a.current_revision AS revision FROM share_links s JOIN artefacts a ON a.id = s.artefact_id
+      WHERE s.key_hash = ? AND a.slug = ? AND s.revoked_at IS NULL AND a.deleted_at IS NULL`)
+    .bind(await hashSecret(key), slug)
+    .first<{ id: string; artefactId: string; lastUsedAt: number | null; revision: number }>()
+  if (!link) return { kind: 'not-found' } as const
+  if (path === undefined) return { kind: 'slash' } as const
+  const resolved = await resolveReadFile(db, link.artefactId, link.revision, path)
+  if (resolved.kind === 'not-found' && path === '') {
+    const entry = await revisionEntry(db, link.artefactId, link.revision, ctx)
+    if (entry !== null) return { kind: 'entry', path: encodeFilePath(entry) } as const
+  }
+  if (resolved.kind !== 'serve') return resolved
+  const now = Date.now()
+  const cutoff = now - shareUseInterval
+  if (link.lastUsedAt === null || link.lastUsedAt <= cutoff) {
+    ctx.waitUntil(
+      recordShareUse(db, link.id, now, cutoff).catch(() =>
+        console.error('Forge share usage tracking failed'),
+      ),
+    )
+  }
+  return resolved
+}
+
+async function recordShareUse(db: D1Database, id: string, now: number, cutoff: number) {
+  // Recheck the cutoff in D1 so parallel subresources cannot each write.
+  await db
+    .prepare(`UPDATE share_links SET last_used_at = ? WHERE id = ? AND revoked_at IS NULL
+      AND (last_used_at IS NULL OR last_used_at <= ?)`)
+    .bind(now, id, cutoff)
+    .run()
 }
 
 export async function readFile(
@@ -306,7 +416,7 @@ function inlineBytes(file: InlineFile, remaining: number, limit: number): Uint8A
   return bytes
 }
 
-export async function publish(runtime: Runtime, member: Member, input: Publish) {
+export async function publish(runtime: Runtime, member: Member, input: Publish, ctx?: ExecutionContext) {
   checkMember(member, true)
   const {
     env: { DB: db, BLOBS: blobs },
@@ -448,11 +558,11 @@ export async function publish(runtime: Runtime, member: Member, input: Publish) 
         updated_at = MAX(?, updated_at) WHERE id = ?`)
         .bind(revision, input.title ?? null, now, id),
       audit(db, now, member, id, 'artefact.publish', { revision, mode: input.mode }),
-      selectEntry(db, id, revision),
+      computeRevisionEntry(db, id, revision),
     )
-    let entry: D1Result<Pick<File, 'path'>> | undefined
+    let entry: D1Result<RevisionEntry> | undefined
     try {
-      entry = (await db.batch<Pick<File, 'path'>>(statements)).at(-1)
+      entry = (await db.batch<RevisionEntry>(statements)).at(-1)
     } catch (error) {
       const diagnostic = error instanceof Error ? `${error.message} ${error.cause}` : ''
       if (uploaded.length > 0 && /NOT NULL constraint failed: files\.sha256\b/.test(diagnostic)) {
@@ -473,6 +583,7 @@ export async function publish(runtime: Runtime, member: Member, input: Publish) 
     }
     const path = entry?.results[0]?.path
     if (!path) throw new Error('Published revision has no entry file')
+    await cacheRevisionEntries(db, [{ id, revision, path }], ctx)
     return { url: entryUrl(config.readOrigin, input.slug, path), revision }
   }
 }
@@ -488,6 +599,7 @@ export async function editFile(
     expectedRevision: number
     replaceAll?: boolean
   },
+  ctx?: ExecutionContext,
 ) {
   checkMember(member, true)
   checkPath(input.path)
@@ -551,12 +663,17 @@ export async function editFile(
     return '; charset=utf-8'
   })
   if (!hasCharset) type += '; charset=utf-8'
-  return publish(runtime, member, {
-    slug: input.slug,
-    files: [{ path: input.path, content: parts.join(''), type }],
-    mode: 'merge',
-    expectedRevision: input.expectedRevision,
-  })
+  return publish(
+    runtime,
+    member,
+    {
+      slug: input.slug,
+      files: [{ path: input.path, content: parts.join(''), type }],
+      mode: 'merge',
+      expectedRevision: input.expectedRevision,
+    },
+    ctx,
+  )
 }
 
 export async function setVisibility(
@@ -578,4 +695,98 @@ export async function setVisibility(
   ])
   if (result.meta.changes !== 1) throw new ArtefactError('not_found', 'Artefact not found')
   return { visibility }
+}
+
+const maxActiveShareLinks = 100
+
+async function shareLinkMetadata(db: D1Database, artefactId: string) {
+  const { results } = await db
+    .prepare(`SELECT id, label, created_at AS createdAt, last_used_at AS lastUsedAt FROM share_links
+      WHERE artefact_id = ? AND revoked_at IS NULL ORDER BY created_at DESC, id LIMIT ?`)
+    .bind(artefactId, maxActiveShareLinks)
+    .all<{ id: string; label: string | null; createdAt: number; lastUsedAt: number | null }>()
+  return results
+}
+
+function shareUrl(origin: string, slug: string, key: string) {
+  return `${origin}/s/${slug}/${key}/`
+}
+
+export async function createShareLink(
+  { env: { DB: db }, config }: Runtime,
+  member: Member,
+  { slug, label, key: suppliedKey }: { slug: string; label?: string; key?: unknown },
+) {
+  checkMember(member, true)
+  if (suppliedKey !== undefined && member.role !== 'admin') {
+    throw new ArtefactError('forbidden', 'Only an admin can supply a share key')
+  }
+  if (suppliedKey !== undefined && (typeof suppliedKey !== 'string' || !validShareKey(suppliedKey))) {
+    throw new ArtefactError('invalid_input', 'Share keys must contain 16–128 URL-safe characters')
+  }
+  const artefact = await liveHead(db, slug)
+  const key = suppliedKey ?? generateShareKey()
+  const id = crypto.randomUUID()
+  const now = Date.now()
+  const [keyHash, sealed] = await Promise.all([
+    hashSecret(key),
+    sealShareKey(config.sealKey, id, artefact.id, key),
+  ])
+  const [insert] = await db.batch([
+    db
+      .prepare(`INSERT INTO share_links (id, artefact_id, label, key_hash, key_sealed, created_by, created_at)
+        SELECT ?, id, ?, ?, ?, ?, ? FROM artefacts WHERE id = ? AND deleted_at IS NULL
+          AND NOT EXISTS (
+            SELECT 1 FROM share_links WHERE artefact_id = artefacts.id AND revoked_at IS NULL LIMIT 1 OFFSET ?
+          )
+        ON CONFLICT(key_hash) DO NOTHING`)
+      .bind(id, label ?? null, keyHash, sealed, member.id, now, artefact.id, maxActiveShareLinks - 1),
+    audit(db, now, member, artefact.id, 'share.create', { id }),
+  ])
+  if (insert.meta.changes !== 1) {
+    const current = await liveHead(db, slug)
+    if (current.id !== artefact.id) throw new ArtefactError('not_found', 'Artefact not found')
+    const keyExists = await db.prepare('SELECT id FROM share_links WHERE key_hash = ?').bind(keyHash).first()
+    if (keyExists) throw new ArtefactError('conflict', 'Share key is unavailable')
+    throw tooLarge('Active share link count', maxActiveShareLinks)
+  }
+  return { id, url: shareUrl(config.readOrigin, slug, key) }
+}
+
+export async function listShareLinks({ env: { DB: db } }: Runtime, member: Member, slug: string) {
+  checkMember(member, true)
+  const { id } = await liveHead(db, slug)
+  return { shareLinks: await shareLinkMetadata(db, id) }
+}
+
+export async function getShareLink({ env: { DB: db }, config }: Runtime, member: Member, id: string) {
+  checkMember(member, true)
+  const link = await db
+    .prepare(`SELECT s.artefact_id AS artefactId, s.key_sealed AS sealed, a.slug
+      FROM share_links s JOIN artefacts a ON a.id = s.artefact_id
+      WHERE s.id = ? AND s.revoked_at IS NULL AND a.deleted_at IS NULL`)
+    .bind(id)
+    .first<{ artefactId: string; sealed: string; slug: string }>()
+  if (!link) throw new ArtefactError('not_found', 'Share link not found')
+  const key = await unsealShareKey(config.sealKey, id, link.artefactId, link.sealed)
+  return { url: shareUrl(config.readOrigin, link.slug, key) }
+}
+
+export async function revokeShareLink({ env: { DB: db } }: Runtime, member: Member, id: string) {
+  checkMember(member, true)
+  const artefactId = await db
+    .prepare('SELECT artefact_id FROM share_links WHERE id = ? AND revoked_at IS NULL')
+    .bind(id)
+    .first<string>('artefact_id')
+  if (artefactId === null) throw new ArtefactError('not_found', 'Share link not found')
+  const now = Date.now()
+  const [update] = await db.batch([
+    db
+      .prepare(`UPDATE share_links SET revoked_at = ? WHERE id = ? AND revoked_at IS NULL
+        AND EXISTS (SELECT 1 FROM artefacts WHERE id = ? AND deleted_at IS NULL)`)
+      .bind(now, id, artefactId),
+    audit(db, now, member, artefactId, 'share.revoke', { id }),
+  ])
+  if (update.meta.changes !== 1) throw new ArtefactError('not_found', 'Share link not found')
+  return {}
 }

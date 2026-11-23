@@ -18,13 +18,18 @@ import type { Member } from '../../core'
 import {
   ArtefactError,
   checkPublishArrayLengths,
+  createShareLink,
   editFile,
   getArtefact,
+  getShareLink,
   listArtefacts,
+  listShareLinks,
   publish,
   readFile,
+  revokeShareLink,
   setVisibility,
 } from '../../core/artefacts'
+import { shareKeyMax, shareKeyMin } from '../../core/share-keys'
 import { checkUploadCount, createUploads } from '../../core/uploads'
 
 function result(value: Record<string, unknown>, isError = false) {
@@ -154,6 +159,7 @@ export async function handleMcp(
   request: Request,
   runtime: Runtime,
   member: Member & { generation: number },
+  ctx: ExecutionContext,
 ): Promise<Response> {
   const { config } = runtime
   let parsedBody: unknown
@@ -223,7 +229,7 @@ export async function handleMcp(
       'get_artefact',
       'Inspect the current revision, visibility, files and entry URL without changing them. Tell the user the URL and visibility; keep the revision for conditional writes.',
       z.strictObject({ slug, cursor }),
-      (input) => getArtefact(runtime, member, input.slug, input.cursor),
+      (input) => getArtefact(runtime, member, input.slug, input.cursor, ctx),
       true,
     ),
     tool(
@@ -251,7 +257,7 @@ export async function handleMcp(
         expectedRevision: z.int().nonnegative().optional().describe('Use 0 to require a new slug'),
         message: z.string().max(1_000).optional(),
       }),
-      (input) => publish(runtime, member, input),
+      (input) => publish(runtime, member, input, ctx),
       false,
       (args) => {
         if (typeof args === 'object' && args !== null) checkPublishArrayLengths(args)
@@ -281,13 +287,49 @@ export async function handleMcp(
         expectedRevision: revision,
         replaceAll: z.boolean().optional(),
       }),
-      (input) => editFile(runtime, member, input),
+      (input) => editFile(runtime, member, input, ctx),
     ),
     tool(
       'set_visibility',
       'Change who can read the canonical artefact URL without publishing a new revision. Public means anyone; private means members. Tell the user the resulting visibility.',
       z.strictObject({ slug, visibility: z.enum(['private', 'public']) }),
       (input) => setVisibility(runtime, member, input.slug, input.visibility),
+    ),
+    tool(
+      'create_share_link',
+      'Create a bearer URL that anyone can use until revoked, even for a private artefact. Share the URL only with its intended recipients. Only admins may supply their own key.',
+      z.strictObject({
+        slug: slug.max(64),
+        label: z.string().max(200).optional(),
+        // Core checks permission before validating even a malformed supplied key.
+        key: z.unknown().optional().meta({
+          type: 'string',
+          minLength: shareKeyMin,
+          maxLength: shareKeyMax,
+          pattern: '^[A-Za-z0-9_-]+$',
+        }),
+      }),
+      (input) => createShareLink(runtime, member, input),
+    ),
+    tool(
+      'list_share_links',
+      'List active share link IDs, labels and timestamps without revealing bearer keys. Use an ID to copy or revoke a link.',
+      z.strictObject({ slug: slug.max(64) }),
+      (input) => listShareLinks(runtime, member, input.slug),
+      true,
+    ),
+    tool(
+      'get_share_link',
+      'Reveal the full bearer URL of an active share link by ID so an intended recipient can use it.',
+      z.strictObject({ id: z.uuid() }),
+      (input) => getShareLink(runtime, member, input.id),
+      true,
+    ),
+    tool(
+      'revoke_share_link',
+      'Disable a share link by ID without changing access at the canonical artefact URL.',
+      z.strictObject({ id: z.uuid() }),
+      (input) => revokeShareLink(runtime, member, input.id),
     ),
   ]
   server.setRequestHandler(ListToolsRequestSchema, () => ({ tools: tools.map((tool) => tool.definition) }))

@@ -87,6 +87,7 @@ const vars = z
       .default('false')
       .transform((value) => value === 'true'),
     FORGE_COOKIE_KEY: z.string().min(32),
+    FORGE_SEAL_KEY: z.string().min(32),
     MAX_FILES_PER_ARTEFACT: positiveInt.pipe(z.int().max(MAX_ARTEFACT_FILES)).default(1_000),
     MAX_BLOB_WRITES_PER_CALL: positiveInt.pipe(z.int().max(900)).default(500),
     MAX_INLINE_BYTES: positiveInt.pipe(z.int().max(8 * 1024 * 1024)).default(2_097_152),
@@ -121,6 +122,7 @@ export type Config = {
   adminEmails: string[]
   providers: Provider[]
   cookieKey: string
+  sealKey: string
   mcpAllowedOrigins: string[]
   allowDcr: boolean
   publicIndex: boolean
@@ -166,6 +168,7 @@ export function configuration(env: Env): Config | null {
         adminEmails: value.ADMIN_EMAILS,
         providers,
         cookieKey: value.FORGE_COOKIE_KEY,
+        sealKey: value.FORGE_SEAL_KEY,
         mcpAllowedOrigins: value.MCP_ALLOWED_ORIGINS,
         allowDcr: value.ALLOW_DCR,
         publicIndex: value.PUBLIC_INDEX,
