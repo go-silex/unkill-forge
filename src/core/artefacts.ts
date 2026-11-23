@@ -116,27 +116,47 @@ function selectRevisionEntry(db: D1Database, id: string, revision: number) {
     .bind(id, revision)
 }
 
-function storeRevisionEntry(db: D1Database, id: string, revision: number) {
+function computeRevisionEntry(db: D1Database, id: string, revision: number) {
   return db
-    .prepare(`UPDATE revisions SET entry_path = COALESCE(
+    .prepare(`SELECT COALESCE(
       (SELECT path FROM files WHERE artefact_id = ?1 AND revision = ?2 AND path = 'index.html'),
       (SELECT path FROM files WHERE artefact_id = ?1 AND revision = ?2
        ORDER BY (lower(trim(substr(content_type, 1, instr(content_type || ';', ';') - 1), char(9) || ' '))
          = 'text/html') DESC, path LIMIT 1)
-    ) WHERE artefact_id = ?1 AND number = ?2 AND entry_path IS NULL RETURNING entry_path AS path`)
+    ) AS path`)
     .bind(id, revision)
 }
 
-function backfillEntry(db: D1Database, id: string, revision: number) {
-  // The conditional write and following point read also handle concurrent backfills.
-  return [storeRevisionEntry(db, id, revision), selectRevisionEntry(db, id, revision)]
+async function cacheRevisionEntries(
+  db: D1Database,
+  entries: (RevisionEntry & { id: string; revision: number })[],
+  ctx?: ExecutionContext,
+) {
+  const persist = async () => {
+    const updates = []
+    for (const { id, revision, path } of entries) {
+      if (path === null) continue
+      updates.push(
+        db
+          .prepare(
+            'UPDATE revisions SET entry_path = ? WHERE artefact_id = ? AND number = ? AND entry_path IS NULL',
+          )
+          .bind(path, id, revision),
+      )
+    }
+    if (updates.length > 0) await db.batch(updates)
+  }
+  const update = persist().catch(() => console.error('Forge revision entry cache write failed'))
+  if (ctx) ctx.waitUntil(update)
+  else await update
 }
 
-async function revisionEntry(db: D1Database, id: string, revision: number) {
+async function revisionEntry(db: D1Database, id: string, revision: number, ctx?: ExecutionContext) {
   const cached = await selectRevisionEntry(db, id, revision).first<string>('path')
   if (cached !== null) return cached
-  const [, entry] = await db.batch<RevisionEntry>(backfillEntry(db, id, revision))
-  return entry.results[0]?.path ?? null
+  const path = await computeRevisionEntry(db, id, revision).first<string>('path')
+  if (path !== null) await cacheRevisionEntries(db, [{ id, revision, path }], ctx)
+  return path
 }
 
 function entryUrl(origin: string, slug: string, path: string) {
@@ -148,7 +168,7 @@ function encodeFilePath(path: string) {
   return path.split('/').map(encodeURIComponent).join('/')
 }
 
-export async function publicArtefacts({ env: { DB: db }, config }: Runtime) {
+export async function publicArtefacts({ env: { DB: db }, config }: Runtime, ctx?: ExecutionContext) {
   const { results } = await db
     .prepare(`SELECT a.id, a.slug, a.title, r.number AS revision, r.entry_path AS path
       FROM artefacts a JOIN revisions r ON r.artefact_id = a.id AND r.number = a.current_revision
@@ -157,10 +177,11 @@ export async function publicArtefacts({ env: { DB: db }, config }: Runtime) {
     .all<RevisionEntry & { id: string; slug: string; title: string; revision: number }>()
   const legacy = results.filter(({ path }) => path === null)
   if (legacy.length > 0) {
-    const filled = await db.batch<RevisionEntry>(
-      legacy.flatMap(({ id, revision }) => backfillEntry(db, id, revision)),
+    const entries = await db.batch<RevisionEntry>(
+      legacy.map(({ id, revision }) => computeRevisionEntry(db, id, revision)),
     )
-    for (const [index, row] of legacy.entries()) row.path = filled[index * 2 + 1].results[0]?.path ?? null
+    for (const [index, row] of legacy.entries()) row.path = entries[index].results[0]?.path ?? null
+    await cacheRevisionEntries(db, legacy, ctx)
   }
   return results.flatMap(({ slug, title, path }) =>
     path === null ? [] : [{ title, url: entryUrl(config.readOrigin, slug, path) }],
@@ -205,7 +226,13 @@ export async function listArtefacts(
   }
 }
 
-export async function getArtefact(runtime: Runtime, member: Member, slug: string, cursor?: string) {
+export async function getArtefact(
+  runtime: Runtime,
+  member: Member,
+  slug: string,
+  cursor?: string,
+  ctx?: ExecutionContext,
+) {
   checkMember(member)
   const {
     env: { DB: db },
@@ -223,7 +250,7 @@ export async function getArtefact(runtime: Runtime, member: Member, slug: string
         WHERE artefact_id = ? AND revision = ? AND path > ? ORDER BY path LIMIT 201`)
       .bind(id, revision, after?.[2] ?? '')
       .all<Pick<File, 'path' | 'size' | 'type'>>(),
-    revisionEntry(db, id, revision),
+    revisionEntry(db, id, revision, ctx),
     shareLinkMetadata(db, id),
   ])
   if (!path) throw new Error('Artefact head has no entry file')
@@ -303,7 +330,7 @@ export async function shareRead(
   if (path === undefined) return { kind: 'slash' } as const
   const resolved = await resolveReadFile(db, link.artefactId, link.revision, path)
   if (resolved.kind === 'not-found' && path === '') {
-    const entry = await revisionEntry(db, link.artefactId, link.revision)
+    const entry = await revisionEntry(db, link.artefactId, link.revision, ctx)
     if (entry !== null) return { kind: 'entry', path: encodeFilePath(entry) } as const
   }
   if (resolved.kind !== 'serve') return resolved
@@ -389,7 +416,7 @@ function inlineBytes(file: InlineFile, remaining: number, limit: number): Uint8A
   return bytes
 }
 
-export async function publish(runtime: Runtime, member: Member, input: Publish) {
+export async function publish(runtime: Runtime, member: Member, input: Publish, ctx?: ExecutionContext) {
   checkMember(member, true)
   const {
     env: { DB: db, BLOBS: blobs },
@@ -507,7 +534,7 @@ export async function publish(runtime: Runtime, member: Member, input: Publish) 
         updated_at = MAX(?, updated_at) WHERE id = ?`)
         .bind(revision, input.title ?? null, now, id),
       audit(db, now, member, id, 'artefact.publish', { revision, mode: input.mode }),
-      storeRevisionEntry(db, id, revision),
+      computeRevisionEntry(db, id, revision),
     )
     let entry: D1Result<RevisionEntry> | undefined
     try {
@@ -529,6 +556,7 @@ export async function publish(runtime: Runtime, member: Member, input: Publish) 
     }
     const path = entry?.results[0]?.path
     if (!path) throw new Error('Published revision has no entry file')
+    await cacheRevisionEntries(db, [{ id, revision, path }], ctx)
     return { url: entryUrl(config.readOrigin, input.slug, path), revision }
   }
 }
@@ -544,6 +572,7 @@ export async function editFile(
     expectedRevision: number
     replaceAll?: boolean
   },
+  ctx?: ExecutionContext,
 ) {
   checkMember(member, true)
   checkPath(input.path)
@@ -598,12 +627,17 @@ export async function editFile(
     previous = at + input.oldText.length
   }
   if (previous < text.length) parts.push(text.slice(previous))
-  return publish(runtime, member, {
-    slug: input.slug,
-    files: [{ path: input.path, content: parts.join('') }],
-    mode: 'merge',
-    expectedRevision: input.expectedRevision,
-  })
+  return publish(
+    runtime,
+    member,
+    {
+      slug: input.slug,
+      files: [{ path: input.path, content: parts.join('') }],
+      mode: 'merge',
+      expectedRevision: input.expectedRevision,
+    },
+    ctx,
+  )
 }
 
 export async function setVisibility(

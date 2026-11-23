@@ -134,7 +134,12 @@ function exceedsJsonBudget(text: string) {
   return values + Number(afterString) > 64_000
 }
 
-export async function handleMcp(request: Request, runtime: Runtime, member: Member): Promise<Response> {
+export async function handleMcp(
+  request: Request,
+  runtime: Runtime,
+  member: Member,
+  ctx: ExecutionContext,
+): Promise<Response> {
   const { config } = runtime
   let parsedBody: unknown
   const accept = request.headers.get('accept')
@@ -203,7 +208,7 @@ export async function handleMcp(request: Request, runtime: Runtime, member: Memb
       'get_artefact',
       'Inspect the current revision, visibility, files and entry URL without changing them. Tell the user the URL and visibility; keep the revision for conditional writes.',
       z.strictObject({ slug, cursor }),
-      (input) => getArtefact(runtime, member, input.slug, input.cursor),
+      (input) => getArtefact(runtime, member, input.slug, input.cursor, ctx),
       true,
     ),
     tool(
@@ -231,7 +236,7 @@ export async function handleMcp(request: Request, runtime: Runtime, member: Memb
         expectedRevision: z.int().nonnegative().optional().describe('Use 0 to require a new slug'),
         message: z.string().max(1_000).optional(),
       }),
-      (input) => publish(runtime, member, input),
+      (input) => publish(runtime, member, input, ctx),
       false,
       (args) => {
         if (typeof args === 'object' && args !== null) checkPublishArrayLengths(args)
@@ -248,7 +253,7 @@ export async function handleMcp(request: Request, runtime: Runtime, member: Memb
         expectedRevision: revision,
         replaceAll: z.boolean().optional(),
       }),
-      (input) => editFile(runtime, member, input),
+      (input) => editFile(runtime, member, input, ctx),
     ),
     tool(
       'set_visibility',

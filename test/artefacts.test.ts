@@ -913,6 +913,45 @@ it('backfills a legacy entry once and preserves base media type precedence on pu
   expect(await (await send(read)).text()).toContain(`href="${read}/a/${slug}/y.data"`)
 })
 
+it('keeps legacy redirects, public listings and publishing available when entry caching fails', async () => {
+  const send = runtime({ PUBLIC_INDEX: 'true' })
+  const { call } = await bot(send)
+  const slug = 'legacy-cache-failure'
+  await call('publish', { slug, mode: 'replace', files: [file('legacy/page.html')] })
+  await call('set_visibility', { slug, visibility: 'public' })
+  const { url } = await call('create_share_link', { slug })
+  const id = await db.prepare('SELECT id FROM artefacts WHERE slug = ?').bind(slug).first<string>('id')
+  if (!id) throw new Error('Expected a published artefact')
+  await db.batch([
+    db.prepare('UPDATE revisions SET entry_path = NULL WHERE artefact_id = ?').bind(id),
+    db.prepare(`CREATE TRIGGER test_fail_entry_cache BEFORE UPDATE OF entry_path ON revisions
+      BEGIN SELECT RAISE(ABORT, 'test entry cache failure'); END`),
+  ])
+
+  const canonical = `${read}/a/${slug}/legacy/page.html`
+  const opened = await send(url)
+  expect(opened.status).toBe(302)
+  expect(new URL(opened.headers.get('location') ?? '', url).href).toBe(`${url}legacy/page.html`)
+  const index = await send(read)
+  expect(index.status).toBe(200)
+  expect(await index.text()).toContain(`href="${canonical}"`)
+  expect(await call('get_artefact', { slug })).toMatchObject({ revision: 1, url: canonical })
+
+  const next = 'current/page.html'
+  expect(await call('publish', { slug, mode: 'replace', files: [file(next, 'Current')] })).toEqual({
+    revision: 2,
+    url: `${read}/a/${slug}/${next}`,
+  })
+  const reopened = await send(url)
+  expect(reopened.status).toBe(302)
+  expect(new URL(reopened.headers.get('location') ?? '', url).href).toBe(`${url}${next}`)
+  const { results } = await db
+    .prepare('SELECT entry_path AS path FROM revisions WHERE artefact_id = ? ORDER BY number')
+    .bind(id)
+    .all()
+  expect(results).toEqual([{ path: null }, { path: null }])
+})
+
 it('redirects authorized directory indexes without a slash so relative assets load on both routes', async () => {
   const send = runtime()
   const { call } = await bot(send)

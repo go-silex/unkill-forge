@@ -164,7 +164,7 @@ export async function read(
     }
     if (url.pathname === '/') {
       const { name, publicIndex } = runtime.config
-      const entries = publicIndex ? await publicArtefacts(runtime) : null
+      const entries = publicIndex ? await publicArtefacts(runtime, ctx) : null
       return page(
         name,
         <>
