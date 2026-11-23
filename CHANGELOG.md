@@ -1,5 +1,9 @@
 # Changelog
 
+## 2.0.1 — unreleased
+
+- Use a verified email or the account subject as the OIDC revalidation hint, and retry once interactively when the provider requires it.
+
 ## v2.0.0 — 2026-11-23
 
 - Self-host one Forge instance on Cloudflare Workers with D1, a private R2 bucket, KV and separate read and manage hosts.

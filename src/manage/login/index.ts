@@ -24,6 +24,7 @@ import {
   githubIdentity,
   type Identity,
   IdentityDenied,
+  InteractionRequired,
   InvalidProviderResponse,
   oidcIdentity,
   ProviderUnavailable,
@@ -92,7 +93,7 @@ async function start(
   runtime: Runtime,
   provider: Provider,
   path: string,
-  sessionHash: string | null,
+  session: { idHash: string; loginHint: string; startedAt?: number } | null,
   inviteContext: string | null = null,
 ): Promise<Response> {
   const now = Date.now()
@@ -115,7 +116,11 @@ async function start(
   params.set('code_challenge_method', 'S256')
   params.set('code_challenge', await calculatePKCECodeChallenge(verifier))
   if (provider.type === 'oidc') params.set('nonce', await flowNonce(state))
-  if (sessionHash !== null) params.set('prompt', 'none')
+  if (session !== null) {
+    params.set('login_hint', session.loginHint)
+    if (session.startedAt === undefined) params.set('prompt', 'none')
+    else params.delete('prompt')
+  }
 
   const [stateHash, browserHash] = await Promise.all([hashSecret(state), hashSecret(browser)])
   await putFlow(runtime.env.DB, {
@@ -123,8 +128,9 @@ async function start(
     browserHash,
     provider: provider.id,
     returnPath: path,
-    sessionHash,
-    createdAt: now,
+    sessionHash: session?.idHash ?? null,
+    retryLoginHint: session?.startedAt === undefined ? (session?.loginHint ?? null) : null,
+    createdAt: session?.startedAt ?? now,
     expiresAt: now + flowSeconds * 1_000,
     inviteHash:
       inviteContext === null || inviteBrowser === null
@@ -179,6 +185,14 @@ async function callback(
         ? await oidcIdentity(provider, exchange, await flowNonce(state), previous?.subject)
         : await githubIdentity(provider, exchange)
   } catch (error) {
+    if (error instanceof InteractionRequired && previous && flow.retryLoginHint !== null) {
+      return start(req, runtime, provider, flow.returnPath, {
+        idHash: previous.idHash,
+        loginHint: flow.retryLoginHint,
+        // Revocations during the silent attempt still apply to the retry.
+        startedAt: flow.createdAt,
+      })
+    }
     if (
       error instanceof IdentityDenied ||
       error instanceof SessionDenied ||
@@ -368,7 +382,7 @@ export async function requireBrowserSession(
     return respond(401, text.revalidationRequired)
   }
   try {
-    return await start(req, runtime, provider, path, current.idHash)
+    return await start(req, runtime, provider, path, current)
   } catch (error) {
     if (error instanceof ProviderUnavailable) return respond(503, text.providerUnavailable)
     throw error
