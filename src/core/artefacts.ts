@@ -2,7 +2,8 @@ import { base64url } from 'jose'
 import { z } from 'zod'
 import { MAX_ARTEFACT_FILES, type Runtime } from '../config'
 import { blobText, contentType, MAX_TEXT_BYTES, storeBlobs, textSlice } from './blobs'
-import { hashSecret, type Member } from './index'
+import { auditChange, hashSecret, type Member } from './index'
+import { trimLookahead } from './pagination'
 import { redirectPrefix } from './read-path'
 import { generateShareKey, sealShareKey, unsealShareKey, validShareKey } from './share-keys'
 
@@ -204,13 +205,6 @@ export async function publicArtefacts({ env: { DB: db }, config }: Runtime, ctx?
   )
 }
 
-function audit(db: D1Database, at: number, member: Member, id: string, action: string, detail: object) {
-  return db
-    .prepare(`INSERT INTO audit_log (id, at, member_id, action, artefact_id, detail_json)
-    SELECT ?, ?, ?, ?, ?, ? WHERE changes() = 1`)
-    .bind(crypto.randomUUID(), at, member.id, action, id, JSON.stringify(detail))
-}
-
 export async function listArtefacts(
   { env: { DB: db } }: Runtime,
   member: Member,
@@ -233,12 +227,10 @@ export async function listArtefacts(
     ORDER BY updated_at DESC, id LIMIT 51`)
     .bind(pattern, after?.[0] ?? null, after?.[1] ?? null, query)
     .all<Pick<Artefact, 'id' | 'slug' | 'title' | 'visibility' | 'revision' | 'updatedAt'>>()
-  const more = results.length > 50
-  if (more) results.pop()
-  const last = results.at(-1)
+  const last = trimLookahead(results, 50)
   return {
     artefacts: results.map(({ id: _id, ...row }) => row),
-    nextCursor: more && last ? base64url.encode(JSON.stringify([last.updatedAt, last.id, query])) : undefined,
+    nextCursor: last ? base64url.encode(JSON.stringify([last.updatedAt, last.id, query])) : undefined,
   }
 }
 
@@ -282,11 +274,8 @@ export async function getArtefactDetails(
   ])
   if (!path) throw new Error('Artefact head has no entry file')
   const files = page.results
-  const more = files.length > 200
-  if (more) files.pop()
-  const nextCursor = more
-    ? base64url.encode(JSON.stringify([id, revision, files[files.length - 1].path]))
-    : undefined
+  const last = trimLookahead(files, 200)
+  const nextCursor = last ? base64url.encode(JSON.stringify([id, revision, last.path])) : undefined
   return { id, ...artefact, files, url: entryUrl(config.readOrigin, slug, path), shareLinks, nextCursor }
 }
 
@@ -599,7 +588,7 @@ async function commitRevision(
       .prepare(`UPDATE artefacts SET current_revision = ?, title = COALESCE(?, title),
         updated_at = MAX(?, updated_at) WHERE id = ?`)
       .bind(revision, title ?? null, now, id),
-    audit(db, now, member, id, action, { revision, ...detail }),
+    auditChange(db, now, member.id, action, { revision, ...detail }, id),
     db
       .prepare(`DELETE FROM revisions WHERE artefact_id = ?1 AND number IN (
         SELECT number FROM revisions WHERE artefact_id = ?1 AND number <= ?2 ORDER BY number LIMIT 2
@@ -625,10 +614,10 @@ export async function listRevisions(
   member: Member,
   slug: string,
   cursor?: string,
-  forManagement?: { expectedId: string },
+  expectedId?: string,
 ) {
   checkMember(member)
-  const artefact = await liveHead(db, slug, forManagement?.expectedId)
+  const artefact = await liveHead(db, slug, expectedId)
   const after = cursor === undefined ? null : decodeCursor(cursor, revisionCursor)
   if (after && after[0] !== artefact.id)
     throw new ArtefactError('invalid_input', 'Cursor belongs to a different artefact')
@@ -641,14 +630,13 @@ export async function listRevisions(
       artefact.id,
       artefact.revision - config.revisionRetention,
       after?.[1] ?? null,
-      Number(!!forManagement),
+      Number(expectedId !== undefined),
     )
     .all<{ number: number; author: string; createdAt: number; message: string | null }>()
-  const more = results.length > 20
-  if (more) results.pop()
+  const last = trimLookahead(results, 20)
   return {
     revisions: results,
-    nextCursor: more ? base64url.encode(JSON.stringify([artefact.id, results[19].number])) : undefined,
+    nextCursor: last ? base64url.encode(JSON.stringify([artefact.id, last.number])) : undefined,
   }
 }
 
@@ -697,11 +685,7 @@ export async function restoreRevision(
   }
 }
 
-export async function publish(runtime: Runtime, member: Member, input: Publish, ctx?: ExecutionContext) {
-  return publishRevision(runtime, member, input, ctx)
-}
-
-async function publishRevision(
+export async function publish(
   runtime: Runtime,
   member: Member,
   input: Publish,
@@ -901,14 +885,7 @@ export async function editFile(
   if (text.length + matches * (input.newText.length - input.oldText.length) > inlineLimit) {
     throw tooLarge('Decoded inline bytes', inlineLimit)
   }
-  const parts: string[] = []
-  let previous = 0
-  for (let at = text.indexOf(input.oldText); at !== -1; at = text.indexOf(input.oldText, previous)) {
-    if (at > previous) parts.push(text.slice(previous, at))
-    if (input.newText) parts.push(input.newText)
-    previous = at + input.oldText.length
-  }
-  if (previous < text.length) parts.push(text.slice(previous))
+  const content = text.replaceAll(input.oldText, () => input.newText)
   let hasCharset = false
   // Consume whole parameter values, including quoted semicolons.
   let type = file.type.replace(/;[ \t]*([^=;]+)=(?:"(?:[^"\\]|\\.)*"|[^;]*)/g, (param, name: string) => {
@@ -918,12 +895,12 @@ export async function editFile(
     return '; charset=utf-8'
   })
   if (!hasCharset) type += '; charset=utf-8'
-  return publishRevision(
+  return publish(
     runtime,
     member,
     {
       slug: input.slug,
-      files: [{ path: input.path, content: parts.join(''), type }],
+      files: [{ path: input.path, content, type }],
       mode: 'merge',
       expectedRevision: input.expectedRevision,
     },
@@ -947,7 +924,7 @@ export async function setVisibility(
       .prepare(`UPDATE artefacts SET visibility = ?, updated_at = MAX(?, updated_at)
         WHERE id = ? AND slug = ? AND deleted_at IS NULL`)
       .bind(visibility, now, id, slug),
-    audit(db, now, member, id, 'artefact.visibility', { visibility }),
+    auditChange(db, now, member.id, 'artefact.visibility', { visibility }, id),
   ])
   if (result.meta.changes !== 1) throw new ArtefactError('not_found', 'Artefact not found')
   return { visibility }
@@ -975,7 +952,7 @@ export async function renameArtefact(
             SELECT 1 FROM redirects WHERE source_slug = ?1 AND target_artefact_id <> ?3
           )`)
         .bind(newSlug, now, id, slug),
-      audit(db, now, member, id, 'artefact.rename', { from: slug, to: newSlug }),
+      auditChange(db, now, member.id, 'artefact.rename', { from: slug, to: newSlug }, id),
       db
         .prepare(`INSERT INTO redirects (from_prefix, source_slug, target_artefact_id, target_path, created_at, created_by)
           SELECT value, ?2, ?3, '', ?4, ?5 FROM json_each(?1) WHERE changes() = 1
@@ -1015,7 +992,7 @@ export async function deleteArtefact(
       .prepare(`UPDATE artefacts SET deleted_at = ?1, updated_at = MAX(?1, updated_at)
         WHERE id = ?2 AND slug = ?3 AND deleted_at IS NULL`)
       .bind(now, id, slug),
-    audit(db, now, member, id, 'artefact.delete', {}),
+    auditChange(db, now, member.id, 'artefact.delete', {}, id),
   ])
   if (deleted.meta.changes !== 1) throw new ArtefactError('conflict', 'Artefact changed')
   return {}
@@ -1043,11 +1020,10 @@ export async function listDeletedArtefacts({ env: { DB: db } }: Runtime, member:
       purging: number
       restorable: number
     }>()
-  const more = artefacts.length > 50
-  if (more) artefacts.pop()
+  const last = trimLookahead(artefacts, 50)
   return {
     artefacts: artefacts.map((row) => ({ ...row, purging: !!row.purging, restorable: !!row.restorable })),
-    nextCursor: more ? artefacts[49].slug : undefined,
+    nextCursor: last?.slug,
   }
 }
 
@@ -1070,7 +1046,7 @@ export async function restoreDeletedArtefact(
         WHERE id = ?2 AND deleted_at = ?3 AND deleted_at > ?4 AND slug = ?5
         AND NOT EXISTS (SELECT 1 FROM artefact_purges WHERE artefact_id = ?2)`)
       .bind(now, artefact.id, artefact.deletedAt, now - deletedRetentionMs, slug),
-    audit(db, now, member, artefact.id, 'artefact.restore_deleted', {}),
+    auditChange(db, now, member.id, 'artefact.restore_deleted', {}, artefact.id),
   ])
   if (restored.meta.changes !== 1) throw new ArtefactError('conflict', 'The artefact is no longer restorable')
   return {}
@@ -1087,9 +1063,7 @@ export async function listRedirects({ env: { DB: db } }: Runtime, member: Member
     WHERE r.from_prefix > ? ORDER BY r.from_prefix LIMIT 51`)
     .bind(after)
     .all<{ fromPrefix: string; toPrefix: string }>()
-  const more = redirects.length > 50
-  if (more) redirects.pop()
-  return { redirects, nextCursor: more ? redirects[49].fromPrefix : undefined }
+  return { redirects, nextCursor: trimLookahead(redirects, 50)?.fromPrefix }
 }
 
 export async function setRedirects(
@@ -1187,7 +1161,7 @@ export async function createShareLink(
           )
         ON CONFLICT(key_hash) DO NOTHING`)
       .bind(id, label ?? null, keyHash, sealed, member.id, now, artefact.id, slug, maxActiveShareLinks - 1),
-    audit(db, now, member, artefact.id, 'share.create', { id }),
+    auditChange(db, now, member.id, 'share.create', { id }, artefact.id),
   ])
   if (insert.meta.changes !== 1) {
     const current = await liveHead(db, slug, expectedId)
@@ -1241,7 +1215,7 @@ export async function revokeShareLink(
       .prepare(`UPDATE share_links SET revoked_at = ?1 WHERE id = ?2 AND revoked_at IS NULL
         AND EXISTS (SELECT 1 FROM artefacts WHERE id = ?3 AND deleted_at IS NULL AND (?4 IS NULL OR slug = ?4))`)
       .bind(now, id, artefactId, slug ?? null),
-    audit(db, now, member, artefactId, 'share.revoke', { id }),
+    auditChange(db, now, member.id, 'share.revoke', { id }, artefactId),
   ])
   if (update.meta.changes !== 1) throw new ArtefactError('not_found', 'Share link not found')
   return {}

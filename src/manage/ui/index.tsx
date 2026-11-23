@@ -16,7 +16,7 @@ import { readForm } from '../../http'
 import { messages } from '../../i18n'
 import { openInvite, requireBrowserSession, returnPath } from '../login'
 import { adminPages } from './admin-pages'
-import { flash, Page, page, time } from './page'
+import { Action, flash, Page, page, pageLink, time, type UiContext } from './page'
 
 const pageSize = 50
 
@@ -26,6 +26,18 @@ function withQuery(path: string, params: Record<string, string | undefined>) {
     if (value !== undefined) query.set(name, value)
   }
   return query.size === 0 ? path : `${path}?${query}`
+}
+
+function tableHead(labels: string[]) {
+  return (
+    <thead>
+      <tr>
+        {labels.map((label) => (
+          <th>{label}</th>
+        ))}
+      </tr>
+    </thead>
+  )
 }
 
 // Keep routing and the outer Origin guard on the same, un-decoded path.
@@ -149,17 +161,19 @@ app.get('/', async (c) => {
   )
 })
 
-app.get('/admin/members', async (c) => {
+async function memberAdmin(c: UiContext) {
   const session = await requireBrowserSession(c.req.raw, c.env)
   if (session instanceof Response) return session
-  const {
-    config,
-    env: { DB: db },
-  } = c.env
+  const { config, env } = c.env
   const common = messages(config)
   if (!isAdmin(session.member)) return c.text(common.forbidden, 403)
-  const text = common.legacy
-  const actor = session.member.id
+  return { session, config, db: env.DB, common, text: common.legacy, actor: session.member.id }
+}
+
+app.get('/admin/members', async (c) => {
+  const admin = await memberAdmin(c)
+  if (admin instanceof Response) return admin
+  const { session, config, db, common, text, actor } = admin
   const after = idSchema.safeParse(c.req.query('after')).data
   const inviteCursor = c.req.query('inviteAfter')
   const inviteAfter = inviteCursor && inviteKey.test(inviteCursor) ? inviteCursor : undefined
@@ -173,16 +187,7 @@ app.get('/admin/members', async (c) => {
     common.members,
     <>
       <table>
-        <thead>
-          <tr>
-            <th>{text.member}</th>
-            <th>{text.provider}</th>
-            <th>{text.email}</th>
-            <th>{text.status}</th>
-            <th>{text.role}</th>
-            <th>{text.actions}</th>
-          </tr>
-        </thead>
+        {tableHead([text.member, text.provider, text.email, text.status, text.role, common.admin.actions])}
         <tbody>
           {members.map((member) => (
             <tr key={member.id}>
@@ -193,111 +198,75 @@ app.get('/admin/members', async (c) => {
               <td>{common.roles[member.role]}</td>
               <td>
                 {member.status !== 'removed' && (
-                  <form action="/admin/members" method="post">
-                    <input type="hidden" name="id" value={member.id} />
+                  <Action
+                    path="/admin/members"
+                    action={member.status === 'pending' ? 'admit' : 'role'}
+                    label={member.status === 'pending' ? text.admit : text.changeRole}
+                    fields={{ id: member.id }}
+                  >
                     <RoleSelect config={config} human={member.kind === 'human'} value={member.role} />
-                    {member.status === 'pending' ? (
-                      <button type="submit" name="action" value="admit">
-                        {text.admit}
-                      </button>
-                    ) : (
-                      <button type="submit" name="action" value="role">
-                        {text.changeRole}
-                      </button>
-                    )}
-                  </form>
+                  </Action>
                 )}
-                <form action="/admin/members" method="post">
-                  <input type="hidden" name="id" value={member.id} />
-                  {member.status === 'removed' ? (
-                    <button type="submit" name="action" value="reinstate">
-                      {text.reinstate}
-                    </button>
-                  ) : (
-                    <button type="submit" name="action" value="remove">
-                      {text.remove}
-                    </button>
-                  )}
-                </form>
+                <Action
+                  path="/admin/members"
+                  action={member.status === 'removed' ? 'reinstate' : 'remove'}
+                  label={member.status === 'removed' ? text.reinstate : text.remove}
+                  fields={{ id: member.id }}
+                />
               </td>
             </tr>
           ))}
         </tbody>
       </table>
-      {members.length === pageSize && (
-        <p>
-          <a href={withQuery('/admin/members', { after: members.at(-1)?.id, inviteAfter })}>
-            {text.nextMembers}
-          </a>
-        </p>
-      )}
+      {members.length === pageSize &&
+        pageLink(withQuery('/admin/members', { after: members.at(-1)?.id, inviteAfter }), text.nextMembers)}
       <h2>{text.inviteLinks}</h2>
-      <form action="/admin/members" method="post">
+      <Action path="/admin/members" action="create-invite" label={text.createInvite}>
         <RoleSelect config={config} human />
-        <button type="submit" name="action" value="create-invite">
-          {text.createInvite}
-        </button>
-      </form>
+      </Action>
       <table>
-        <thead>
-          <tr>
-            <th>{text.role}</th>
-            <th>{text.expires}</th>
-            <th>{text.actions}</th>
-          </tr>
-        </thead>
+        {tableHead([text.role, text.expires, common.admin.actions])}
         <tbody>
           {invites.map((invite) => (
             <tr key={invite.id}>
               <td>{common.roles[invite.role]}</td>
               <td>{time(config.locale, invite.expiresAt)}</td>
               <td>
-                <form action="/admin/members" method="post">
-                  <input type="hidden" name="id" value={invite.id} />
-                  <button type="submit" name="action" value="revoke-invite">
-                    {text.revoke}
-                  </button>
-                </form>
+                <Action
+                  path="/admin/members"
+                  action="revoke-invite"
+                  label={text.revoke}
+                  fields={{ id: invite.id }}
+                />
               </td>
             </tr>
           ))}
         </tbody>
       </table>
-      {invites.length === pageSize && (
-        <p>
-          <a href={withQuery('/admin/members', { after, inviteAfter: invites.at(-1)?.id })}>
-            {text.nextInvites}
-          </a>
-        </p>
-      )}
+      {invites.length === pageSize &&
+        pageLink(withQuery('/admin/members', { after, inviteAfter: invites.at(-1)?.id }), text.nextInvites)}
     </>,
   )
 })
 
 app.post('/admin/members', async (c) => {
-  const session = await requireBrowserSession(c.req.raw, c.env)
-  if (session instanceof Response) return session
-  const {
-    config,
-    env: { DB },
-  } = c.env
-  if (!isAdmin(session.member)) return c.text(messages(config).forbidden, 403)
-  const text = messages(config).legacy
+  const admin = await memberAdmin(c)
+  if (admin instanceof Response) return admin
+  const { session, config, db, text, actor } = admin
   const fields = await readForm(c.req.raw)
   const form = memberAction.safeParse(fields ? Object.fromEntries(fields) : null)
   if (!form.success) return c.text(text.invalidMemberAction, 400)
   const { data } = form
-  const actor = session.member.id
   const now = Date.now()
   if (data.action === 'create-invite') {
-    const token = await createInvite(DB, actor, data.role, now)
+    const token = await createInvite(db, actor, data.role, now)
     if (!token) return flash(c, session, '/admin/members', text.inviteNotAllowed)
     return flash(c, session, '/admin/members', text.inviteCreated, `${config.manageOrigin}/invite/${token}`)
   }
   const changed =
     data.action === 'revoke-invite'
-      ? await revokeInvite(DB, actor, data.id, now)
-      : await changeMember(DB, actor, data.id, data.action, 'role' in data ? data.role : undefined, now)
+      ? await revokeInvite(db, actor, data.id, now)
+      : await changeMember(db, actor, data.id, data.action, 'role' in data ? data.role : undefined, now)
   const notices = {
     admit: text.admitDone,
     role: text.roleDone,
@@ -309,16 +278,10 @@ app.post('/admin/members', async (c) => {
 })
 
 app.get('/admin/bots', async (c) => {
-  const session = await requireBrowserSession(c.req.raw, c.env)
-  if (session instanceof Response) return session
-  const {
-    config,
-    env: { DB: db },
-  } = c.env
-  const common = messages(config)
-  if (!isAdmin(session.member)) return c.text(common.forbidden, 403)
-  const text = common.legacy
-  const actor = session.member.id
+  const admin = await memberAdmin(c)
+  if (admin instanceof Response) return admin
+  const { session, config, db, common, text, actor } = admin
+  const { createCredential, ownCredentialName } = common.admin
   const after = idSchema.safeParse(c.req.query('after')).data
   const botId = idSchema.safeParse(c.req.query('bot')).data
   const tokenAfter = idSchema.safeParse(c.req.query('tokenAfter')).data
@@ -333,15 +296,12 @@ app.get('/admin/bots', async (c) => {
     session,
     common.bots,
     <>
-      <form action="/admin/bots" method="post">
+      <Action path="/admin/bots" action="create" label={text.createBot}>
         <label>
           {text.botName} <input name="name" required maxlength={120} />
         </label>
         <RoleSelect config={config} />
-        <button type="submit" name="action" value="create">
-          {text.createBot}
-        </button>
-      </form>
+      </Action>
       {bots.map((bot) => {
         const path = withQuery('/admin/bots', { after, bot: bot.id })
         return (
@@ -351,25 +311,18 @@ app.get('/admin/bots', async (c) => {
               {common.roles[bot.role]} · {text[bot.status]}
             </p>
             {bot.status === 'active' && (
-              <form action={path} method="post">
-                <input type="hidden" name="id" value={bot.id} />
+              <Action path={path} action="token" label={createCredential} fields={{ id: bot.id }}>
                 <label>
-                  {text.credentialName} <input name="name" required maxlength={120} />
+                  {ownCredentialName} <input name="name" required maxlength={120} />
                 </label>
-                <button type="submit" name="action" value="token">
-                  {text.createCredential}
-                </button>
-              </form>
+              </Action>
             )}
             <a href={`${path}#bot-tokens`}>{text.viewCredentials}</a>
           </section>
         )
       })}
-      {bots.length === pageSize && (
-        <p>
-          <a href={withQuery('/admin/bots', { after: bots.at(-1)?.id })}>{text.nextBots}</a>
-        </p>
-      )}
+      {bots.length === pageSize &&
+        pageLink(withQuery('/admin/bots', { after: bots.at(-1)?.id }), text.nextBots)}
       {tokens && (
         <section id="bot-tokens">
           <h2>
@@ -384,25 +337,16 @@ app.get('/admin/bots', async (c) => {
                 {token.revokedAt !== null ? (
                   text.revoked
                 ) : (
-                  <form action={focusedPath} method="post">
-                    <input type="hidden" name="id" value={token.id} />
-                    <button type="submit" name="action" value="revoke">
-                      {text.revoke}
-                    </button>
-                  </form>
+                  <Action path={focusedPath} action="revoke" label={text.revoke} fields={{ id: token.id }} />
                 )}
               </li>
             ))}
           </ul>
-          {tokens.length === pageSize && (
-            <p>
-              <a
-                href={`${withQuery('/admin/bots', { after, bot: botId, tokenAfter: tokens.at(-1)?.id })}#bot-tokens`}
-              >
-                {text.nextCredentials}
-              </a>
-            </p>
-          )}
+          {tokens.length === pageSize &&
+            pageLink(
+              `${withQuery('/admin/bots', { after, bot: botId, tokenAfter: tokens.at(-1)?.id })}#bot-tokens`,
+              text.nextCredentials,
+            )}
         </section>
       )}
     </>,
@@ -410,20 +354,14 @@ app.get('/admin/bots', async (c) => {
 })
 
 app.post('/admin/bots', async (c) => {
-  const session = await requireBrowserSession(c.req.raw, c.env)
-  if (session instanceof Response) return session
-  const {
-    config,
-    env: { DB: db },
-  } = c.env
-  if (!isAdmin(session.member)) return c.text(messages(config).forbidden, 403)
-  const text = messages(config).legacy
+  const admin = await memberAdmin(c)
+  if (admin instanceof Response) return admin
+  const { session, db, text, actor } = admin
   const fields = await readForm(c.req.raw)
   const form = botAction.safeParse(fields ? Object.fromEntries(fields) : null)
   if (!form.success) return c.text(text.invalidBotAction, 400)
   const { data } = form
   const after = idSchema.safeParse(c.req.query('after')).data
-  const actor = session.member.id
   const now = Date.now()
   if (data.action === 'token') {
     const issued = await createApiToken(db, actor, data.id, data.name, now)

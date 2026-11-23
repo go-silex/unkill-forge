@@ -54,3 +54,19 @@ export function isDocumentNavigation(request: Request): boolean {
       }) ?? false
   )
 }
+
+export function readCookie(request: Request, name: string): string | null {
+  const prefix = `${name}=`
+  let value: string | null = null
+  for (const entry of request.headers.get('Cookie')?.split(';') ?? []) {
+    const part = entry.trim()
+    if (!part.startsWith(prefix)) continue
+    if (value !== null) return null
+    value = part.slice(prefix.length)
+  }
+  return value
+}
+
+export function writeCookie(name: string, value: string, maxAge: number, sameSite: 'Lax' | 'None' = 'Lax') {
+  return `${name}=${value}; Path=/; Max-Age=${maxAge}; Secure; HttpOnly; SameSite=${sameSite}`
+}

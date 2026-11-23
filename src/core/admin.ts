@@ -1,11 +1,12 @@
 import { ArtefactError, checkMember, requireAdmin } from './artefacts'
 import { activeMember, auditChange, hashSecret, type Member, type Role, randomSecret } from './index'
+import { trimLookahead } from './pagination'
 
 export function isAdmin(member: Member): boolean {
   return member.status === 'active' && member.role === 'admin'
 }
 
-export async function uiActor(db: D1Database, actor: string, minimum: Role = 'viewer'): Promise<Member> {
+export async function uiActor(db: D1Database, actor: string, minimum: Role): Promise<Member> {
   const member = await activeMember(db, actor)
   if (!member) throw new ArtefactError('forbidden', 'An active member is required')
   if (minimum === 'admin') requireAdmin(member)
@@ -90,9 +91,7 @@ export async function listTokens(db: D1Database, actor: string, memberId: string
 export async function listOwnTokens(db: D1Database, actor: string, after = '') {
   await uiActor(db, actor, 'publisher')
   const tokens = await tokenPage(db, actor, after, 51)
-  const more = tokens.length > 50
-  if (more) tokens.pop()
-  return { tokens, nextCursor: more ? tokens[49].id : undefined }
+  return { tokens, nextCursor: trimLookahead(tokens, 50)?.id }
 }
 
 export async function createApiToken(

@@ -16,7 +16,7 @@ import {
   sessionIsFresh,
 } from '../../core/index'
 import { consumeInviteContext, createInviteContext, inviteKey } from '../../core/invites'
-import { formBodyLimit, isDocumentNavigation, readBoundedBody } from '../../http'
+import { formBodyLimit, isDocumentNavigation, readBoundedBody, readCookie, writeCookie } from '../../http'
 import { messages } from '../../i18n'
 import {
   authorizationEndpoint,
@@ -45,20 +45,9 @@ export function returnPath(raw: string | null, origin: string): string {
   return url.pathname + url.search + url.hash
 }
 
-function readCookie(req: Request, name: string): string | null {
-  let value: string | null = null
-  for (const entry of req.headers.get('cookie')?.split(';') ?? []) {
-    const part = entry.trim()
-    if (!part.startsWith(`${name}=`)) continue
-    const candidate = part.slice(name.length + 1)
-    if (value !== null || !/^[\w-]+$/.test(candidate)) return null
-    value = candidate
-  }
-  return value
-}
-
-function writeCookie(name: string, value: string, seconds: number): string {
-  return `${name}=${value}; Path=/; Max-Age=${seconds}; Secure; HttpOnly; SameSite=Lax`
+function readOpaqueCookie(request: Request, name: string): string | null {
+  const value = readCookie(request, name)
+  return value !== null && /^[\w-]+$/.test(value) ? value : null
 }
 
 function respond(status: number, body: string | null, location?: string, cookie?: string): Response {
@@ -108,8 +97,8 @@ async function start(
 ): Promise<Response> {
   const now = Date.now()
   const inviteCookie = inviteContext === null ? null : inviteCookiePrefix + inviteContext
-  const inviteBrowser = inviteCookie === null ? null : readCookie(req, inviteCookie)
-  const browser = readCookie(req, flowCookie) ?? randomSecret()
+  const inviteBrowser = inviteCookie === null ? null : readOpaqueCookie(req, inviteCookie)
+  const browser = readOpaqueCookie(req, flowCookie) ?? randomSecret()
   const state = randomSecret()
   const target = await authorizationEndpoint(provider)
   const verifier = await flowVerifier(runtime.config.cookieKey, state)
@@ -156,7 +145,7 @@ async function callback(
 ): Promise<Response> {
   const text = messages(runtime.config).login
   const state = params.get('state')
-  const browser = readCookie(req, flowCookie)
+  const browser = readOpaqueCookie(req, flowCookie)
   if (!state || params.getAll('state').length !== 1 || !browser) return respond(400, text.invalidFlow)
 
   const now = Date.now()
@@ -167,12 +156,12 @@ async function callback(
 
   let previous: BrowserSession | null = null
   if (flow.sessionHash !== null) {
-    const session = readCookie(req, sessionCookie)
+    const session = readOpaqueCookie(req, sessionCookie)
     if (!session || provider.type !== 'oidc' || (await hashSecret(session)) !== flow.sessionHash) {
       return respond(401, text.invalidSession)
     }
     previous = await readSession(db, flow.sessionHash, now)
-    if (!previous || previous.provider !== provider.id || previous.member.status === 'removed') {
+    if (!previous || previous.provider !== provider.id) {
       return respond(401, text.invalidSession)
     }
   }
@@ -267,7 +256,7 @@ async function callback(
     }))
   )
     return respond(401, text.loginRefused)
-  const priorCookie = readCookie(req, sessionCookie)
+  const priorCookie = readOpaqueCookie(req, sessionCookie)
   if (priorCookie) await revokeSession(db, await hashSecret(priorCookie), validatedAt)
   return respond(302, null, path, writeCookie(sessionCookie, session, Math.floor(cap / 1_000)))
 }
@@ -304,7 +293,7 @@ async function logout(req: Request, runtime: Runtime): Promise<Response> {
     const text = messages(runtime.config).login
     return respond(413, text.logoutTooLarge)
   }
-  const session = readCookie(req, sessionCookie)
+  const session = readOpaqueCookie(req, sessionCookie)
   if (session) await revokeSession(runtime.env.DB, await hashSecret(session), Date.now())
   const response = respond(303, null, '/login', writeCookie(sessionCookie, '', 0))
   response.headers.append('Set-Cookie', writeCookie(flowCookie, '', 0))
@@ -359,13 +348,13 @@ export async function requireBrowserSession(
   req: Request,
   runtime: Runtime,
 ): Promise<BrowserSession | Response> {
-  const session = readCookie(req, sessionCookie)
+  const session = readOpaqueCookie(req, sessionCookie)
   const now = Date.now()
   const current = session ? await readSession(runtime.env.DB, await hashSecret(session), now) : null
   const provider = current && runtime.config.providers.find((entry) => entry.id === current.provider)
   const url = new URL(req.url)
   const path = returnPath(url.pathname + url.search, runtime.config.manageOrigin)
-  if (!current || !provider || current.member.status === 'removed') {
+  if (!current || !provider) {
     return respond(
       302,
       null,

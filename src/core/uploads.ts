@@ -226,6 +226,9 @@ export async function receiveUpload(
     }
   }
 
+  const fail = db
+    .prepare("UPDATE uploads SET state = 'failed' WHERE token_hash = ? AND state = 'receiving'")
+    .bind(hash)
   if (status === 204) {
     const now = Date.now()
     const { memberId, slug, path, size, sha256 } = upload
@@ -237,15 +240,10 @@ export async function receiveUpload(
           AND NOT EXISTS (SELECT 1 FROM blob_purge_claims WHERE sha256 = uploads.sha256)`)
         .bind(now + publishLifetime, hash, now, upload.epoch),
       auditChange(db, now, memberId, 'upload.store', { slug, path, size, sha256 }),
-      db
-        .prepare("UPDATE uploads SET state = 'failed' WHERE token_hash = ? AND state = 'receiving'")
-        .bind(hash),
+      fail,
     ])
     return stored.meta.changes === 1 ? 204 : 409
   }
-  await db
-    .prepare("UPDATE uploads SET state = 'failed' WHERE token_hash = ? AND state = 'receiving'")
-    .bind(hash)
-    .run()
+  await fail.run()
   return status
 }

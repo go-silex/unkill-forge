@@ -1,3 +1,4 @@
+import { base64url } from 'jose'
 import type { Provider } from '../config'
 
 export type Role = 'viewer' | 'publisher' | 'admin'
@@ -9,24 +10,20 @@ export type Member = {
   role: Role
   status: 'pending' | 'active' | 'removed'
 }
-export type LoginFlow = {
-  stateHash: string
-  browserHash: string
-  provider: string
+type FlowKey = { stateHash: string; browserHash: string; provider: string }
+type ConsumedFlow = {
   returnPath: string
   sessionHash: string | null
   createdAt: number
-  expiresAt: number
   inviteHash: string | null
   generation: number
 }
+type PendingFlow = FlowKey & Omit<ConsumedFlow, 'generation'> & { expiresAt: number }
 export type BrowserSession = {
   idHash: string
   provider: string
   subject: string
   sid: string | null
-  authTime: number
-  createdAt: number
   validatedAt: number
   expiresAt: number
   generation: number
@@ -41,22 +38,17 @@ export type Grant = {
   generation: number
 }
 
-function base64url(bytes: Uint8Array): string {
-  return btoa(String.fromCharCode(...bytes))
-    .replaceAll('+', '-')
-    .replaceAll('/', '_')
-    .replace(/=+$/, '')
-}
+const encoder = new TextEncoder()
 
 export function randomSecret(): string {
-  return base64url(crypto.getRandomValues(new Uint8Array(32)))
+  return base64url.encode(crypto.getRandomValues(new Uint8Array(32)))
 }
 
 export async function hashSecret(value: string): Promise<string> {
-  return base64url(new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(value))))
+  return base64url.encode(new Uint8Array(await crypto.subtle.digest('SHA-256', encoder.encode(value))))
 }
 
-export async function putFlow(db: D1Database, flow: Omit<LoginFlow, 'generation'>): Promise<void> {
+export async function putFlow(db: D1Database, flow: PendingFlow): Promise<void> {
   await db.batch([
     db.prepare('DELETE FROM login_flows WHERE expires_at <= ?').bind(flow.createdAt),
     db
@@ -84,13 +76,12 @@ export async function putFlow(db: D1Database, flow: Omit<LoginFlow, 'generation'
 
 export async function consumeFlow(
   db: D1Database,
-  key: Pick<LoginFlow, 'stateHash' | 'browserHash' | 'provider'> & { now: number },
-): Promise<LoginFlow | null> {
-  const [flow] = await db.batch<LoginFlow>([
+  key: FlowKey & { now: number },
+): Promise<ConsumedFlow | null> {
+  const [flow] = await db.batch<ConsumedFlow>([
     db
-      .prepare(`SELECT f.state_hash AS stateHash, browser_hash AS browserHash, provider,
-        return_path AS returnPath, session_hash AS sessionHash, created_at AS createdAt,
-        expires_at AS expiresAt, invite_hash AS inviteHash, COALESCE(generation, 0) AS generation
+      .prepare(`SELECT return_path AS returnPath, session_hash AS sessionHash, created_at AS createdAt,
+        invite_hash AS inviteHash, COALESCE(generation, 0) AS generation
         FROM login_flows f LEFT JOIN login_flow_metadata m USING (state_hash)
         WHERE f.state_hash = ? AND browser_hash = ? AND provider = ? AND expires_at > ?`)
       .bind(key.stateHash, key.browserHash, key.provider, key.now),
@@ -183,6 +174,8 @@ export async function admitIdentity(db: D1Database, input: Admission): Promise<M
 export async function createSession(
   db: D1Database,
   session: Omit<BrowserSession, 'member' | 'generation'> & {
+    authTime: number
+    createdAt: number
     memberId: string
     flowCreatedAt: number
     flowGeneration: number
@@ -237,8 +230,7 @@ export async function readSession(
   now: number,
 ): Promise<BrowserSession | null> {
   const row = await db
-    .prepare(`SELECT s.id_hash AS idHash, provider, subject, sid, auth_time AS authTime,
-    s.created_at AS createdAt, validated_at AS validatedAt, expires_at AS expiresAt,
+    .prepare(`SELECT s.id_hash AS idHash, provider, subject, sid, validated_at AS validatedAt, expires_at AS expiresAt,
     m.id, kind, name, email, role, status, m.generation
     FROM sessions s JOIN members m ON s.member_id = m.id
     WHERE s.id_hash = ? AND s.expires_at > ? AND s.revoked_at IS NULL AND m.status <> 'removed'
@@ -331,11 +323,12 @@ export function auditChange(
   memberId: string | null,
   action: string,
   detail: object,
+  artefactId: string | null = null,
 ): D1PreparedStatement {
   return db
-    .prepare(`INSERT INTO audit_log (id, at, member_id, action, detail_json)
-    SELECT ?, ?, ?, ?, ? WHERE changes() = 1`)
-    .bind(crypto.randomUUID(), at, memberId, action, JSON.stringify(detail))
+    .prepare(`INSERT INTO audit_log (id, at, member_id, action, artefact_id, detail_json)
+    SELECT ?, ?, ?, ?, ?, ? WHERE changes() = 1`)
+    .bind(crypto.randomUUID(), at, memberId, action, artefactId, JSON.stringify(detail))
 }
 
 export function activeMember(db: D1Database, memberId: string): Promise<Member | null> {

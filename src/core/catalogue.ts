@@ -3,6 +3,7 @@ import { z } from 'zod'
 import type { Runtime } from '../config'
 import { ArtefactError, checkMember } from './artefacts'
 import type { Member } from './index'
+import { trimLookahead } from './pagination'
 
 const cursorSchema = z.tuple([
   z.string(),
@@ -58,8 +59,7 @@ export async function searchArtefacts(
       .slice(0, limit)
   }
   function page<T extends Row>(rows: T[], continuation: (row: T) => unknown[], keep?: (row: T) => boolean) {
-    const more = rows.length > 50
-    if (more) rows.pop()
+    const last = trimLookahead(rows, 50)
     return {
       artefacts: (keep ? rows.filter(keep) : rows).map(
         ({ slug, title, visibility, revision, updatedAt }) => ({
@@ -70,7 +70,7 @@ export async function searchArtefacts(
           updatedAt,
         }),
       ),
-      nextCursor: more ? base64url.encode(JSON.stringify(continuation(rows[49]))) : undefined,
+      nextCursor: last ? base64url.encode(JSON.stringify(continuation(last))) : undefined,
     }
   }
   if (!query) {

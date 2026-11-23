@@ -2,7 +2,7 @@
 
 Forge is a self-hosted service for publishing HTML artefacts at stable URLs, choosing who can read them, and working with them through remote MCP. It runs on Cloudflare Workers.
 
-**Status: Phase 1.** Forge supports private and public artefacts, revocable share links, revision history, streamed uploads, and scheduled maintenance. The English/French manage UI covers artefacts, members, bots, tokens, redirects, restoration and purge. The runtime is **7,224 lines** under `src/`.
+**Status: Phase 1.** Forge supports private and public artefacts, revocable share links, revision history, streamed uploads, and scheduled maintenance. The English/French manage UI covers artefacts, members, bots, tokens, redirects, restoration and purge. The runtime is **7,091 lines** under `src/`.
 
 [![Deploy to Cloudflare](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/go-silex/unkill-forge)
 
