@@ -24,13 +24,13 @@ export async function consumeInviteContext(db: D1Database, id: string, browser: 
     .first<string>('invite_hash')
 }
 
-export async function listInvites(db: D1Database, actor: string) {
+export async function listInvites(db: D1Database, actor: string, after = '') {
   const { results } = await db
     .prepare(`SELECT token_hash AS id, role, expires_at AS expiresAt FROM invites
       WHERE used_at IS NULL AND expires_at > unixepoch('subsec') * 1000
       AND EXISTS (SELECT 1 FROM members WHERE id = ? AND status = 'active' AND role = 'admin')
-      ORDER BY created_at DESC, token_hash`)
-    .bind(actor)
+      AND token_hash > ? ORDER BY token_hash LIMIT 50`)
+    .bind(actor, after)
     .all<{ id: string; role: Role; expiresAt: number }>()
   return results
 }

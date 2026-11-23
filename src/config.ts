@@ -1,4 +1,13 @@
 import { z } from 'zod'
+import { accent } from '../brand/defaults'
+
+const brand = z.strictObject({
+  accent: z
+    .string()
+    .regex(/^#[0-9a-fA-F]{6}$/)
+    .default(accent),
+  landingText: z.string().trim().min(1).max(500).optional(),
+})
 
 const origin = z
   .url({ protocol: /^https$/ })
@@ -67,6 +76,8 @@ export const MAX_ARTEFACT_FILES = 10_000
 const vars = z
   .object({
     FORGE_NAME: z.string().trim().min(1),
+    LOCALE: z.enum(['en', 'fr']).default('en'),
+    BRAND: parseJson.pipe(brand).default({ accent }),
     READ_ORIGIN: origin,
     MANAGE_ORIGIN: origin,
     ADMIN_EMAILS: csv
@@ -118,6 +129,8 @@ export type Provider = ProviderVars & { clientSecret: string }
 export type Env = Record<string, unknown> & { DB: D1Database; BLOBS: R2Bucket; OAUTH_KV: KVNamespace }
 export type Config = {
   name: string
+  locale: 'en' | 'fr'
+  brand: z.output<typeof brand>
   readOrigin: string
   manageOrigin: string
   adminEmails: string[]
@@ -165,6 +178,8 @@ export function configuration(env: Env): Config | null {
     else
       config = {
         name: value.FORGE_NAME,
+        locale: value.LOCALE,
+        brand: value.BRAND,
         readOrigin: value.READ_ORIGIN,
         manageOrigin: value.MANAGE_ORIGIN,
         adminEmails: value.ADMIN_EMAILS,

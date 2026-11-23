@@ -2,9 +2,9 @@
 
 Forge is a self-hosted service for publishing HTML artefacts at stable URLs, controlling who can read them, and working with them through remote MCP. It runs on Cloudflare.
 
-**Phase 1:** this build delivers public and private artefacts, revocable share links, revision history and restore, rename redirects, and soft deletion. MCP also supports publishing, editing, reading and streamed binary uploads. Sign-in, member administration and bot administration are available; deleted-artefact restoration and hard purge are core-only until the admin UI adds them. See [the specification](docs/spec.md).
+**Phase 1:** Forge publishes public and private artefacts with share links, revision history, rename redirects and soft deletion. MCP supports publishing, editing, reading and streamed binary uploads. The English/French manage UI covers artefact management, member and bot administration, personal API tokens, admin restoration and purge, and redirects. See [the specification](docs/spec.md).
 
-The runtime is 5,162 lines under `src/`.
+The runtime is 7,019 lines under `src/`.
 
 ## Configure sign-in
 
@@ -46,6 +46,22 @@ In **Members**, choose a role and create an invite link. Copy it when it appears
 
 Only an admin can reinstate a removed member. Reinstatement restores the role, not access for old sessions, OAuth grants, or API tokens. Sign in again, authorize MCP clients again, or issue new API tokens as appropriate. Keep an active administrator to manage access.
 
+## Configure locale and branding
+
+In `wrangler.jsonc`, merge these entries into your existing `vars`:
+
+```json
+{
+  "vars": {
+    "LOCALE": "fr",
+    "FORGE_NAME": "Ember Studio",
+    "BRAND": "{\"accent\":\"#a7481c\",\"landingText\":\"Our published work\"}"
+  }
+}
+```
+
+`LOCALE` defaults to `en` and accepts `fr`. `BRAND` is optional. Its `accent` must be a six-digit hex colour; `landingText` is plain text for the read host when `PUBLIC_INDEX=false`. Replace the SVG logo and favicon in [`brand/defaults.ts`](brand/defaults.ts) and rebuild to change the artwork; no template edits are needed.
+
 ## Configure the read host
 
 Set `PUBLIC_INDEX=true` to list public artefacts on the read host landing page. Set `ALLOW_INDEXING=true` to allow search engines to index public artefacts. Both default to `false`.
@@ -55,6 +71,8 @@ Private reads use a separate host-only cookie signed with the existing `FORGE_CO
 Share links let anyone with the URL read the current artefact without signing in, even when it is private. Revocation stops access through the link on the next request, even when the artefact is public. Treat the URL as a bearer secret: share it only with intended recipients and exclude share paths from request logs where possible.
 
 Set `REVISION_RETENTION` to keep a different number of revisions per artefact (default `20`, max `100`). Rename redirects preserve canonical and share paths. Deleted artefacts return 404 and reserve their slug; administrators can restore them for 30 days unless purge has started. Timed D1 cleanup is tracked in [issue #11](https://github.com/go-silex/unkill-forge/issues/11).
+
+Use **Deleted artefacts** on the manage host to restore or permanently purge. Purge works in bounded batches: select **Continue purge** until the page confirms completion. In **Redirects**, administrators can manage slash-terminated `/a/…/` or `/s/…/` aliases; source and target must use the same namespace.
 
 ## Deploy
 
@@ -87,19 +105,26 @@ Before upgrading to the share-link release, set `FORGE_SEAL_KEY` on the target W
 
 Migration `0008_redirects.sql` adds redirects and purge bookkeeping, including leases so interrupted purge batches can be retried. The previous Worker can still publish and serve content after migration. Do not run purge during mixed-version rollout or roll back with an active purge.
 
+Apply `0009_ui_flashes.sql` before deploying the admin UI. It adds one-use notices for browser form redirects and indexes for the artefact catalogue.
+
 ## Connect an agent
 
-- **Claude and Codex:** Use their native CIMD support with the Streamable HTTP URL `https://<manage>/mcp`, then sign in and approve the request.
+Open **Connect an agent** at `https://<manage>/connect` for instance-specific steps for claude.ai, Claude Desktop, Claude Code, Codex, OMP and Hermes.
+
+- **claude.ai and Claude Desktop:** Follow [Claude’s remote connector instructions](https://support.claude.com/en/articles/11175166-get-started-with-custom-connectors-using-remote-mcp). Individuals start in **Customize → Connectors**. On Team and Enterprise, an authorized organization administrator first adds it under **Organization settings → Connectors → Add → Custom → Web**; members then connect under **Customize → Connectors**. Enter `https://<manage>/mcp`, choose **Use Claude’s published identity** (CIMD), then sign in to Forge and approve access. Desktop uses the same remote connector, not its local configuration file.
+- **Claude Code and Codex:** Use their native CIMD support with the Streamable HTTP URL `https://<manage>/mcp`, then sign in and approve the request.
 - **OMP:** Use the Forge-hosted CIMD document with a loopback callback:
 
   ```json
   {"type":"http","url":"https://<manage>/mcp","oauth":{"clientId":"https://<manage>/oauth/clients/local.json","redirectUri":"http://127.0.0.1:3000/callback"}}
   ```
 
-  Consent shows this generic client as an unverified local application and shows the loopback port.
+  Run `/mcp reload`, then `/mcp reauth forge`, and approve access. Consent shows this generic client as an unverified local application and shows the loopback port.
 
 - **Hermes:** Create a bot and token under **Bots and API tokens**, copy the token when shown, and send `Authorization: Bearer fgt_<token>` to the same `/mcp` URL.
 - For browser-based MCP clients, add their exact HTTPS origins to the optional comma-separated `MCP_ALLOWED_ORIGINS`. Leave it unset for clients that do not send an `Origin` header.
+
+Publishers and administrators can also create a personal bearer token under **API tokens**. Copy it on first display; Forge cannot show it again. Prefer a dedicated bot token for unattended automation.
 
 OAuth access tokens last up to one hour and are shortened near the grant's seven-day cap. Codes are single-use: overlapping exchanges revoke the grant, and only a confirmed KV rate limit before the code is consumed permits retrying it. Access tokens without `grantId` are refused.
 

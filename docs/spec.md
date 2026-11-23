@@ -323,27 +323,30 @@ Removal revokes the member's sessions and API tokens and advances their D1-order
 
 ## 11. Admin UI (manage host)
 
-Server-rendered with Hono JSX: no SPA, a few lines of JavaScript for copy buttons. English and French.
+Server-rendered with Hono JSX: no SPA. Shared role-aware navigation links to the pages below. English and French cover both hosts' Forge-authored interface copy; provider labels, member names and artefact content are data, not translations.
 
-Pages:
-
-- sign-in (one button per provider), pending access;
-- artefacts (search, visibility filter);
-- artefact detail: open, files, revisions with restore, visibility, share links create/copy/revoke, rename, delete;
-- members (humans with their provider, bots, roles, removal, reinstatement), invite links;
-- API tokens, redirects;
-- "Connect an agent": MCP URL and per-client steps;
-- OAuth consent.
+| Route                            | Access and actions                                                                                                                                                                                                                           |
+| -------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `/login`, `/`, `/invite/<token>` | Provider sign-in, pending access or management home, invitation entry.                                                                                                                                                                       |
+| `/artefacts`                     | Active members. Search by slug or title prefix and filter by visibility; list is paginated independently from MCP's substring search.                                                                                                        |
+| `/artefacts/<slug>`              | Active members can open the canonical artefact and browse file and revision pages. Publishers and admins can restore a revision, change visibility, create/reveal/revoke share links, rename and delete. Only admins can supply a share key. |
+| `/admin/deleted`                 | Admins. Restore within 30 days unless purge started; start or continue bounded purge until it completes.                                                                                                                                     |
+| `/tokens`                        | Publishers and admins. Create or revoke their own API tokens and see keyless metadata including last use.                                                                                                                                    |
+| `/admin/members`, `/admin/bots`  | Admins. Manage humans, bots, roles, pending access, reinstatement, invites and bot tokens.                                                                                                                                                   |
+| `/admin/redirects`               | Admins. List, add or remove redirect prefixes under the same rules as `set_redirects`.                                                                                                                                                       |
+| `/connect`, `/authorize`         | Active members. Get the MCP URL and setup instructions for claude.ai, Claude Desktop, Claude Code, Codex, OMP and Hermes; review OAuth consent on `/authorize`.                                                                              |
 
 On **Members**, admins choose a role and create an invite link, valid for seven days and one admission. The URL is shown only at creation. The page lists unused, unexpired invites and lets admins revoke them. Invite creation, consumption and revocation are audited; create, revoke and reinstate forms require the manage origin.
 
+Mutation forms require the manage origin, an active session, and core authorization. Forms are bounded at 32 KiB. Slug-keyed artefact forms include the displayed artefact ID; if the slug has since changed owners, core refuses the action. Management mutations use a 303 redirect with a random, non-secret continuation ID. Each two-minute flash is bound to the session, role, path and query, and requires a document navigation; the navigation may pass through an identity provider for silent revalidation. The management referrer policy keeps continuation URLs off other origins. Creation and explicit share-link reveal can return a copyable secret in the flash. The value is sealed in D1, never in a redirect URL or audit log, and removed from the DOM on back/forward-cache restore. Consent redirects to the registered OAuth callback, not to a management page.
+
 ## 12. Configuration, branding, deployment
 
-| Kind     | Names                                                                                                                                                                                                                                                     |
-| -------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Vars     | `FORGE_NAME`, `READ_ORIGIN`, `MANAGE_ORIGIN`, `ADMIN_EMAILS`, `AUTH_PROVIDERS` (JSON list of provider settings, §10), optional `MCP_ALLOWED_ORIGINS`; `ALLOW_DCR`, `PUBLIC_INDEX` and `ALLOW_INDEXING` default to `false`; `LOCALE` and limits in Phase 1 |
-| Secrets  | `FORGE_SEAL_KEY`, `FORGE_COOKIE_KEY`, one `AUTH_<ID>_CLIENT_SECRET` per provider                                                                                                                                                                          |
-| Bindings | `DB` (D1), `BLOBS` (R2), `OAUTH_KV` (KV), optional rate-limit binding                                                                                                                                                                                     |
+| Kind     | Names                                                                                                                                                                                                                          |
+| -------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Vars     | `FORGE_NAME`, `READ_ORIGIN`, `MANAGE_ORIGIN`, `ADMIN_EMAILS`, `AUTH_PROVIDERS` (§10), optional `LOCALE`, `BRAND`, `MCP_ALLOWED_ORIGINS` and limits below; `ALLOW_DCR`, `PUBLIC_INDEX` and `ALLOW_INDEXING` default to `false`. |
+| Secrets  | `FORGE_SEAL_KEY`, `FORGE_COOKIE_KEY`, one `AUTH_<ID>_CLIENT_SECRET` per provider                                                                                                                                               |
+| Bindings | `DB` (D1), `BLOBS` (R2), `OAUTH_KV` (KV), optional rate-limit binding                                                                                                                                                          |
 
 The publish limits are positive integers: `MAX_FILES_PER_ARTEFACT` (default `1000`, up to `10000`, applied to the resulting revision), `MAX_BLOB_WRITES_PER_CALL` (default `500`, up to `900` to stay within the Workers subrequest budget), and `MAX_INLINE_BYTES` (default `2097152`, up to `8388608`, summed decoded bytes per call). Each of the `files` and `delete` arrays is independently capped at 10,000 entries.
 
@@ -352,7 +355,8 @@ The publish limits are positive integers: `MAX_FILES_PER_ARTEFACT` (default `100
 `REVISION_RETENTION` defaults to `20` and accepts positive integers up to `100`.
 
 - Configuration is parsed once. Any invalid value makes every request answer 503 and logs the list of errors.
-- **Branding** is data: name, logo, favicon, colours and landing text, from configuration and `brand/`. Page structure, sign-in and consent markup belong to Forge, so forks merge upstream without touching security-relevant templates.
+- **Locale:** `LOCALE` accepts `en` (default) or `fr`.
+- **Branding:** `FORGE_NAME` supplies the display name. Optional `BRAND` is a JSON object with `accent` (six hexadecimal digits prefixed with `#`) and `landingText` (plain text, up to 500 characters, for the non-index read landing). Defaults for the accent and SVG logo/favicon live in `brand/defaults.ts`, are bundled at build time and are served from same-origin routes on both hosts. Page structure, sign-in and consent markup belong to Forge.
 
 Deployment needs a Cloudflare zone for the two hostnames, plus at least one identity provider. Order:
 
@@ -368,7 +372,7 @@ Operators who keep their configuration private run `npm run deploy -- --config <
 
 ## 13. Security
 
-- **Origins.** Dispatch on the configured origins before anything else; host-only cookies; no route shared between hosts.
+- **Origins.** Dispatch on the configured origins before anything else; host-only cookies. Only the built-in branding assets are served on both hosts.
 - **Cross-origin writes.** The two hosts are same-site, so SameSite cookies do not stop a read-origin page from sending requests to the manage host. Every state-changing request authenticated by cookie (UI forms, consent, logout) requires `Origin` to equal the manage origin exactly. MCP rejects any browser `Origin` other than an allowlisted client origin.
 - **Manage host.** Strict CSP, `frame-ancestors 'none'`. Uploaded content is never served from it.
 - **Sign-in.** Flow bound to the browser and consumed once; PKCE S256; nonce; strict issuer and audience checks; no implicit or hybrid flows; refusal on any missing required claim; a provider or D1 failure denies access.
@@ -448,7 +452,14 @@ Known limits, stated in `docs/security.md`:
 19. **Rename and alias identity:** redirect targets use stable artefact IDs, not another redirect URL; slug checks reserve aliases and incomplete purges, and live slugs always win.
 20. **Alias privacy:** canonical aliases use the target's access policy without disclosing its slug before access; share aliases verify the key against the live target before redirecting and return the uniform 404 for invalid or revoked keys. Alias redirects are uncacheable.
 21. **Revision pruning:** keep the configured tail visible immediately and prune up to two outdated revisions per commit; leave catch-up and time-based D1 cleanup to issue #11.
-22. **Bounded admin purge:** process up to 256 indexed D1 file rows, then after hard deletion select at most 64 candidates by index per step and make indexed reference and claim probes only for that page. Resume by artefact ID. Automatic expiry in issue #11 removes only D1 metadata, never R2 blobs.
+22. **Bounded admin purge:** batch up to 256 indexed D1 rows per dependent collection (files, share links and redirects); after hard deletion select at most 64 blob candidates per step. Audit the start and completion separately. Resume by artefact ID. Automatic expiry in issue #11 removes only D1 metadata, never R2 blobs.
 23. **Blob purge fence:** atomically claim unreferenced hashes before R2 deletion; the reference check includes unexpired stored uploads. Claim acquisition and release advance a D1 epoch; overlapping inline writes and verifying uploads, even unrelated ones, may return a retryable conflict. The `alreadyStored` shortcut rechecks the source reference in its insert transaction.
 24. **Purge retries:** one attempt per artefact holds a 15-minute lease. On a settled error it releases its lease but keeps its hash claims. After expiry another call can take over and reissue the delete; token checks prevent stale attempts from changing claims, candidates or the successor lease. Known double fault: if the original R2 delete is still outstanding after 15 minutes and the same bytes are republished after the successor releases the claim but before the original delete lands, the late delete can remove the new object. Do not purge during mixed-version rollout or roll back to an unfenced Worker.
 25. **Orphaned blobs:** explicit purge cannot identify bytes whose last artefact association was already removed by retention. An unexpired stored upload also protects its bytes during purge; if it later expires unused, its bytes may remain in R2 without a reference.
+26. **UI catalogue:** show newest activity first when browsing; use indexed literal prefix ranges for slug then title when searching, with keyset cursors bound to visibility and search. Pages advance a bounded number of candidates. If duplicates fill a page, say there are no new matches on this page and offer the continuation; MCP substring searches and cursors are unchanged.
+27. **Personal tokens:** publishers and admins can manage their own tokens; admins manage bot credentials separately. Downgrading a human to viewer disables both use and management of their tokens while downgraded.
+28. **One-use UI flashes:** D1 consumes each continuation atomically; seal secrets with a key derived from `FORGE_COOKIE_KEY`. Separate destination-bound continuation IDs let concurrent tabs complete independently.
+29. **Purge progress:** surface jobs by stable ID even after the artefact row has been removed; a user POST drives at most one core step.
+30. **Brand and locale:** locale is a validated instance setting; bundle SVG assets and allow only plain landing text and a hex CSS accent override to keep both hosts' templates and policy fixed.
+31. **Stale management forms:** bind the displayed artefact ID to the slug. Restoring its previous revision or deleting it must not affect a replacement at that slug.
+32. **Management history:** display member names and minute-precision dates in the configured locale and UTC; keep the MCP revision author field as an ID.

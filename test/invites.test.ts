@@ -3,6 +3,7 @@ import { expect, it, vi } from 'vitest'
 import {
   admin,
   Browser,
+  flashNavigation,
   listedId,
   location,
   manage,
@@ -37,11 +38,18 @@ it('keeps Gate 0 login flow inserts and deletes compatible after migration', asy
 
 async function createInvite(owner: Browser, role: string) {
   const response = await owner.post(members, { action: 'create-invite', role })
-  expect(response.status).toBe(200)
+  expect(response.status).toBe(303)
   expect(response.headers.get('Cache-Control')).toBe('no-store')
-  const link = /<code>(https:\/\/[^<]+\/invite\/[A-Za-z0-9_-]{43})<\/code>/.exec(await response.text())?.[1]
+  const destination = location(response)
+  expect(destination.origin + destination.pathname).toBe(manage + members)
+  expect(await response.text()).not.toContain('/invite/')
+  const landing = await owner.request(destination, { headers: flashNavigation })
+  expect(landing.status).toBe(200)
+  expect(landing.headers.get('Cache-Control')).toBe('no-store')
+  const link = /<code>(https:\/\/[^<]+\/invite\/[A-Za-z0-9_-]{43})<\/code>/.exec(await landing.text())?.[1]
   if (!link) throw new Error('No invite URL was shown')
   expect(new URL(link).origin).toBe(manage)
+  expect(await (await owner.request(destination, { headers: flashNavigation })).text()).not.toContain(link)
   return link
 }
 
@@ -202,7 +210,11 @@ it('lists and claims invites using D1 time and can revoke an expired unused invi
   }
   expect(await (await browser.request('/')).text()).toContain('expired-invitee (viewer)')
   expect((await owner.post(members, { action: 'revoke-invite', id })).status).toBe(303)
-  expect((await owner.post(members, { action: 'revoke-invite', id })).status).toBe(409)
+  const conflict = await owner.post(members, { action: 'revoke-invite', id })
+  expect(conflict.status).toBe(303)
+  expect(await (await owner.request(location(conflict), { headers: flashNavigation })).text()).toContain(
+    'Member action not allowed',
+  )
 })
 
 it('does not re-admit a removed identity by invite, auto-join or a listed bootstrap email', async () => {
@@ -244,6 +256,8 @@ it('restricts invite creation and revocation to same-origin admins and audits a 
   expect((await viewer.post(members, create)).status).toBe(403)
   expect((await owner.post(members, create, read)).status).toBe(403)
   expect((await owner.post(members, create, '')).status).toBe(403)
+  const oversized = await owner.post(members, { ...create, padding: 'a'.repeat(40_000) })
+  expect(oversized.status).toBe(400)
 
   const link = await createInvite(owner, 'publisher')
   const id = await listedId(owner, members, 'revoke-invite')
@@ -253,7 +267,11 @@ it('restricts invite creation and revocation to same-origin admins and audits a 
   const browser = new Browser(send)
   const callback = await idp.issue(await beginInvite(browser, link), 'revoked-invitee')
   expect((await owner.post(members, revoke)).status).toBe(303)
-  expect((await owner.post(members, revoke)).status).toBe(409)
+  const conflict = await owner.post(members, revoke)
+  expect(conflict.status).toBe(303)
+  expect(await (await owner.request(location(conflict), { headers: flashNavigation })).text()).toContain(
+    'Member action not allowed',
+  )
   expect((await send(link)).status).toBe(404)
   expect((await browser.request(callback)).status).toBe(302)
   expect(await (await browser.request('/')).text()).toContain('revoked-invitee (viewer)')
