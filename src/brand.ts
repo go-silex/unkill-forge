@@ -71,7 +71,7 @@ const style = `
   .forge-button:where(:hover) { border-color: var(--forge-accent) }
   .forge-button--primary { color: var(--forge-on-accent); background: var(--forge-accent); border-color: var(--forge-accent) }
   .forge-button--danger { color: var(--forge-danger) }
-  :where(.forge-table .forge-button) { min-height: 2rem; padding-block: calc(.5 * var(--forge-space)) }
+  @media (pointer: fine) { :where(.forge-table .forge-button) { min-height: 2rem; padding-block: calc(.5 * var(--forge-space)) } }
   .forge-notice { margin-block: calc(2 * var(--forge-space)); padding: var(--forge-space) calc(2 * var(--forge-space)); background: var(--forge-surface); border-inline-start: .2em solid var(--forge-accent); border-radius: var(--forge-radius) }
   .forge-secret { display: flex; flex-wrap: wrap; align-items: center; gap: var(--forge-space) }
   .forge-empty { color: var(--forge-muted) }
