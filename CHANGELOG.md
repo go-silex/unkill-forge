@@ -1,6 +1,6 @@
 # Changelog
 
-## v2.0.0 — Unreleased
+## v2.0.0 — 2026-11-23
 
 - Self-host one Forge instance on Cloudflare Workers with D1, a private R2 bucket, KV and separate read and manage hosts.
 - Sign in with GitHub, Google or an OIDC provider; manage membership, invites, bots and revocable API tokens.
