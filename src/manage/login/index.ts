@@ -234,6 +234,11 @@ async function callback(
         flowCreatedAt: flow.createdAt,
       }))
     ) {
+      const current = await readSession(db, previous.idHash, Date.now())
+      if (current) {
+        if (current.validatedAt >= flow.createdAt) return respond(302, null, path)
+        return respond(401, text.invalidSession)
+      }
       return respond(401, text.invalidSession, undefined, writeCookie(sessionCookie, '', 0))
     }
     return respond(302, null, path)
