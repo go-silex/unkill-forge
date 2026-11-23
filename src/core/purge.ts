@@ -8,21 +8,35 @@ const blobStep = 64
 const attemptLeaseMs = 15 * 60 * 1000
 
 /** Drive an explicit purge by stable artefact ID until `done`. A live artefact must be deleted first. */
-export async function purgeArtefact({ env: { DB: db, BLOBS: blobs } }: Runtime, member: Member, id: string) {
+export async function purgeArtefact(runtime: Runtime, member: Member, id: string) {
   requireAdmin(member)
-  const [, job] = await db.batch<{ slug: string; deleted: number }>([
-    db
-      .prepare(`INSERT INTO artefact_purges (slug, artefact_id)
-        SELECT slug, id FROM artefacts WHERE id = ? AND deleted_at IS NOT NULL ON CONFLICT DO NOTHING`)
-      .bind(id),
-    db
-      .prepare(`SELECT p.slug, a.id IS NULL AS deleted FROM artefact_purges p
-        LEFT JOIN artefacts a ON a.id = p.artefact_id WHERE p.artefact_id = ?`)
-      .bind(id),
-  ])
-  const pending = job.results[0]
+  return runPurgeStep(runtime, id, member.id)
+}
+
+/** Advance a registered purge only; automatic work has no human audit actor. */
+export function resumeArtefactPurge(runtime: Runtime, id: string) {
+  return runPurgeStep(runtime, id, null)
+}
+
+async function runPurgeStep({ env: { DB: db, BLOBS: blobs } }: Runtime, id: string, memberId: string | null) {
+  const lookup = db
+    .prepare(`SELECT p.slug, a.id IS NULL AS deleted FROM artefact_purges p
+      LEFT JOIN artefacts a ON a.id = p.artefact_id WHERE p.artefact_id = ?`)
+    .bind(id)
+  const pending =
+    memberId === null
+      ? await lookup.first<{ slug: string; deleted: number }>()
+      : (
+          await db.batch<{ slug: string; deleted: number }>([
+            db
+              .prepare(`INSERT INTO artefact_purges (slug, artefact_id)
+                SELECT slug, id FROM artefacts WHERE id = ? AND deleted_at IS NOT NULL ON CONFLICT DO NOTHING`)
+              .bind(id),
+            lookup,
+          ])
+        )[1].results[0]
   if (!pending) {
-    if (await db.prepare('SELECT 1 FROM artefacts WHERE id = ?').bind(id).first())
+    if (memberId !== null && (await db.prepare('SELECT 1 FROM artefacts WHERE id = ?').bind(id).first()))
       throw new ArtefactError('conflict', 'Delete the artefact before purging')
     return { done: true }
   }
@@ -48,7 +62,7 @@ export async function purgeArtefact({ env: { DB: db, BLOBS: blobs } }: Runtime, 
       db
         .prepare(`INSERT INTO audit_log (id, at, member_id, action, artefact_id, detail_json)
           SELECT ?, ?, ?, 'artefact.purge', ?, '{}' WHERE changes() = 1`)
-        .bind(crypto.randomUUID(), Date.now(), member.id, id),
+        .bind(crypto.randomUUID(), Date.now(), memberId, id),
     ])
     if (hardDelete.meta.changes === 0) return { done: false }
   }

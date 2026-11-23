@@ -18,7 +18,7 @@ Design target: one person can read the whole codebase in an afternoon and deploy
 | G2  | Three ways to read: members (private), anyone holding a revocable share link, everyone (public).                                                                                                                                                |
 | G3  | Sign-in through GitHub, Google, or an external identity manager over OIDC (an in-house identity provider, Cloudflare Access, Keycloak, Entra…). Deactivation at the identity manager reaches Forge. Instance roles; bot members for automation. |
 | G4  | Forkable: Cloudflare only (Workers, D1, R2, KV); branding through configuration and assets, not code edits.                                                                                                                                     |
-| G5  | Small: a runtime budget around 5,000 lines of TypeScript, tracked, not a release gate; at most four docs besides README.                                                                                                                        |
+| G5  | Small: a runtime budget around 5,000 lines of TypeScript, tracked, not a release gate; at most four guides besides README (see §17).                                                                                                            |
 | G6  | Safe defaults: new artefacts are private; untrusted HTML runs on its own origin; every authorization decision reads live state.                                                                                                                 |
 
 Non-goals:
@@ -204,11 +204,11 @@ Response headers:
 - A new artefact starts private at revision 1. Its title defaults to the slug. Content types come from the extension unless supplied. The result returns the entry URL: `/a/<slug>/` when `index.html` exists, otherwise the first file with base media type `text/html` in path order or, if none, the first file in path order. `publish` computes the entry in the revision commit and caches it after the commit. Revisions with a missing cached entry compute it on demand. A cache write failure is logged and never prevents delivery or publishing.
 - **Restore** uses the same compare-and-set and entry selection to create a new revision from the files in a retained revision, without copying or rewriting R2 bytes. The currently attached artefact title, visibility and share links are unchanged.
 - **Rename** compares and sets the slug and creates redirects from `/a/<old>/` and `/s/<old>/` in the same transaction. Redirects point to artefact IDs, so prior aliases resolve straight to the current slug. Share keys remain unchanged. Rename can reclaim a slug reserved only by its own aliases and removes the root aliases atomically; nested admin aliases are retained. Rename replaces redirects at the old roots; a manually configured longer canonical prefix can still take precedence.
-- **Delete** hides the artefact and all aliases immediately. An admin can restore the artefact for 30 days unless explicit purge has started. The slug remains reserved; the daily D1-only cleanup is wired in issue #11.
-- **Blobs are append-only except for explicit admin purge.** Admin purge requires a soft-deleted artefact and stages candidate hashes while removing D1 file rows in chunks. After hard-deleting the artefact, it claims each remaining hash only if there are no file rows or unexpired `stored` uploads referencing it. D1 rejects new references while a claim is active, and stale inline storage or upload verification cannot commit across a claim boundary. Invoke purge with a stable artefact ID until `done`; a settled R2 delete failure can be retried with the same ID.
+- **Delete** hides the artefact and all aliases immediately. An admin can restore it for 30 days unless purge has started. Its slug remains reserved until purge completes. The daily job registers artefacts deleted more than 30 days ago.
+- **Blobs are append-only except for fenced purge.** An admin can start it early for a soft-deleted artefact. Scheduled and explicit purges share the same resumable steps: stage candidate hashes while removing D1 file rows in chunks, then hard-delete the artefact and claim each remaining hash only if no file or unexpired `stored` upload references it. D1 rejects new references while a claim is active, and stale writes cannot commit across a claim boundary. Pending jobs are resumed by stable artefact ID, including after hard deletion.
 - Verification copies under `upload-verification/` are not artefact blobs and are outside admin purge. The Worker normally deletes them immediately; an interrupted verification can leave a copy that expires after one day under the required R2 bucket lifecycle rule. Physical deletion is asynchronous and typically occurs within a further 24 hours.
 - Republishing identical bytes does not restore a referenced R2 object deleted out of band: D1-based deduplication skips that write, and the missing blob is an operator incident.
-- Live writes prune up to two expired revisions per commit; revision reads, listing and restore enforce the retention cutoff immediately. Issue #11's cron expires login flows, sessions, uploads, handoffs, invites, old identity revocations and any remaining revisions beyond retention.
+- Live writes prune up to two expired revisions per commit; revision reads, listing and restore enforce the retention cutoff immediately. The daily sweep catches up on inactive live artefacts and retains soft-deleted manifests for purge. At 03:00 UTC, each bounded task expires rows, prunes revisions or advances purges independently; see [maintenance bounds](architecture.md#maintenance).
 - A reader who loads a page during a publish may get assets from two revisions. Accepted.
 
 ## 9. MCP server
@@ -354,17 +354,9 @@ The publish limits are positive integers: `MAX_FILES_PER_ARTEFACT` (default `100
 - Configuration is parsed once. Any invalid value makes every request answer 503 and logs the list of errors.
 - **Branding** is data: name, logo, favicon, colours and landing text, from configuration and `brand/`. Page structure, sign-in and consent markup belong to Forge, so forks merge upstream without touching security-relevant templates.
 
-Deployment needs a Cloudflare zone for the two hostnames, plus at least one identity provider. Order:
+See the [self-hosting guide](self-hosting.md) for the Deploy to Cloudflare button, manual creation of bindings, provider callbacks, secrets, Custom Domains, lifecycle configuration, bootstrap and backups. `npm run deploy -- --config <path>` applies migrations and deploys; it does not provision resources. Keep the operator configuration outside this repository.
 
-1. Register Forge as a client of each provider. The callback is `https://<manage>/login/<id>/callback`; for OIDC managers that support it, the back-channel logout URI is `https://<manage>/login/<id>/backchannel-logout`.
-2. Create D1, R2 and KV first. Clone → `npm ci` → configure origins, providers and bindings → set secrets → `npm run deploy`. The script applies migrations and deploys; it does not provision resources.
-   The `0002_oauth_code_redemption.sql` migration upgrades databases that already applied `0001_init.sql`, including those where the redemption table was manually added.
-3. Attach the two custom domains.
-4. Sign in with an `ADMIN_EMAILS` address.
-
-Database migrations are additive and must keep the previous Worker working; `INSERT` statements always name their columns. Any degraded behaviour of the previous Worker during the rollout window is listed in the README upgrade steps.
-
-Operators who keep their configuration private run `npm run deploy -- --config <path>` with a file outside the repository. Workers Free is enough for light use; Workers Paid is recommended for large publishes (CPU time).
+Database migrations are additive and must keep the previous Worker working; `INSERT` statements always name their columns. Any degraded behaviour during a mixed-version rollout is listed in the [upgrade guide](self-hosting.md#upgrades-maintenance-and-backups).
 
 ## 13. Security
 
@@ -376,20 +368,12 @@ Operators who keep their configuration private run `npm run deploy -- --config <
 - **API tokens.** 256 random bits, stored as SHA-256, shown once, revocable, `last_used_at` tracked.
 - **Audit.** Every mutation writes `audit_log`. Optional rate limiting on sign-in, OAuth, handoff and share paths.
 
-Known limits, stated in `docs/security.md`:
-
-- Artefact JavaScript acts with the viewer's read access and can sign the browser into another read session (login CSRF on the read host). There is no separate read-host sign-out; sign out on the manage host. Publishers are trusted; never publish untrusted third-party HTML. Per-artefact origins are the upgrade path.
-- A share key travels in the URL. `Referrer-Policy` keeps it from third parties by default, but artefact HTML can override the policy, artefact JavaScript can read its own URL, and Cloudflare request logs may record paths. Anyone holding a link can forward it until revocation.
-- An invite URL can appear in platform request logs. Treat it as a bearer secret until it is used, revoked or expires.
-- Back-channel logout is best effort. A missing notification can leave the Forge session alive until revalidation or the cap. If the IdP session ends without a logout notification, the grant is only caught by subject-wide revocation, member removal or the 7-day grant end.
-- The OAuth provider accepts the previous refresh token until the next one is used, without reuse detection. The 7-day absolute grant end bounds a stolen refresh token.
-- If all replay-marker writes fail, replay revocation relies on the provider deleting the KV grant. Other Cloudflare locations can keep seeing that grant for 60 seconds or more (KV `cacheTtl`). During that window the first exchange's access token is accepted there, and a refresh there writes the grant back to KV, which restores it everywhere until another revocation or the 7-day grant end. The same outcome follows if the KV grant deletion fails. Exploiting it requires redeeming a code first, which needs its PKCE verifier, plus the D1 write failure.
-- Bytes already downloaded cannot be recalled.
+See [security and known limits](security.md) for the trust model, browser isolation, logout and OAuth failure modes, bearer URLs, and purge limits.
 
 ## 14. Repository and process
 
-- Public, MIT, fresh history. Contents: `src`, `migrations`, `brand`, `test`, four docs, README, CHANGELOG (user-facing, one line per change), SECURITY, CONTRIBUTING.
-- Never in this repository: instance configuration, account identifiers, operational logs, migrations from other systems.
+- Public, MIT, fresh history. Contents: `src`, `migrations`, `brand`, `test`, the product specification, four guides, README, CHANGELOG (user-facing, one line per change), SECURITY, CONTRIBUTING.
+- Never in this repository: instance configuration, account identifiers, operational logs, or importers and migration tooling for other systems. Versioned Forge D1 schema migrations are part of the product.
 - CI on pull requests: typecheck, lint, tests. Release: tag `vX.Y.Z` plus changelog. Dependabot.
 - Behaviour tests on real D1/R2 cover:
   - the access matrix and share-link rule;
@@ -399,7 +383,8 @@ Known limits, stated in `docs/security.md`:
   - login flow replay, required claims, revalidation outcomes, back-channel logout by `sid` and by `sub`;
   - handoff binding and replay;
   - admission, removal and reinstatement;
-  - OAuth consent and API-token resolution.
+  - OAuth consent and API-token resolution;
+  - scheduled expiry, revision retention, and resumable soft-delete purge.
 
 ## 15. Delivery
 
@@ -436,7 +421,7 @@ Known limits, stated in `docs/security.md`:
 7. **HTTP ranges:** single byte ranges are supported; unsupported units, malformed and multipart ranges fall back to the whole response.
 8. **Upload validity:** capability URLs expire after 15 minutes; a stored upload has one hour to be published. The Worker samples its clock before the relevant D1 call. A PUT interrupted before finalization stays in `receiving`; the URL cannot be retried.
 9. **Upload deduplication:** under the trusted-member model, a known hash can reuse bytes of a soft-deleted artefact or retained revision still referenced in D1. An existing R2 object with matching checksum and size can also be reused, but the Worker still verifies the current PUT with an isolated temporary R2 write before acknowledging it; it deletes the temporary key without touching the incumbent.
-10. **Upload cleanup:** issue #11 expires upload rows; it does not garbage-collect blobs.
+10. **Upload cleanup:** scheduled expiry removes upload rows only, not R2 blobs.
 11. **Verification copy retention:** fresh and upgraded deployments must configure one-day expiry on `upload-verification/`. An interrupted verification can leave a copy until that expiry and subsequent asynchronous R2 deletion; admin purge does not remove it.
 12. **Share-link management:** publishers may create, list, reveal and revoke links for any live artefact; only admins may import keys.
 13. **Share-link revocation:** revoked links are excluded from metadata and reveal; their hashes stay reserved to prevent reactivating the URL by reusing its key.
@@ -447,8 +432,12 @@ Known limits, stated in `docs/security.md`:
 18. **Revision entries:** cache the chosen entry path on the immutable revision to avoid rescanning its files on reads. Persist the cache best-effort; a failed write does not discard the computed entry or roll back a publish.
 19. **Rename and alias identity:** redirect targets use stable artefact IDs, not another redirect URL; slug checks reserve aliases and incomplete purges, and live slugs always win.
 20. **Alias privacy:** canonical aliases use the target's access policy without disclosing its slug before access; share aliases verify the key against the live target before redirecting and return the uniform 404 for invalid or revoked keys. Alias redirects are uncacheable.
-21. **Revision pruning:** keep the configured tail visible immediately and prune up to two outdated revisions per commit; leave catch-up and time-based D1 cleanup to issue #11.
-22. **Bounded admin purge:** process up to 256 indexed D1 file rows, then after hard deletion select at most 64 candidates by index per step and make indexed reference and claim probes only for that page. Resume by artefact ID. Automatic expiry in issue #11 removes only D1 metadata, never R2 blobs.
+21. **Revision pruning:** keep the configured tail visible immediately; prune up to two outdated revisions per commit and up to two per daily sweep, leaving soft-deleted manifests available for purge.
+22. **Bounded purge:** process up to 256 indexed D1 file rows, then after hard deletion select at most 64 candidates by index per step and make indexed reference and claim probes only for that page. Resume by artefact ID.
 23. **Blob purge fence:** atomically claim unreferenced hashes before R2 deletion; the reference check includes unexpired stored uploads. Claim acquisition and release advance a D1 epoch; overlapping inline writes and verifying uploads, even unrelated ones, may return a retryable conflict. The `alreadyStored` shortcut rechecks the source reference in its insert transaction.
 24. **Purge retries:** one attempt per artefact holds a 15-minute lease. On a settled error it releases its lease but keeps its hash claims. After expiry another call can take over and reissue the delete; token checks prevent stale attempts from changing claims, candidates or the successor lease. Known double fault: if the original R2 delete is still outstanding after 15 minutes and the same bytes are republished after the successor releases the claim but before the original delete lands, the late delete can remove the new object. Do not purge during mixed-version rollout or roll back to an unfenced Worker.
-25. **Orphaned blobs:** explicit purge cannot identify bytes whose last artefact association was already removed by retention. An unexpired stored upload also protects its bytes during purge; if it later expires unused, its bytes may remain in R2 without a reference.
+25. **Orphaned blobs:** purge cannot identify bytes whose last artefact association was already removed by retention. An unexpired stored upload also protects its bytes during purge; if it later expires unused, its bytes may remain in R2 without a reference.
+26. **Daily maintenance:** at 03:00 UTC clean up at most 128 rows per expiry table per run at their stored expiry; keep identity revocations for eight days to cover the seven-day grant plus code lifetime and clock margin.
+27. **Automatic purge:** discover at most eight artefacts deleted more than 30 days ago and advance at most four registered jobs per run, rotating failed jobs as well as successful ones.
+28. **Deploy button:** provision D1, R2 and KV and apply the schema with `npm run deploy`, but keep the Worker unrouted until operators configure providers, secrets, the R2 lifecycle rule and Custom Domains.
+29. **Documentation budget:** G5 counts the four maintained guides (self-hosting, MCP, architecture, security); the product specification and root project metadata are not operator guides.
