@@ -4,7 +4,7 @@ Forge is a self-hosted service for publishing HTML artefacts at stable URLs, con
 
 **Phase 1:** this build delivers public and private artefacts, revocable share links, revision history and restore, rename redirects, and soft deletion. MCP also supports publishing, editing, reading and streamed binary uploads. Sign-in, member administration and bot administration are available; deleted-artefact restoration and hard purge are core-only until the admin UI adds them. See [the specification](docs/spec.md).
 
-The runtime is 5,153 lines under `src/`.
+The runtime is 5,162 lines under `src/`.
 
 ## Configure sign-in
 
@@ -128,6 +128,10 @@ MCP tools:
 3. Within an hour of storage, call `publish` for the same slug with the returned `{path, uploadId}` entries. Keep upload URLs private; PUT needs no additional authentication.
 
 Use `MAX_UPLOAD_BYTES` in Wrangler vars to lower the per-file limit from its default and maximum of `100000000` bytes (100 MB).
+
+## Known limits
+
+- Purge retries use a 15-minute lease. If an R2 delete remains outstanding beyond the lease and the same bytes are republished after a successor releases the claim but before the original delete lands, the late delete can remove the newly published object.
 
 ## License
 

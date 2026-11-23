@@ -64,20 +64,21 @@ export async function purgeArtefact({ env: { DB: db, BLOBS: blobs } }: Runtime, 
   if (attempt.meta.changes === 0) return { done: false }
   try {
     await deleteBlobPage(db, blobs, id, slug, token)
+    const finished = await db
+      .prepare(`DELETE FROM artefact_purges WHERE artefact_id = ?1
+        AND EXISTS (SELECT 1 FROM purge_attempts WHERE artefact_id = ?1 AND token = ?2)
+        AND NOT EXISTS (SELECT 1 FROM purge_candidates WHERE slug = artefact_purges.slug)
+        AND NOT EXISTS (SELECT 1 FROM artefacts WHERE id = ?1)`)
+      .bind(id, token)
+      .run()
+    return {
+      done:
+        finished.meta.changes === 1 ||
+        !(await db.prepare('SELECT 1 FROM artefact_purges WHERE artefact_id = ?').bind(id).first()),
+    }
   } finally {
     // Keep hash claims on failure, but let the next request retry once this delete has settled.
     await db.prepare('DELETE FROM purge_attempts WHERE artefact_id = ? AND token = ?').bind(id, token).run()
-  }
-  const finished = await db
-    .prepare(`DELETE FROM artefact_purges WHERE artefact_id = ?1
-      AND NOT EXISTS (SELECT 1 FROM purge_candidates WHERE slug = artefact_purges.slug)
-      AND NOT EXISTS (SELECT 1 FROM artefacts WHERE id = ?1)`)
-    .bind(id)
-    .run()
-  return {
-    done:
-      finished.meta.changes === 1 ||
-      !(await db.prepare('SELECT 1 FROM artefact_purges WHERE artefact_id = ?').bind(id).first()),
   }
 }
 
@@ -88,24 +89,30 @@ async function deleteBlobPage(db: D1Database, blobs: R2Bucket, id: string, slug:
     .all<{ sha256: string }>()
   if (page.length === 0) return
   const hashes = JSON.stringify(page.map(({ sha256 }) => sha256))
+  const liveLease = `EXISTS (
+    SELECT 1 FROM purge_attempts WHERE artefact_id = ?1 AND token = ?2
+    AND expires_at > unixepoch('subsec') * 1000
+  )`
   const [, , , owned] = await db.batch<{ sha256: string }>([
     // Drive both reference checks from the bounded page and probe the candidates by primary key.
     db
       .prepare(`INSERT INTO blob_purge_claims (sha256, owner)
-        SELECT c.sha256, ?1 FROM json_each(?2) j CROSS JOIN purge_candidates c
-        WHERE c.slug = ?3 AND c.sha256 = j.value
+        SELECT c.sha256, ?1 FROM json_each(?3) j CROSS JOIN purge_candidates c
+        WHERE c.slug = ?4 AND c.sha256 = j.value
+        AND ${liveLease}
         AND NOT EXISTS (SELECT 1 FROM referenced_blobs WHERE sha256 = c.sha256)
         ON CONFLICT DO NOTHING`)
-      .bind(id, hashes, slug),
+      .bind(id, token, hashes, slug),
     db.prepare('UPDATE blob_purge_epoch SET epoch = epoch + 1 WHERE singleton = 1 AND changes() > 0'),
     db
-      .prepare(`DELETE FROM purge_candidates WHERE slug = ? AND sha256 IN (SELECT value FROM json_each(?))
+      .prepare(`DELETE FROM purge_candidates WHERE slug = ?4 AND sha256 IN (SELECT value FROM json_each(?3))
+        AND ${liveLease}
         AND EXISTS (SELECT 1 FROM referenced_blobs WHERE sha256 = purge_candidates.sha256)`)
-      .bind(slug, hashes),
+      .bind(id, token, hashes, slug),
     db
-      .prepare(`SELECT c.sha256 FROM json_each(?) j CROSS JOIN blob_purge_claims c
-        WHERE c.sha256 = j.value AND c.owner = ?`)
-      .bind(hashes, id),
+      .prepare(`SELECT c.sha256 FROM json_each(?3) j CROSS JOIN blob_purge_claims c
+        WHERE c.sha256 = j.value AND c.owner = ?1 AND ${liveLease}`)
+      .bind(id, token, hashes),
   ])
   if (owned.results.length === 0) return
   // Give R2 a full lease window, but never renew a lease that has already expired.

@@ -956,8 +956,10 @@ export async function renameArtefact(
             target_path = excluded.target_path, created_at = excluded.created_at, created_by = excluded.created_by`)
         .bind(JSON.stringify([`/a/${slug}/`, `/s/${slug}/`]), slug, id, now, member.id),
       db
-        .prepare(`DELETE FROM redirects WHERE source_slug = ? AND target_artefact_id = ? AND changes() = 2`)
-        .bind(newSlug, id),
+        .prepare(
+          'DELETE FROM redirects WHERE from_prefix IN (?, ?) AND target_artefact_id = ? AND changes() = 2',
+        )
+        .bind(`/a/${newSlug}/`, `/s/${newSlug}/`, id),
       computeRevisionEntry(db, id, null),
     ])
     if (rename.meta.changes !== 1)

@@ -2191,6 +2191,107 @@ it('respects a fresh purge lease and resumes its outstanding claim after expiry'
   expect(await bucket.head(key)).toBeNull()
 })
 
+it('cannot claim a hash from a reused slug after its purge lease is replaced and completed', async () => {
+  const { call } = await bot(runtime())
+  const { member, core } = await coreAdmin()
+  const slug = 'purge-reused-slug'
+  const input = { slug, mode: 'replace', files: [file('index.html')] }
+  await call('publish', input)
+  const id = await artefactId(slug)
+  await call('delete_artefact', { slug })
+  let nextId = ''
+  const delayed = watchBatches(async (sql) => {
+    if (!sql.some((text) => text.includes('INSERT INTO blob_purge_claims'))) return
+    await db.prepare('UPDATE purge_attempts SET expires_at = 0 WHERE artefact_id = ?').bind(id).run()
+    expect(await purgeArtefact(core, member, id)).toEqual({ done: true })
+    expect(await call('publish', input)).toMatchObject({ revision: 1 })
+    nextId = await artefactId(slug)
+    await call('delete_artefact', { slug })
+    await db.batch([
+      db.prepare('INSERT INTO artefact_purges (slug, artefact_id) VALUES (?, ?)').bind(slug, nextId),
+      db.prepare('INSERT INTO purge_candidates (slug, sha256) VALUES (?, ?)').bind(slug, uploadHash),
+      db.prepare('DELETE FROM artefacts WHERE id = ?').bind(nextId),
+    ])
+  })
+  expect(await purgeArtefact({ ...core, env: { ...core.env, DB: delayed } }, member, id)).toEqual({
+    done: true,
+  })
+  expect(await purgeArtefact(core, member, nextId)).toEqual({ done: true })
+  expect(await bucket.head(`blobs/${uploadHash}`)).toBeNull()
+  expect(await call('publish', input)).toMatchObject({ revision: 1 })
+})
+
+it('does not release the successor lease or its hash claim when the old purge delete finishes late', async () => {
+  const { call } = await bot(runtime())
+  const { member, core } = await coreAdmin()
+  const slug = 'purge-late-completion'
+  const input = { slug, mode: 'replace', files: [file('index.html')] }
+  await call('publish', input)
+  const id = await artefactId(slug)
+  await call('delete_artefact', { slug })
+  async function pauseDelete() {
+    const entered = Promise.withResolvers<void>()
+    const resume = Promise.withResolvers<void>()
+    const result = purgeArtefact(
+      {
+        ...core,
+        env: {
+          ...core.env,
+          BLOBS: {
+            async delete(keys: string[]) {
+              entered.resolve()
+              await resume.promise
+              await bucket.delete(keys)
+            },
+          } as R2Bucket,
+        },
+      },
+      member,
+      id,
+    )
+    await Promise.race([
+      entered.promise,
+      result.then(() => {
+        throw new Error('Purge did not pause')
+      }),
+    ])
+    return { result, resume: resume.resolve }
+  }
+  const old = await pauseDelete()
+  try {
+    await db.prepare('UPDATE purge_attempts SET expires_at = 0 WHERE artefact_id = ?').bind(id).run()
+    const successor = await pauseDelete()
+    try {
+      const lease = db.prepare('SELECT token FROM purge_attempts WHERE artefact_id = ?').bind(id)
+      const token = await lease.first('token')
+      expect(token).toEqual(expect.any(String))
+      old.resume()
+      expect(await old.result).toEqual({ done: false })
+      expect(await lease.first('token')).toBe(token)
+      expect(await call('publish', { ...input, slug: 'reuse-late-hash' })).toMatchObject({
+        error: 'conflict',
+      })
+      expect(
+        await db
+          .prepare('SELECT owner FROM blob_purge_claims WHERE sha256 = ?')
+          .bind(uploadHash)
+          .first('owner'),
+      ).toBe(id)
+      expect(
+        await db
+          .prepare('SELECT sha256 FROM purge_candidates WHERE slug = ? AND sha256 = ?')
+          .bind(slug, uploadHash)
+          .first('sha256'),
+      ).toBe(uploadHash)
+    } finally {
+      successor.resume()
+    }
+    expect(await successor.result).toEqual({ done: true })
+  } finally {
+    old.resume()
+  }
+})
+
 it('returns uniform 404 from canonical and share aliases pointing at a soft-deleted target', async () => {
   const send = runtime()
   const { call } = await bot(send)
@@ -2283,14 +2384,23 @@ it('rejects escaped unreserved characters and lowercase escape hex without reser
   })
 })
 
-it('renames back to a slug reserved only by its own aliases and removes those aliases', async () => {
+it('removes root aliases on rename-back but preserves a nested admin alias through the next rename', async () => {
   const send = runtime()
   const { call } = await bot(send)
+  const { member, core } = await coreAdmin()
   const slug = 'rename-return'
-  await call('publish', { slug, mode: 'replace', files: [file('index.html')] })
+  await call('publish', {
+    slug,
+    mode: 'replace',
+    files: [file('index.html'), file('new-docs/page.txt', 'docs')],
+  })
   await call('set_visibility', { slug, visibility: 'public' })
   const { url } = await call('create_share_link', { slug })
   await call('rename_artefact', { slug, newSlug: 'rename-away' })
+  await setRedirects(core, member, {
+    add: [{ fromPrefix: `/a/${slug}/old-docs/`, toPrefix: '/a/rename-away/new-docs/' }],
+    remove: [],
+  })
   expect(await call('rename_artefact', { slug: 'rename-away', newSlug: slug })).toEqual({
     url: `${read}/a/${slug}/`,
   })
@@ -2299,7 +2409,15 @@ it('renames back to a slug reserved only by its own aliases and removes those al
   const alias = await send(url.replace(`/${slug}/`, '/rename-away/'))
   expect(alias.status).toBe(302)
   expect(new URL(alias.headers.get('location') ?? '', read).href).toBe(url)
-  expect(
-    await db.prepare('SELECT from_prefix FROM redirects WHERE source_slug = ?').bind(slug).first(),
-  ).toBeNull()
+  const { results } = await db
+    .prepare('SELECT from_prefix FROM redirects WHERE source_slug = ?')
+    .bind(slug)
+    .all()
+  expect(results).toEqual([{ from_prefix: `/a/${slug}/old-docs/` }])
+  await call('rename_artefact', { slug, newSlug: 'rename-final' })
+  const docs = await send(`${read}/a/${slug}/old-docs/page.txt`)
+  expect(docs.status).toBe(302)
+  const location = new URL(docs.headers.get('location') ?? '', read).href
+  expect(location).toBe(`${read}/a/rename-final/new-docs/page.txt`)
+  expect(await (await send(location)).text()).toBe('docs')
 })
