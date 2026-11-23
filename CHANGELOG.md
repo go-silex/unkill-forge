@@ -1,6 +1,6 @@
 # Changelog
 
-## v2.0.1 — Unreleased
+## v2.0.1 — 2026-11-23
 
 - Use a verified email or the account subject as the OIDC revalidation hint, and retry once interactively when the provider requires it.
 - Upgrade: apply D1 migration `0011` before or with the Worker deploy. If a silent revalidation started by the previous Worker returns an interaction error, that session ends once and the user needs to sign in again.
