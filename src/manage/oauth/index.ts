@@ -11,6 +11,7 @@ import {
 } from '../../core'
 import { useApiToken } from '../../core/admin'
 import { readBoundedBody } from '../../http'
+import { messages } from '../../i18n'
 import { handleMcp } from '../mcp'
 import { manageHeaders } from '../origin'
 import { authorize } from './consent'
@@ -137,7 +138,8 @@ export async function oauthFetch(
       },
       defaultHandler: {
         fetch(req, bindings) {
-          if (new URL(req.url).pathname !== '/authorize') return new Response('Not found', { status: 404 })
+          if (new URL(req.url).pathname !== '/authorize')
+            return new Response(messages(config).notFound, { status: 404 })
           return authorize(
             req,
             { config, env: bindings },

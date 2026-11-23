@@ -23,6 +23,19 @@ export async function readBoundedBody(
   }
 }
 
+export const formBodyLimit = 32 * 1024
+
+export async function readForm(request: Request): Promise<URLSearchParams | null> {
+  if (
+    request.body &&
+    request.headers.get('Content-Type')?.split(';', 1)[0].trim().toLowerCase() !==
+      'application/x-www-form-urlencoded'
+  )
+    return null
+  const bytes = await readBoundedBody(request, formBodyLimit)
+  return bytes === null ? null : new URLSearchParams(new TextDecoder().decode(bytes))
+}
+
 export function isDocumentNavigation(request: Request): boolean {
   if (request.method !== 'GET') return false
   const mode = request.headers.get('Sec-Fetch-Mode')

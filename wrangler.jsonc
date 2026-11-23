@@ -13,6 +13,8 @@
   // Set FORGE_COOKIE_KEY, FORGE_SEAL_KEY and AUTH_<ID>_CLIENT_SECRET as Worker secrets.
   "vars": {
     "FORGE_NAME": "Forge",
+    "LOCALE": "en",
+    "BRAND": "{}",
     "READ_ORIGIN": "https://forge.example.com",
     "MANAGE_ORIGIN": "https://manage.forge.example.com",
     "ADMIN_EMAILS": "",

@@ -11,6 +11,13 @@ Forge protects a single team's private artefacts and management credentials from
 
 Private handoff codes are short-lived and sent in a manage-origin form POST, not in a URL. Codes are consumed once, even if browser binding fails. Binding failures (including racing initial tabs) can require restarting navigation from the read host. Browsers with strict cross-origin cookie policies may block the handoff state. There is no cross-artefact authorization inside a publisher's own origin. Downloaded copies cannot be revoked.
 
+## Manage UI forms and one-use notices
+
+- **Stale forms:** mutating forms require the exact manage origin, an active session and live core authorization. Form bodies are limited to 32 KiB. Slug-keyed artefact forms bind the displayed stable ID to the slug so a stale form cannot change a replacement artefact.
+- **One-use flashes:** after a mutation, a 303 redirect carries a random, non-secret `flash-id`, never an API token, invite URL or share key. An eligible document navigation atomically consumes the D1 row within two minutes, with the original session, current role and exact destination path and query. Silent OIDC revalidation may intervene. Separate IDs let tabs continue independently.
+- **One-time display is not revocation:** secrets are sealed in D1 using a dedicated key derived from `FORGE_COOKIE_KEY`, are not written to audit logs, and are removed from the page when it is restored from the back/forward cache. A missed or expired API-token flash does not revoke its token; revoke it and issue another rather than looking for the secret in logs. For shares, explicitly reveal an active link again. Browser copies cannot be recalled.
+- **Referrer policy:** management pages use `Referrer-Policy: same-origin` to keep continuation URLs off other origins while preserving the `Origin` on same-origin form posts. Responses with no form submission, such as invitation-entry redirects, may be stricter. This does not hide paths from same-origin infrastructure or platform logs; keep request URL logging off where possible.
+
 ## Identity and OAuth
 
 Forge binds sign-in flows to the initiating browser, uses PKCE S256 and OIDC nonce, verifies issuer, audience and required claims, and denies access on provider or D1 failure. Credentials never grant a permanent role: membership, generation and revocation are checked in D1. Keep DCR off unless a required client needs it. The Forge-hosted local CIMD is only a generic description, not a verified local client identity; check the displayed loopback port when approving.

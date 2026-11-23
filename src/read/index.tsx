@@ -1,11 +1,13 @@
 import type { Child } from 'hono/jsx'
 import { base64url } from 'jose'
-import type { Runtime } from '../config'
+import type { Config, Runtime } from '../config'
 import { canonicalRead, publicArtefacts, shareRead } from '../core/artefacts'
 import { handoffChallenge, readBoundSession, redeemHandoff, validHandoffState } from '../core/handoffs'
 import { randomSecret } from '../core/index'
 import { artefactPath, maxReadReturnLength, readReturnPath, sharePath } from '../core/read-path'
+import { DocumentHead } from '../head'
 import { isDocumentNavigation, readBoundedBody } from '../http'
+import { messages } from '../i18n'
 import { serveFile } from './file'
 import { readHeaders } from './headers'
 
@@ -37,19 +39,18 @@ function redirect(location: string, status = 302, cookies: string[] = []) {
   return new Response(null, { status, headers })
 }
 
-function notFound(head = false) {
-  const headers = readHeaders()
-  headers.set('Content-Type', 'text/plain; charset=utf-8')
-  return new Response(head ? null : 'Not found', { status: 404, headers })
+function notFound(config: Config, head = false) {
+  return statusPage(config, messages(config).notFound, 404, head)
 }
 
-function page(title: string, children: Child, head: boolean, status = 200) {
+function statusPage(config: Config, title: string, status: number, head: boolean) {
+  return page(config, title, <h1>{title}</h1>, head, status)
+}
+
+function page(config: Config, title: string, children: Child, head: boolean, status = 200) {
   const html = (
-    <html lang="en">
-      <head>
-        <meta charset="utf-8" />
-        <title>{title}</title>
-      </head>
+    <html lang={config.locale}>
+      <DocumentHead title={title} />
       <body>
         <main>{children}</main>
       </body>
@@ -76,8 +77,9 @@ async function startHandoff(request: Request, url: URL, runtime: Runtime) {
 }
 
 async function completeHandoff(request: Request, runtime: Runtime) {
+  const { config } = runtime
   if (request.headers.get('Content-Type')?.split(';', 1)[0].trim() !== 'application/x-www-form-urlencoded') {
-    return notFound()
+    return notFound(config)
   }
   const body = await readBoundedBody(request, handoffBodyLimit)
   if (body === null) return new Response(null, { status: 413, headers: readHeaders() })
@@ -89,16 +91,18 @@ async function completeHandoff(request: Request, runtime: Runtime) {
     fields.get('nonce'),
     cookie(request, stateCookie),
   )
-  if (!result) return notFound()
+  if (!result) return notFound(config)
   if (result.kind === 'retry') {
-    const path = readReturnPath(fields.get('return'), runtime.config.readOrigin)
+    const path = readReturnPath(fields.get('return'), config.readOrigin)
+    const text = messages(config).read
     return page(
-      'Sign-in did not complete',
+      config,
+      text.incomplete,
       <>
-        <h1>Sign-in did not complete</h1>
+        <h1>{text.incomplete}</h1>
         {path && (
           <p>
-            <a href={path}>Try signing in again</a>
+            <a href={path}>{text.retry}</a>
           </p>
         )}
       </>,
@@ -116,14 +120,17 @@ export async function read(
   ctx: ExecutionContext,
 ): Promise<Response> {
   const head = request.method === 'HEAD'
+  const { config } = runtime
+  const common = messages(config)
+  const text = common.read
   try {
     if (request.method === 'POST' && url.pathname === callback) return await completeHandoff(request, runtime)
-    if (request.method !== 'GET' && !head) return notFound()
+    if (request.method !== 'GET' && !head) return notFound(config)
     if (url.pathname.startsWith('/s/')) {
       const target = sharePath(url.pathname)
-      if (!target) return notFound(head)
+      if (!target) return notFound(config, head)
       const decision = await shareRead(runtime, target.slug, target.key, target.path, url.pathname, ctx)
-      if (decision.kind === 'not-found') return notFound(head)
+      if (decision.kind === 'not-found') return notFound(config, head)
       if (decision.kind === 'slash') return redirect(`${url.pathname}/${url.search}`, 301)
       if (decision.kind === 'redirect') return redirect(`${decision.location}${url.search}`)
       if (decision.kind === 'entry') return redirect(`${url.pathname}${decision.path}${url.search}`)
@@ -142,7 +149,7 @@ export async function read(
             runtime.env.BLOBS,
             decision.file,
             decision.public,
-            runtime.config.allowIndexing,
+            config.allowIndexing,
           )
         case 'slash':
           return redirect(`${url.pathname}/${url.search}`, 301)
@@ -154,26 +161,34 @@ export async function read(
           return new Response(null, { status: 401, headers: readHeaders() })
         case 'pending':
           return page(
-            `Pending access — ${runtime.config.name}`,
+            config,
+            `${common.pending} — ${config.name}`,
             <>
-              <h1>Pending access</h1>
-              <p>Ask a Forge administrator to approve your membership.</p>
+              <h1>{common.pending}</h1>
+              <p>{text.askAdmin}</p>
             </>,
             head,
           )
         case 'not-found':
-          return notFound(head)
+          return notFound(config, head)
       }
     }
     if (url.pathname === '/') {
-      const { name, publicIndex } = runtime.config
+      const { name, publicIndex, brand } = config
       const entries = publicIndex ? await publicArtefacts(runtime, ctx) : null
       return page(
+        config,
         name,
         <>
-          <h1>{name}</h1>
+          <header>
+            <h1 class="brand">
+              <img src="/logo.svg" alt="" width="32" height="32" />
+              {name}
+            </h1>
+          </header>
+          {!publicIndex && brand.landingText && <p>{brand.landingText}</p>}
           {entries && (
-            <ul aria-label="Public artefacts">
+            <ul aria-label={text.artefacts}>
               {entries.map(({ url, title }) => (
                 <li key={url}>
                   <a href={url}>{title}</a>
@@ -185,9 +200,9 @@ export async function read(
         head,
       )
     }
-    return notFound(head)
+    return notFound(config, head)
   } catch (error) {
     console.error('Forge read failed', error instanceof Error ? error.name : 'unknown')
-    return new Response(head ? null : 'Forge is unavailable', { status: 503, headers: readHeaders() })
+    return statusPage(config, common.unavailable, 503, head)
   }
 }

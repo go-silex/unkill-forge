@@ -73,6 +73,12 @@ const expiryCases = [
     read: 'SELECT expires_at AS expiry FROM oauth_consents',
   },
   {
+    table: 'ui_flashes',
+    insert: `INSERT INTO ui_flashes (id, session_hash, path, role, message, expires_at)
+      SELECT n, 'active-session', '/', 'admin', 'notice', ? + n - 129 FROM fixture_numbers`,
+    read: 'SELECT expires_at AS expiry FROM ui_flashes',
+  },
+  {
     table: 'invites',
     insert: `INSERT INTO invites (token_hash, role, created_by, created_at, expires_at)
       SELECT n, 'viewer', 'member', 0, ? + n - 129 FROM fixture_numbers`,
@@ -120,12 +126,17 @@ it('drains child pages before deleting expired parent sessions and invites', asy
         SELECT n, 'active-session', 'state', '/', ? FROM fixture_numbers`)
       .bind(now),
     db
+      .prepare(`INSERT INTO ui_flashes (id, session_hash, path, role, message, expires_at)
+        SELECT n, 'active-session', '/', 'admin', 'notice', ? FROM fixture_numbers`)
+      .bind(now),
+    db
       .prepare(`INSERT INTO invite_contexts (id, browser_hash, invite_hash, expires_at)
         SELECT n, 'browser', 'active-invite', ? FROM fixture_numbers`)
       .bind(now),
   ])
   await run()
   expect(await db.prepare('SELECT count(*) AS n FROM handoffs').first('n')).toBe(3)
+  expect(await db.prepare('SELECT count(*) AS n FROM ui_flashes').first('n')).toBe(3)
   expect(await db.prepare('SELECT count(*) AS n FROM invite_contexts').first('n')).toBe(3)
   expect(await db.prepare('SELECT id_hash FROM sessions').first('id_hash')).toBe('active-session')
   expect(await db.prepare('SELECT token_hash FROM invites').first('token_hash')).toBe('active-invite')
@@ -232,11 +243,14 @@ it('drives at most four purges per run and resumes file and blob pages after har
   expect(await db.prepare('SELECT artefact_id FROM artefact_purges').first()).toBeNull()
   expect(await bucket.head(`blobs/${exclusive}`)).toBeNull()
   expect(await bucket.head(`blobs/${shared}`)).not.toBeNull()
-  expect(
-    await db
-      .prepare("SELECT member_id FROM audit_log WHERE artefact_id = 'a-large' AND action = 'artefact.purge'")
-      .first(),
-  ).toEqual({ member_id: null })
+  const { results: audit } = await db
+    .prepare(`SELECT action, member_id, json_extract(detail_json, '$.slug') AS slug
+      FROM audit_log WHERE artefact_id = 'a-large' ORDER BY rowid`)
+    .all()
+  expect(audit).toEqual([
+    { action: 'artefact.purge_start', member_id: null, slug: 'a-large' },
+    { action: 'artefact.purge', member_id: null, slug: 'a-large' },
+  ])
   await run()
   expect(await ids()).toEqual(['boundary', 'live', 'recent'])
   expect(

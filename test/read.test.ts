@@ -3,6 +3,7 @@ import { expect, it, vi } from 'vitest'
 import {
   admin,
   Browser,
+  flashNavigation,
   formValue,
   type Handle,
   listedId,
@@ -30,7 +31,10 @@ async function publisher(send: Handle, owner: Browser) {
   expect((await owner.post('/admin/bots', { action: 'create', name, role: 'publisher' })).status).toBe(303)
   const id = await listedId(owner, members, name)
   const tokenResponse = await owner.post('/admin/bots', { action: 'token', id, name: 'Read tests' })
-  const token = /<code>(fgt_[A-Za-z0-9_-]+)<\/code>/.exec(await tokenResponse.text())?.[1]
+  expect(tokenResponse.status).toBe(303)
+  const landing = await owner.request(location(tokenResponse), { headers: flashNavigation })
+  expect(landing.status).toBe(200)
+  const token = /<code>(fgt_[A-Za-z0-9_-]+)<\/code>/.exec(await landing.text())?.[1]
   if (!token) throw new Error('Expected bot token')
   return async (name: string, args: object) => {
     const response = await send('/mcp', {

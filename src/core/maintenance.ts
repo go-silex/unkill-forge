@@ -1,6 +1,6 @@
 import type { Runtime } from '../config'
 import { deletedRetentionMs } from './artefacts'
-import { resumeArtefactPurge } from './purge'
+import { registerPurge, resumeArtefactPurge } from './purge'
 
 const expiryPage = 128
 const revisionPage = 64
@@ -75,15 +75,13 @@ async function queueDeleted(db: D1Database, before: number) {
     .bind(before, deletedPage)
     .all<{ id: string; deletedAt: number }>()
   const last = page.length === deletedPage ? page[deletedPage - 1] : null
-  const [queued] = await db.batch([
-    db
-      .prepare(`INSERT INTO artefact_purges (slug, artefact_id, last_attempted_at)
-        SELECT a.slug, a.id, ?3 FROM json_each(?1) p CROSS JOIN artefacts a ON a.id = p.value
-        WHERE a.deleted_at < ?2 ON CONFLICT DO NOTHING`)
-      .bind(JSON.stringify(page.map(({ id }) => id)), before, Date.now()),
+  const results = await db.batch([
+    ...page.flatMap(({ id }) => registerPurge(db, id, { actor: null, deletedBefore: before })),
     cursor(db, 'deleted', last?.id ?? '', last?.deletedAt ?? 0),
   ])
-  return { queued: queued.meta.changes }
+  let queued = 0
+  for (let i = 0; i < page.length; i++) queued += results[i * 2].meta.changes
+  return { queued }
 }
 
 async function drainPurges(runtime: Runtime) {
@@ -122,6 +120,7 @@ export async function maintain(runtime: Runtime, now: number) {
   await task('login flows', () => expire(db, 'login_flows', now))
   await task('handoffs', () => expire(db, 'handoffs', now))
   await task('OAuth consents', () => expire(db, 'oauth_consents', now))
+  await task('UI flashes', () => expire(db, 'ui_flashes', now))
   await task('sessions', () =>
     expire(
       db,
@@ -130,7 +129,8 @@ export async function maintain(runtime: Runtime, now: number) {
       'expires_at',
       `
       AND NOT EXISTS (SELECT 1 FROM handoffs WHERE session_id_hash = sessions.id_hash)
-      AND NOT EXISTS (SELECT 1 FROM oauth_consents WHERE session_hash = sessions.id_hash)`,
+      AND NOT EXISTS (SELECT 1 FROM oauth_consents WHERE session_hash = sessions.id_hash)
+      AND NOT EXISTS (SELECT 1 FROM ui_flashes WHERE session_hash = sessions.id_hash)`,
     ),
   )
   await task('uploads', () => expire(db, 'uploads', now))

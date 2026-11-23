@@ -103,12 +103,27 @@ Run `npm run deploy -- --config "$FORGE_CONFIG"` again. In Workers & Pages → y
 
 Open the manage origin and sign in using the verified address you entered in `ADMIN_EMAILS`. Confirm that the instance shows your admin role and the Members page. Only the first eligible sign-in bootstraps an administrator. Afterwards a valid one-use invite beats OIDC auto-join, and otherwise new members wait for approval. In Members, create and copy an invite when shown; it expires after seven days. Always keep an active admin. Removed members must get new sessions, OAuth grants and API tokens after reinstatement.
 
-The read origin serves an empty landing page until you publish, and lists public artefacts only with `PUBLIC_INDEX=true`. `ALLOW_INDEXING=true` separately permits search indexing of public canonical URLs. Neither enables public access to private artefacts. To publish and verify the first private artefact, see [Connect and publish with MCP](mcp.md).
+By default the read origin shows a landing page without a public catalogue. Set `PUBLIC_INDEX=true` to list public artefacts there and `ALLOW_INDEXING=true` to allow search indexing of public canonical URLs. Neither enables public access to private artefacts. To publish and verify the first private artefact, see [Connect and publish with MCP](mcp.md).
+
+## Branding and locale
+
+Set `LOCALE` to `en` (default) or `fr` for Forge-authored UI copy on both hosts. It does not translate published artefacts, provider labels or member names. `FORGE_NAME` sets the display name. `BRAND` is a JSON-encoded string; keep `"{}"` for the bundled defaults, or override the six-digit hex accent and the non-index read landing's plain text (up to 500 characters):
+
+```json
+{
+  "FORGE_NAME": "Forge",
+  "LOCALE": "fr",
+  "BRAND": "{\"accent\":\"#a7481c\",\"landingText\":\"Our published work\"}"
+}
+```
+
+To change the SVG logo or favicon, edit the trusted bundled assets in [`brand/defaults.ts`](../brand/defaults.ts) and rebuild; no template or CSP edits are needed.
 
 ## Upgrades, maintenance and backups
 
 - **Upgrade:** read the [changelog](../CHANGELOG.md), back up, check that your private config includes the new vars or secrets, run `npm ci`, then `npm run deploy -- --config "$FORGE_CONFIG"`. Do not reapply numbered migrations manually; Wrangler records them. Do not run purge during a mixed-version rollout or roll back to an unfenced Worker. Disable the cron trigger before a rollout from an unfenced version and re-enable it only after the rollout is complete.
 - **Older releases:** Gate 0 users reauthorize their MCP clients; anyone previously removed must sign in again after reinstatement, and previously removed bots need new tokens. During the `0004_invites.sql` rollout window, an old Worker may answer 409 to a successful removal; reload the member list before retrying. Before applying the share-link upgrade (`0007_share_links.sql`), set `FORGE_SEAL_KEY` and retain its backup. Add the R2 lifecycle rule when upgrading to uploads.
+- **Admin UI and cron:** `0009_ui_flashes.sql` adds one-use notices and catalogue indexes; `0010_maintenance.sql` adds expiry indexes and maintenance progress. The deploy script applies both before activating the Worker. Flashes expire after two minutes; changing `FORGE_COOKIE_KEY` also makes pending sealed flashes unreadable.
 - **Maintenance:** `0 3 * * *` means daily at 03:00 UTC. Check Workers Logs for `Forge maintenance` or recent Cron Events; task failures are logged individually and retried on later runs. Expiry removes metadata, not R2 blobs. The purge task permanently deletes artefacts soft-deleted more than 30 days ago, and resumes registered admin purges; do not rely on soft-deleted items as backups. Limit details are in [architecture](architecture.md#maintenance).
 - **Backup:** record a [D1 Time Travel](https://developers.cloudflare.com/d1/reference/time-travel/) bookmark and periodically export the database (e.g. `npx wrangler d1 export forge --remote --output "$HOME/forge-backup.sql"`; use your database name). Keep an encrypted copy of the private configuration and secrets, and independently copy the private R2 `blobs/` prefix to backup storage through the [R2 S3 API](https://developers.cloudflare.com/r2/api/s3/api/). Protect exports like production data. KV holds OAuth state; plan to start with empty KV and reauthorize clients for a restore rather than recovering inconsistent grants. Do not assume a D1 snapshot restores R2 or KV.
 - **Restore drill:** on an isolated Worker, restore D1 and the matching R2 objects, bind a fresh KV namespace, set the original seal key, register the drill callbacks and use different hostnames. Disable cron while inspecting the restored data. Verify member sign-in and representative private, public and shared files before relying on the backup. To get a consistent recovery point when possible, pause publishing and purge while taking the database and blob copies.

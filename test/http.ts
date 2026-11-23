@@ -31,6 +31,7 @@ export const provider = {
 export const admin = 'owner'
 export const sessionCookie = '__Host-forge-session'
 export const navigation = { 'Sec-Fetch-Mode': 'navigate', 'Sec-Fetch-Dest': 'document', Accept: 'text/html' }
+export const flashNavigation = { ...navigation, 'Sec-Fetch-Site': 'same-origin' }
 export const api = { Accept: 'application/json' }
 export const jsonHeaders = { 'content-type': 'application/json' }
 const bindings = env as typeof env & { TEST_MIGRATIONS: D1Migration[]; DB: D1Database }
