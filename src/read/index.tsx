@@ -122,16 +122,17 @@ export async function read(
     if (url.pathname.startsWith('/s/')) {
       const target = sharePath(url.pathname)
       if (!target) return notFound(head)
-      const decision = await shareRead(runtime, target.slug, target.key, target.path, ctx)
+      const decision = await shareRead(runtime, target.slug, target.key, target.path, url.pathname, ctx)
       if (decision.kind === 'not-found') return notFound(head)
       if (decision.kind === 'slash') return redirect(`${url.pathname}/${url.search}`, 301)
+      if (decision.kind === 'redirect') return redirect(`${decision.location}${url.search}`)
       if (decision.kind === 'entry') return redirect(`${url.pathname}${decision.path}${url.search}`)
       return await serveFile(request, runtime.env.BLOBS, decision.file, false, false)
     }
     const target = artefactPath(url.pathname)
     if (target) {
       if (target.path === undefined) return redirect(`${url.pathname}/${url.search}`, 301)
-      const decision = await canonicalRead(runtime, target.slug, target.path, () =>
+      const decision = await canonicalRead(runtime, target.slug, target.path, url.pathname, () =>
         readBoundSession(runtime, cookie(request, readCookie), Date.now()),
       )
       switch (decision.kind) {
@@ -145,6 +146,8 @@ export async function read(
           )
         case 'slash':
           return redirect(`${url.pathname}/${url.search}`, 301)
+        case 'redirect':
+          return redirect(`${decision.location}${url.search}`)
         case 'sign-in':
         case 'revalidate':
           if (isDocumentNavigation(request)) return await startHandoff(request, url, runtime)

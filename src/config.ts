@@ -92,6 +92,7 @@ const vars = z
     MAX_BLOB_WRITES_PER_CALL: positiveInt.pipe(z.int().max(900)).default(500),
     MAX_INLINE_BYTES: positiveInt.pipe(z.int().max(8 * 1024 * 1024)).default(2_097_152),
     MAX_UPLOAD_BYTES: positiveInt.pipe(z.int().max(100_000_000)).default(100_000_000),
+    REVISION_RETENTION: positiveInt.pipe(z.int().max(100)).default(20),
     DB: z.custom<D1Database>(
       (value) => typeof (value as D1Database | undefined)?.prepare === 'function',
       'Missing D1 binding',
@@ -131,6 +132,7 @@ export type Config = {
   maxBlobWritesPerCall: number
   maxInlineBytes: number
   maxUploadBytes: number
+  revisionRetention: number
 }
 export type Runtime = { config: Config; env: Env }
 
@@ -177,6 +179,7 @@ export function configuration(env: Env): Config | null {
         maxBlobWritesPerCall: value.MAX_BLOB_WRITES_PER_CALL,
         maxInlineBytes: value.MAX_INLINE_BYTES,
         maxUploadBytes: value.MAX_UPLOAD_BYTES,
+        revisionRetention: value.REVISION_RETENTION,
       }
   }
   cache.set(env, config)

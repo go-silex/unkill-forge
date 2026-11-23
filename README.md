@@ -2,9 +2,9 @@
 
 Forge is a self-hosted service for publishing HTML artefacts at stable URLs, controlling who can read them, and working with them through remote MCP. It runs on Cloudflare.
 
-**Phase 1:** this build delivers public and private artefacts and revocable share links on the read host, supports publishing, editing, reading and streamed binary uploads over MCP, and includes sign-in, member administration and bot administration. See [the specification](docs/spec.md).
+**Phase 1:** this build delivers public and private artefacts, revocable share links, revision history and restore, rename redirects, and soft deletion. MCP also supports publishing, editing, reading and streamed binary uploads. Sign-in, member administration and bot administration are available; deleted-artefact restoration and hard purge are core-only until the admin UI adds them. See [the specification](docs/spec.md).
 
-The runtime is 4,568 lines under `src/`.
+The runtime is 5,162 lines under `src/`.
 
 ## Configure sign-in
 
@@ -54,6 +54,8 @@ Private reads use a separate host-only cookie signed with the existing `FORGE_CO
 
 Share links let anyone with the URL read the current artefact without signing in, even when it is private. Revocation stops access through the link on the next request, even when the artefact is public. Treat the URL as a bearer secret: share it only with intended recipients and exclude share paths from request logs where possible.
 
+Set `REVISION_RETENTION` to keep a different number of revisions per artefact (default `20`, max `100`). Rename redirects preserve canonical and share paths. Deleted artefacts return 404 and reserve their slug; administrators can restore them for 30 days unless purge has started. Timed D1 cleanup is tracked in [issue #11](https://github.com/go-silex/unkill-forge/issues/11).
+
 ## Deploy
 
 1. Install Node.js 24+ and run `npm ci`.
@@ -83,6 +85,8 @@ After deploying with `0004_invites.sql`:
 
 Before upgrading to the share-link release, set `FORGE_SEAL_KEY` on the target Worker. Migration `0007_share_links.sql` adds the shares table and a nullable revision entry path. Existing revisions populate their entry path when first needed.
 
+Migration `0008_redirects.sql` adds redirects and purge bookkeeping, including leases so interrupted purge batches can be retried. The previous Worker can still publish and serve content after migration. Do not run purge during mixed-version rollout or roll back with an active purge.
+
 ## Connect an agent
 
 - **Claude and Codex:** Use their native CIMD support with the Streamable HTTP URL `https://<manage>/mcp`, then sign in and approve the request.
@@ -108,6 +112,9 @@ MCP tools:
 - `edit_file`: replace literal text at an expected revision; stale edits fail without changing the artefact.
 - `set_visibility`: change an artefact between private and public without creating a revision.
 - `create_share_link`, `list_share_links`, `get_share_link`, `revoke_share_link`: publishers and admins can create, inspect, copy or revoke links for any artefact. Only create and get reveal the full URL; only admins may supply a custom key.
+- `list_revisions`, `restore_revision`: list retained history or create a new revision using an older revision's files.
+- `rename_artefact`, `delete_artefact`: move the slug and retain old URLs, or hide the artefact via soft deletion.
+- `set_redirects`: administrators add or remove aliases to live artefacts.
 
 ## Upload binary or large files
 
@@ -121,6 +128,10 @@ MCP tools:
 3. Within an hour of storage, call `publish` for the same slug with the returned `{path, uploadId}` entries. Keep upload URLs private; PUT needs no additional authentication.
 
 Use `MAX_UPLOAD_BYTES` in Wrangler vars to lower the per-file limit from its default and maximum of `100000000` bytes (100 MB).
+
+## Known limits
+
+- Purge retries use a 15-minute lease. If an R2 delete remains outstanding beyond the lease and the same bytes are republished after a successor releases the claim but before the original delete lands, the late delete can remove the newly published object.
 
 ## License
 

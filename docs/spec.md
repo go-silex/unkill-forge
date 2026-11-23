@@ -124,7 +124,7 @@ wrangler.jsonc    template without account identifiers
 | `api_tokens`           | `id` PK, `member_id`, `name`, `prefix`, `token_hash` UNIQUE, `created_at`, `last_used_at`, `revoked_at`                                                                                        |
 | `uploads`              | `token_hash` PK, `upload_id` UNIQUE, `member_id`, `member_generation`, `slug`, `path`, `sha256`, `size`, `content_type`, `state`, `expires_at`, `created_at`                                   |
 | `handoffs`             | `code_hash` PK, `session_id_hash`, `state_hash`, `return_path`, `expires_at`                                                                                                                   |
-| `redirects`            | `from_prefix` PK, `to_prefix`, `created_at`                                                                                                                                                    |
+| `redirects`            | `from_prefix` PK, `source_slug`, `target_artefact_id` FK, `target_path` (encoded suffix), `created_at`, `created_by`                                                                           |
 | `audit_log`            | `id`, `at`, `member_id`, `action`, `artefact_id`, `detail_json`                                                                                                                                |
 
 Indexes:
@@ -133,11 +133,15 @@ Indexes:
 - `sessions(member_id)`, `sessions(provider, subject)`, `sessions(provider, sid)`, `identity_revocations(provider, subject)`;
 - `api_tokens(member_id)`, `audit_log(artefact_id, at)`;
 - `expires_at` on `login_flows`, `invites`, `uploads`, `handoffs`.
+- `redirects(from_prefix)` for exact probes of the URL's slash-delimited prefixes, `redirects(source_slug)` for slug reservations, `redirects(target_artefact_id)` for cascading removal;
+- `uploads(sha256, expires_at)` for stored-upload references to blobs.
+
+`artefact_purges` reserves a slug and tracks the purge by stable artefact ID; `purge_candidates` holds its candidate hashes. `blob_purge_claims` holds the exclusive delete claim per hash, `blob_purge_epoch` advances when claims start or finish, and `purge_attempts` leases R2 deletion per artefact.
 
 Rules:
 
 - Blobs live at `blobs/<sha256>` in R2, written with R2's SHA-256 check and never overwritten. A new revision reuses existing blobs for unchanged files: no byte copy.
-- Slug: `^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$`. A slug is unavailable while a live artefact, a soft-deleted artefact or a redirect prefix uses it.
+- Slug: `^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$`. A slug is unavailable while a live artefact, a soft-deleted artefact, a redirect prefix or an unfinished purge uses it.
 - Path: relative POSIX path, ≤ 512 characters, no empty, `.` or `..` segment, no segment starting with `.`, no backslash or control character.
 - Retention: the last 20 revisions per artefact by default (configurable), so `files` stays bounded within D1's size limits.
 - Defaults (configurable): 1,000 files per artefact; 500 distinct new blob writes per publish; 2 MiB of decoded inline content per MCP call; 100 MB per uploaded file. Inline content is capped at 8 MiB; larger files must use uploads. The blob-write limit leaves room within the Workers subrequest budget and does not count hashes already referenced in D1. Split updates with more new blobs into several `merge` publishes.
@@ -171,7 +175,7 @@ Resolution order for a request:
 2. `/a/<slug>/<path>` where `slug` is a live artefact → apply canonical access, then resolve `path`, `path/index.html`, `path.html` in the current revision. A denied reader gets the access response whether or not the file exists. If the directory index wins and the path has no trailing slash, return 301 to the slash form with the query string preserved.
 3. `/s/<slug>/<key>` and `/s/<slug>/<key>/<path>` → check that the key belongs to an active link of a live artefact. After the check, redirect the bare URL to its trailing slash with 301, or apply the same path resolution as `/a/`, including the directory-index redirect. The stable root `/s/<slug>/<key>/` serves the root `index.html` if present; otherwise it temporarily redirects (302) to the current revision's entry file within the share prefix. Redirects preserve the query string. Relative subresources stay under the share prefix without a cookie. Successful file resolutions trigger a best-effort `last_used_at` update at most once per minute per link.
 4. `POST /_forge/session` → end of the login handoff.
-5. Otherwise, the longest matching `redirects.from_prefix` → 302 to the target with the remaining path. Redirects never shadow a live artefact.
+5. Otherwise, for a missing canonical or share slug, the longest matching `redirects.from_prefix` → 302 to the target with the remaining encoded path and query string appended. Redirects never shadow a live or soft-deleted slug. A deleted target returns the standard 404 without trying shorter prefixes. A private canonical target requires the normal canonical access check before the 302; login returns to the original alias. A share alias requires an active key of the target artefact before disclosing its slug; other keys receive the standard 404. All alias responses use `private, no-store` and no `ETag`.
 6. `/` → when `PUBLIC_INDEX=true`, list the newest 200 public artefacts by creation time; otherwise show the branded landing page.
 7. Anything else → 404.
 
@@ -193,17 +197,18 @@ Response headers:
 
 ## 8. Publishing semantics
 
-- **Atomic commit.** `publish` builds revision _n+1_ and commits it in one D1 batch: insert the `revisions` row, copy unchanged file rows with `INSERT … SELECT`, insert new file rows, mark uploads consumed, move `current_revision`, append the audit row. The `revisions` primary key is the compare-and-set: if another publish already took _n+1_, the whole batch fails and nothing changes.
+- **Atomic commit.** `publish` commits revision _n+1_ in one D1 batch: compare-and-set the live artefact ID, slug and head; insert the `revisions` row, copy unchanged file rows with `INSERT … SELECT`, insert new file rows, mark uploads consumed, move `current_revision`, append the audit row and prune expired revisions. A failed guard rolls back the whole batch.
+- `edit_file` and `restore_revision` bind the commit to the artefact ID they read, so reusing the slug during the operation cannot redirect the write to a different artefact.
 - With `expectedRevision`, a mismatch returns `conflict` and `currentRevision`. Use `0` to require a new slug. Without it, both modes retry on the new head at most three times. Concurrent creation of the same slug always gives one caller a `conflict`.
 - `mode: "merge"` keeps unmentioned files; `mode: "replace"` makes the call the complete file list. `delete` removes listed paths, which must exist at the head. The resulting revision must not be empty.
 - A new artefact starts private at revision 1. Its title defaults to the slug. Content types come from the extension unless supplied. The result returns the entry URL: `/a/<slug>/` when `index.html` exists, otherwise the first file with base media type `text/html` in path order or, if none, the first file in path order. `publish` computes the entry in the revision commit and caches it after the commit. Revisions with a missing cached entry compute it on demand. A cache write failure is logged and never prevents delivery or publishing.
-- **Restore** creates a new revision from a retained one.
-- **Rename** moves the slug and creates redirects from `/a/<old>/` and `/s/<old>/` to the new prefixes; existing redirects that pointed at the old slug are retargeted, so chains never form. Share links keep working through the redirect.
-- **Delete** is soft for 30 days (admins can restore); a daily cron then purges the D1 rows.
-- **Blobs are append-only.** Nothing deletes them automatically: storage is cheap at team scale, and deleting while another publish reuses the same bytes would corrupt it. An admin **purge** hard-deletes an artefact, then deletes each blob no other file references, rechecked just before deletion. This is for content that must disappear, such as a leaked secret, and is documented as racing with a concurrent publish of identical bytes.
+- **Restore** uses the same compare-and-set and entry selection to create a new revision from the files in a retained revision, without copying or rewriting R2 bytes. The currently attached artefact title, visibility and share links are unchanged.
+- **Rename** compares and sets the slug and creates redirects from `/a/<old>/` and `/s/<old>/` in the same transaction. Redirects point to artefact IDs, so prior aliases resolve straight to the current slug. Share keys remain unchanged. Rename can reclaim a slug reserved only by its own aliases and removes the root aliases atomically; nested admin aliases are retained. Rename replaces redirects at the old roots; a manually configured longer canonical prefix can still take precedence.
+- **Delete** hides the artefact and all aliases immediately. An admin can restore the artefact for 30 days unless explicit purge has started. The slug remains reserved; the daily D1-only cleanup is wired in issue #11.
+- **Blobs are append-only except for explicit admin purge.** Admin purge requires a soft-deleted artefact and stages candidate hashes while removing D1 file rows in chunks. After hard-deleting the artefact, it claims each remaining hash only if there are no file rows or unexpired `stored` uploads referencing it. D1 rejects new references while a claim is active, and stale inline storage or upload verification cannot commit across a claim boundary. Invoke purge with a stable artefact ID until `done`; a settled R2 delete failure can be retried with the same ID.
 - Verification copies under `upload-verification/` are not artefact blobs and are outside admin purge. The Worker normally deletes them immediately; an interrupted verification can leave a copy that expires after one day under the required R2 bucket lifecycle rule. Physical deletion is asynchronous and typically occurs within a further 24 hours.
 - Republishing identical bytes does not restore a referenced R2 object deleted out of band: D1-based deduplication skips that write, and the missing blob is an operator incident.
-- The cron also expires login flows, sessions, uploads, handoffs, invites, old identity revocations and revisions beyond retention.
+- Live writes prune up to two expired revisions per commit; revision reads, listing and restore enforce the retention cutoff immediately. Issue #11's cron expires login flows, sessions, uploads, handoffs, invites, old identity revocations and any remaining revisions beyond retention.
 - A reader who loads a page during a publish may get assets from two revisions. Accepted.
 
 ## 9. MCP server
@@ -244,11 +249,11 @@ Gate 0 reserves the code's `grant_id` and `redeemed_at` in D1's `oauth_code_rede
 | `list_share_links`  | `slug`                                                                                                                               | `{shareLinks}` with active links' `id`, `label`, `createdAt`, `lastUsedAt`, no keys                                   |
 | `get_share_link`    | `id`                                                                                                                                 | `{url}` with the full active share URL, to copy it again                                                              |
 | `revoke_share_link` | `id`                                                                                                                                 | —                                                                                                                     |
-| `list_revisions`    | `slug`                                                                                                                               | number, author, date, message                                                                                         |
+| `list_revisions`    | `slug`, `cursor?`                                                                                                                    | `{revisions, nextCursor?}`, newest first (number, author member ID, `createdAt`, message)                             |
 | `restore_revision`  | `slug`, `revision`                                                                                                                   | new revision                                                                                                          |
 | `rename_artefact`   | `slug`, `newSlug`                                                                                                                    | new URL                                                                                                               |
 | `delete_artefact`   | `slug`                                                                                                                               | —                                                                                                                     |
-| `set_redirects`     | `add[]`, `remove[]` (admin only)                                                                                                     | —                                                                                                                     |
+| `set_redirects`     | `add[]` (`{fromPrefix, toPrefix}`), `remove[]` (source prefixes); admin only                                                         | —                                                                                                                     |
 
 - Tool descriptions are written for agents: when to use the tool, what it changes, what to tell the user.
 - Results are compact JSON text. Errors use stable codes: `not_found`, `forbidden`, `conflict`, `invalid_input`, `too_large`.
@@ -259,7 +264,8 @@ Gate 0 reserves the code's `grant_id` and `redeemed_at` in D1's `oauth_code_rede
 - `read_file` counts Unicode code points for slicing. Non-UTF-8 content and text files above 8 MiB return metadata only, with a reason. `edit_file` uses the same text decoding cap and refuses files above `MAX_INLINE_BYTES`. It writes UTF-8 and sets `charset=utf-8` on every edited file while retaining other media type parameters. More than 10,000 matches returns `invalid_input` with `matches: 10001`, a lower bound; use `publish` for that change.
 - Publishers and admins may manage share links on any live artefact. `get_artefact` exposes the same keyless metadata as `list_share_links`. Create and get are the only tools that disclose the bearer URL. Revoked links no longer appear in lists, cannot be revealed, and return `not_found` for repeated revocation.
 - An artefact may have up to 100 active share links; creating another returns `too_large`. Revocation frees a slot.
-- Members, bots and invites are managed in the admin UI, not over MCP.
+- `list_revisions` returns up to 20 retained revisions per page. `set_redirects` accepts up to 50 entries in each array and atomically upserts additions and removes the requested prefixes; targets must be live artefacts. Both prefixes must be slash-terminated, same-namespace read-host paths with different slugs. Canonical prefixes may include URL-encoded directories; use uppercase hex escapes and leave unreserved characters unescaped. Share prefixes may contain only `/s/<slug>/`, never a key.
+- Members, bots, invites, restoration of deleted artefacts and hard purge are admin UI operations, not MCP tools.
 
 **Uploads.** `create_uploads` returns capability URLs on the manage host, `PUT /upload/<token>`. They serve shells that cannot hold the OAuth token.
 
@@ -342,6 +348,8 @@ On **Members**, admins choose a role and create an invite link, valid for seven 
 The publish limits are positive integers: `MAX_FILES_PER_ARTEFACT` (default `1000`, up to `10000`, applied to the resulting revision), `MAX_BLOB_WRITES_PER_CALL` (default `500`, up to `900` to stay within the Workers subrequest budget), and `MAX_INLINE_BYTES` (default `2097152`, up to `8388608`, summed decoded bytes per call). Each of the `files` and `delete` arrays is independently capped at 10,000 entries.
 
 `MAX_UPLOAD_BYTES` is a positive integer with a default and hard ceiling of `100000000` (100 MB), the Workers Free request-size limit. Set a smaller value to reduce the maximum per-file upload size.
+
+`REVISION_RETENTION` defaults to `20` and accepts positive integers up to `100`.
 
 - Configuration is parsed once. Any invalid value makes every request answer 503 and logs the list of errors.
 - **Branding** is data: name, logo, favicon, colours and landing text, from configuration and `brand/`. Page structure, sign-in and consent markup belong to Forge, so forks merge upstream without touching security-relevant templates.
@@ -437,3 +445,10 @@ Known limits, stated in `docs/security.md`:
 16. **Directory URLs:** after access is checked, redirect directory-index fallback to the trailing-slash path so browsers load relative assets beside the index.
 17. **Share-link limit:** allow at most 100 active links per artefact; revoked links do not count toward the limit.
 18. **Revision entries:** cache the chosen entry path on the immutable revision to avoid rescanning its files on reads. Persist the cache best-effort; a failed write does not discard the computed entry or roll back a publish.
+19. **Rename and alias identity:** redirect targets use stable artefact IDs, not another redirect URL; slug checks reserve aliases and incomplete purges, and live slugs always win.
+20. **Alias privacy:** canonical aliases use the target's access policy without disclosing its slug before access; share aliases verify the key against the live target before redirecting and return the uniform 404 for invalid or revoked keys. Alias redirects are uncacheable.
+21. **Revision pruning:** keep the configured tail visible immediately and prune up to two outdated revisions per commit; leave catch-up and time-based D1 cleanup to issue #11.
+22. **Bounded admin purge:** process up to 256 indexed D1 file rows, then after hard deletion select at most 64 candidates by index per step and make indexed reference and claim probes only for that page. Resume by artefact ID. Automatic expiry in issue #11 removes only D1 metadata, never R2 blobs.
+23. **Blob purge fence:** atomically claim unreferenced hashes before R2 deletion; the reference check includes unexpired stored uploads. Claim acquisition and release advance a D1 epoch; overlapping inline writes and verifying uploads, even unrelated ones, may return a retryable conflict. The `alreadyStored` shortcut rechecks the source reference in its insert transaction.
+24. **Purge retries:** one attempt per artefact holds a 15-minute lease. On a settled error it releases its lease but keeps its hash claims. After expiry another call can take over and reissue the delete; token checks prevent stale attempts from changing claims, candidates or the successor lease. Known double fault: if the original R2 delete is still outstanding after 15 minutes and the same bytes are republished after the successor releases the claim but before the original delete lands, the late delete can remove the new object. Do not purge during mixed-version rollout or roll back to an unfenced Worker.
+25. **Orphaned blobs:** explicit purge cannot identify bytes whose last artefact association was already removed by retention. An unexpired stored upload also protects its bytes during purge; if it later expires unused, its bytes may remain in R2 without a reference.
