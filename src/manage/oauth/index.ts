@@ -20,6 +20,7 @@ const grant = z.object({
   subject: z.string(),
   sid: z.string().nullable(),
   grantedAt: z.number(),
+  generation: z.number().int().nonnegative(),
   grantId: z.string().optional(),
 })
 const apiToken = z.object({ memberId: z.uuid(), viaToken: z.literal(true) })

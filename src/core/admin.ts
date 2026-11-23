@@ -23,20 +23,16 @@ export async function changeMember(
   const [result] = await db.batch([
     db
       .prepare(`UPDATE members SET status = CASE ? WHEN 'remove' THEN 'removed' WHEN 'role' THEN status ELSE 'active' END,
-      role = COALESCE(?, role), removed_at = CASE WHEN ? = 'remove' THEN ? ELSE NULL END
+      role = COALESCE(?, role), removed_at = CASE WHEN ? = 'remove' THEN ? ELSE removed_at END
       WHERE id = ? AND EXISTS (SELECT 1 FROM members actor WHERE actor.id = ? AND actor.status = 'active' AND actor.role = 'admin')
       AND (? = 'role' AND status = 'active' OR ? = 'admit' AND status = 'pending'
         OR ? = 'remove' AND status <> 'removed' OR ? = 'reinstate' AND status = 'removed')
-      AND (kind = 'human' OR COALESCE(?, role) <> 'admin')`)
+      AND (kind = 'human' OR COALESCE(?, role) <> 'admin') RETURNING id`)
       .bind(action, role ?? null, action, now, id, actor, action, action, action, action, role ?? null),
     auditChange(db, now, actor, `member.${action}`, { id, role }),
-    db
-      .prepare(
-        `UPDATE sessions SET revoked_at = ? WHERE member_id = ? AND revoked_at IS NULL AND ? = 'remove' AND changes() = 1`,
-      )
-      .bind(now, id, action),
   ])
-  return result.meta.changes === 1
+  // D1's change count also includes credential revocations from the removal trigger.
+  return result.results.length === 1
 }
 
 export async function createBot(
