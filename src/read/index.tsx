@@ -3,7 +3,7 @@ import type { Runtime } from '../config'
 import { canonicalRead, publicArtefacts } from '../core/artefacts'
 import { handoffChallenge, readBoundSession, redeemHandoff, validHandoffState } from '../core/handoffs'
 import { randomSecret } from '../core/index'
-import { artefactPath, readReturnPath } from '../core/read-path'
+import { artefactPath, maxReadReturnLength, readReturnPath } from '../core/read-path'
 import { isDocumentNavigation, readBoundedBody } from '../http'
 import { serveFile } from './file'
 import { readHeaders } from './headers'
@@ -11,6 +11,8 @@ import { readHeaders } from './headers'
 const stateCookie = '__Host-forge-state'
 const readCookie = '__Host-forge'
 const callback = '/_forge/session'
+// Form encoding can triple the bounded return value; leave room for the fixed handoff fields.
+const handoffBodyLimit = 32 * 1024
 
 function cookie(request: Request, name: string) {
   let value: string | null = null
@@ -62,8 +64,9 @@ async function startHandoff(request: Request, url: URL, runtime: Runtime) {
   const browser = validHandoffState(current) ? current : randomSecret()
   const nonce = randomSecret()
   const target = new URL('/auth/handoff', runtime.config.manageOrigin)
+  const { pathname, search } = url
   target.search = new URLSearchParams({
-    return: url.pathname + url.search,
+    return: pathname.length + search.length <= maxReadReturnLength ? pathname + search : pathname,
     state: await handoffChallenge(browser, nonce),
     nonce,
   }).toString()
@@ -74,7 +77,7 @@ async function completeHandoff(request: Request, runtime: Runtime) {
   if (request.headers.get('Content-Type')?.split(';', 1)[0].trim() !== 'application/x-www-form-urlencoded') {
     return notFound()
   }
-  const body = await readBoundedBody(request, 4 * 1024)
+  const body = await readBoundedBody(request, handoffBodyLimit)
   if (body === null) return new Response(null, { status: 413, headers: readHeaders() })
   const fields = new URLSearchParams(new TextDecoder().decode(body))
   const result = await redeemHandoff(

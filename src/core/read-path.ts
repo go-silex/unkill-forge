@@ -19,10 +19,14 @@ export function artefactPath(pathname: string) {
   }
 }
 
+export const maxReadReturnLength = 8_192
+
 export function readReturnPath(raw: string | null, origin: string): string | null {
   if (!raw?.startsWith('/a/') || /[\\\p{Cc}]/u.test(raw)) return null
   const url = URL.parse(raw, origin)
   if (!url || url.origin !== origin || url.hash) return null
-  const target = artefactPath(url.pathname)
-  return target && target.path !== undefined ? url.pathname + url.search : null
+  const { pathname, search } = url
+  if (pathname.length + search.length > maxReadReturnLength) return null
+  const target = artefactPath(pathname)
+  return target && target.path !== undefined ? pathname + search : null
 }

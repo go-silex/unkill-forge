@@ -260,6 +260,43 @@ it('signs in on manage and resumes the handoff to the original read path and que
   expect(await (await readBrowser.request(`${privateUrl}?tab=summary`)).text()).toBe('<h1>Private</h1>')
 })
 
+it('completes handoffs for a maximal Unicode filename and encoded queries at the return URL limit', async () => {
+  const { send, owner, call } = await fixture()
+  const filename = `${'界'.repeat(508)}.txt`
+  const published = await call('publish', {
+    slug: 'long-path',
+    mode: 'replace',
+    files: [{ path: filename, content: 'Long filename' }],
+  })
+  if (!published?.url) throw new Error('Expected the published artefact URL')
+  const file = new URL(published.url)
+  expect(file.pathname).toBe(`/a/long-path/${encodeURIComponent(filename)}`)
+  const queryPrefix = '/a/private/?q='
+  const nearLimit = queryPrefix.padEnd(8192, '%21')
+  for (const [url, expectedPath, expectedBody] of [
+    [file.href, file.pathname, 'Long filename'],
+    [read + nearLimit, nearLimit, '<h1>Private</h1>'],
+    [`${read}${nearLimit}x`, '/a/private/', '<h1>Private</h1>'],
+  ]) {
+    const browser = new Browser(send)
+    const handoff = await start(browser, url)
+    expect(handoff.searchParams.get('return')).toBe(expectedPath)
+    const result = await submit(browser, await issue(owner, handoff))
+    expect(result.status).toBe(303)
+    expect(result.headers.get('Location')).toBe(expectedPath)
+    expect(await (await browser.request(read + expectedPath)).text()).toBe(expectedBody)
+  }
+  const browser = new Browser(send)
+  const handoff = await start(browser)
+  const callback = await issue(owner, handoff)
+  handoff.searchParams.set('return', `${nearLimit}x`)
+  expect((await owner.request(handoff, { headers: navigation })).status).toBe(404)
+  callback.fields.set('return', `${nearLimit}x`)
+  callback.fields.delete('state')
+  const mismatch = await noReadSession(browser, callback, 400)
+  expect(await mismatch.text()).not.toContain('Try signing in again')
+})
+
 it('redeems only via POST and burns codes on success, bad state, wrong browser or expiry', async () => {
   const { send, owner } = await fixture()
   const reader = new Browser(send)
@@ -306,7 +343,7 @@ it('redeems only via POST and burns codes on success, bad state, wrong browser o
 it('bounds streamed handoff and back-channel logout bodies without Content-Length', async () => {
   const send = runtime()
   for (const [path, limit] of [
-    [`${read}/_forge/session`, 4096],
+    [`${read}/_forge/session`, 32 * 1024],
     ['/login/team/backchannel-logout', 16384],
   ] as const) {
     let cancelled = false
