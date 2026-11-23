@@ -92,9 +92,14 @@ export async function redeemHandoff(
     .bind(codeHash)
     .first<{ path: string; sessionIdHash: string; stateHash: string; expiresAt: number }>()
   if (!handoff || handoff.expiresAt <= now) return null
-  if (!validHandoffState(state) || !validHandoffState(nonce) || !validHandoffState(browser)) return null
-  if ((await handoffChallenge(browser, nonce)) !== state || (await hashSecret(state)) !== handoff.stateHash) {
-    return null
+  if (
+    !validHandoffState(state) ||
+    !validHandoffState(nonce) ||
+    !validHandoffState(browser) ||
+    (await handoffChallenge(browser, nonce)) !== state ||
+    (await hashSecret(state)) !== handoff.stateHash
+  ) {
+    return { kind: 'retry', path: handoff.path } as const
   }
   const session = await readSession(db, handoff.sessionIdHash, now)
   const provider = session && config.providers.find(({ id }) => id === session.provider)
@@ -105,6 +110,7 @@ export async function redeemHandoff(
   const payload = `${session.idHash}.${expiresAt}`
   const mac = await crypto.subtle.sign('HMAC', await signingKey(config), signedMessage(config, payload))
   return {
+    kind: 'session' as const,
     path: handoff.path,
     cookie: `${payload}.${base64url.encode(new Uint8Array(mac))}`,
     maxAge: Math.ceil((expiresAt - completedAt) / 1000),

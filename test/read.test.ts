@@ -137,9 +137,9 @@ async function acquire(readBrowser: Browser, manageBrowser: Browser) {
   return callback
 }
 
-async function noReadSession(browser: Browser, callback: Handoff) {
+async function noReadSession(browser: Browser, callback: Handoff, status = 404) {
   const result = await submit(browser, callback)
-  expect(result.status).toBe(404)
+  expect(result.status).toBe(status)
   expect(result.headers.getSetCookie()).toEqual([])
   expect(browser.cookie(readCookie)).toBeUndefined()
 }
@@ -266,13 +266,13 @@ it('redeems only via POST and burns codes on success, bad state, wrong browser o
   const handoff = await start(reader)
   await start(foreign)
   const wrongBrowser = await issue(owner, handoff)
-  await noReadSession(foreign, wrongBrowser)
+  await noReadSession(foreign, wrongBrowser, 400)
   await noReadSession(reader, wrongBrowser)
 
   const wrongState = await issue(owner, handoff)
   const fields = new URLSearchParams(wrongState.fields)
   fields.delete('state')
-  await noReadSession(reader, { ...wrongState, fields })
+  await noReadSession(reader, { ...wrongState, fields }, 400)
   await noReadSession(reader, wrongState)
 
   vi.useFakeTimers({ toFake: ['Date'] })
@@ -289,6 +289,73 @@ it('redeems only via POST and burns codes on success, bad state, wrong browser o
   const replay = await submit(reader, callback)
   expect(replay.status).toBe(404)
   expect(replay.headers.getSetCookie()).toEqual([])
+})
+
+it('bounds streamed handoff and back-channel logout bodies without Content-Length', async () => {
+  const send = runtime()
+  for (const [path, limit] of [
+    [`${read}/_forge/session`, 4096],
+    ['/login/team/backchannel-logout', 16384],
+  ] as const) {
+    let cancelled = false
+    const body = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(new Uint8Array(limit))
+        controller.enqueue(new Uint8Array(1))
+      },
+      cancel() {
+        cancelled = true
+      },
+    })
+    const response = await send(path, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body,
+    })
+    expect(response.status).toBe(413)
+    expect(cancelled).toBe(true)
+    expect(response.headers.getSetCookie()).toEqual([])
+  }
+})
+
+it('offers a manual retry when two first-time navigations race to set browser state', async () => {
+  const { send, owner } = await fixture()
+  const browser = new Browser(send)
+  const arrivals: URL[] = []
+  await Promise.all(
+    ['one', 'two'].map(async (tab) => {
+      arrivals.push(await start(browser, `${privateUrl}?tab=${tab}`))
+    }),
+  )
+  const [displaced, current] = arrivals
+  const [displacedCallback, currentCallback] = await Promise.all([
+    issue(owner, displaced),
+    issue(owner, current),
+  ])
+  const retry = await submit(browser, displacedCallback)
+  expect(retry.status).toBe(400)
+  expect(retry.headers.get('Cache-Control')).toBe('private, no-store')
+  expect(retry.headers.has('Location')).toBe(false)
+  expect(retry.headers.getSetCookie()).toEqual([])
+  const html = await retry.text()
+  expect(html).toContain('Sign-in did not complete')
+  const href = /<a href="([^"]+)">Try signing in again<\/a>/.exec(html)?.[1]
+  expect(href).toBe(displaced.searchParams.get('return'))
+  if (!href) throw new Error('Expected a retry link')
+  const nextHandoff = await start(browser, new URL(href, read).href)
+  expect((await submit(browser, await issue(owner, nextHandoff))).headers.get('Location')).toBe(href)
+  expect((await submit(browser, currentCallback)).status).toBe(303)
+})
+
+it('starts anonymous HTML navigation without Fetch Metadata but not image requests', async () => {
+  const { send } = await fixture()
+  const accept = { Accept: 'text/html' }
+  const page = await send(privateUrl, { headers: accept })
+  expect(page.status).toBe(302)
+  expect(location(page).pathname).toBe('/auth/handoff')
+  const image = await send(privateUrl, { headers: { ...accept, 'Sec-Fetch-Dest': 'image' } })
+  expect(image.status).toBe(401)
+  expect(image.headers.getSetCookie()).toEqual([])
 })
 
 it('finishes concurrent tabs without letting a private subresource rotate browser state', async () => {
@@ -400,7 +467,7 @@ it('accepts only read artefact return paths and preserves manage origin checks',
 it('sends the specified security and conditional cache headers only after access checks', async () => {
   const { send, call, owner } = await fixture()
   const url = `${publicUrl}file.txt`
-  const tag = '"84d89877f0d4041efb6bf91a16f0248f2fd573e6af05c19f96bedb9f882f7882"'
+  const tag = '"84d89877f0d4041efb6bf91a16f0248f2fd573e6af05c19f96bedb9f882f7882.74df46b3"'
   const publicFile = await send(url)
   expect(publicFile.headers.get('Content-Type')).toBe('text/plain; charset=utf-8')
   expect(publicFile.headers.get('X-Content-Type-Options')).toBe('nosniff')
@@ -432,7 +499,7 @@ it('sends the specified security and conditional cache headers only after access
   expect(privateFile.headers.has('ETag')).toBe(false)
 })
 
-it('updates Content-Type on a 304 when an unchanged blob resolves through a different file', async () => {
+it('serves 200 with the new content type when an unchanged blob resolves through a different file', async () => {
   const { send, call } = await fixture()
   const url = `${publicUrl}section`
   const tag = (await send(url)).headers.get('ETag')
@@ -444,10 +511,11 @@ it('updates Content-Type on a 304 when an unchanged blob resolves through a diff
     delete: ['section'],
   })
   const response = await send(url, { headers: { 'If-None-Match': tag } })
-  expect(response.status).toBe(304)
+  expect(response.status).toBe(200)
   expect(response.headers.get('Content-Type')).toBe('text/html; charset=utf-8')
   expect(response.headers.get('Cache-Control')).toBe('no-cache')
-  expect(response.headers.get('ETag')).toBe(tag)
+  expect(response.headers.get('ETag')).not.toBe(tag)
+  expect(await response.text()).toBe('exact')
 })
 
 it('serves single R2 byte ranges and returns 416 for unsatisfiable ranges', async () => {

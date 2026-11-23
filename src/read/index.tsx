@@ -4,6 +4,7 @@ import { canonicalRead, publicArtefacts } from '../core/artefacts'
 import { handoffChallenge, readBoundSession, redeemHandoff, validHandoffState } from '../core/handoffs'
 import { randomSecret } from '../core/index'
 import { artefactPath } from '../core/read-path'
+import { isDocumentNavigation, readBoundedBody } from '../http'
 import { serveFile } from './file'
 import { readHeaders } from './headers'
 
@@ -39,7 +40,7 @@ function notFound(head = false) {
   return new Response(head ? null : 'Not found', { status: 404, headers })
 }
 
-function page(title: string, children: Child, head: boolean) {
+function page(title: string, children: Child, head: boolean, status = 200) {
   const html = (
     <html lang="en">
       <head>
@@ -53,7 +54,7 @@ function page(title: string, children: Child, head: boolean) {
   )
   const headers = readHeaders()
   headers.set('Content-Type', 'text/html; charset=utf-8')
-  return new Response(head ? null : `<!doctype html>${html}`, { headers })
+  return new Response(head ? null : `<!doctype html>${html}`, { status, headers })
 }
 
 async function startHandoff(request: Request, url: URL, runtime: Runtime) {
@@ -73,17 +74,31 @@ async function completeHandoff(request: Request, runtime: Runtime) {
   if (request.headers.get('Content-Type')?.split(';', 1)[0].trim() !== 'application/x-www-form-urlencoded') {
     return notFound()
   }
-  const fields = await request.formData()
+  const body = await readBoundedBody(request, 4 * 1024)
+  if (body === null) return new Response(null, { status: 413, headers: readHeaders() })
+  const fields = new URLSearchParams(new TextDecoder().decode(body))
   const result = await redeemHandoff(
     runtime,
-    String(fields.get('code') ?? ''),
-    String(fields.get('state') ?? ''),
-    String(fields.get('nonce') ?? ''),
+    fields.get('code'),
+    fields.get('state'),
+    fields.get('nonce'),
     cookie(request, stateCookie),
   )
-  return result
-    ? redirect(result.path, 303, [setCookie(readCookie, result.cookie, result.maxAge)])
-    : notFound()
+  if (!result) return notFound()
+  if (result.kind === 'retry') {
+    return page(
+      'Sign-in did not complete',
+      <>
+        <h1>Sign-in did not complete</h1>
+        <p>
+          <a href={result.path}>Try signing in again</a>
+        </p>
+      </>,
+      false,
+      400,
+    )
+  }
+  return redirect(result.path, 303, [setCookie(readCookie, result.cookie, result.maxAge)])
 }
 
 export async function read(request: Request, url: URL, runtime: Runtime): Promise<Response> {
@@ -108,13 +123,7 @@ export async function read(request: Request, url: URL, runtime: Runtime): Promis
           )
         case 'sign-in':
         case 'revalidate':
-          if (
-            request.method === 'GET' &&
-            request.headers.get('Sec-Fetch-Mode') === 'navigate' &&
-            request.headers.get('Sec-Fetch-Dest') === 'document'
-          ) {
-            return await startHandoff(request, url, runtime)
-          }
+          if (isDocumentNavigation(request)) return await startHandoff(request, url, runtime)
           return new Response(null, { status: 401, headers: readHeaders() })
         case 'pending':
           return page(

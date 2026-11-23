@@ -1,6 +1,13 @@
 import { openBlob } from '../core/blobs'
 import { readHeaders } from './headers'
 
+const encoder = new TextEncoder()
+
+async function representationTag(sha256: string, type: string) {
+  const digest = await crypto.subtle.digest('SHA-256', encoder.encode(type))
+  return `"${sha256}.${new DataView(digest).getUint32(0).toString(16).padStart(8, '0')}"`
+}
+
 function matchesETag(value: string | null, tag: string): boolean {
   if (!value) return false
   if (value.trim() === '*') return true
@@ -39,7 +46,7 @@ export async function serveFile(
 ): Promise<Response> {
   const headers = readHeaders(isPublic, isPublic && allowIndexing)
   headers.set('Accept-Ranges', 'bytes')
-  const tag = isPublic ? `"${file.sha256}"` : null
+  const tag = isPublic ? await representationTag(file.sha256, file.type) : null
   if (tag) headers.set('ETag', tag)
   if (tag && matchesETag(request.headers.get('If-None-Match'), tag)) {
     headers.set('Content-Type', file.type)

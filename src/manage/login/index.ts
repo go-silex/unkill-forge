@@ -16,6 +16,7 @@ import {
   sessionIsFresh,
 } from '../../core/index'
 import { consumeInviteContext, createInviteContext, inviteKey } from '../../core/invites'
+import { isDocumentNavigation, readBoundedBody } from '../../http'
 import {
   authorizationEndpoint,
   discover,
@@ -277,15 +278,11 @@ async function backchannel(req: Request, runtime: Runtime, provider: Provider): 
   ) {
     return respond(400, 'Invalid logout request')
   }
-  let form: FormData
-  try {
-    form = await req.formData()
-  } catch {
-    return respond(400, 'Invalid logout request')
-  }
-  const tokens = form.getAll('logout_token')
+  const body = await readBoundedBody(req, 16 * 1024)
+  if (body === null) return respond(413, 'Logout request body exceeds 16 KiB')
+  const tokens = new URLSearchParams(new TextDecoder().decode(body)).getAll('logout_token')
   const token = tokens[0]
-  if (tokens.length !== 1 || typeof token !== 'string' || !token) return respond(400, 'Invalid logout token')
+  if (tokens.length !== 1 || !token) return respond(400, 'Invalid logout token')
 
   const as = await discover(provider)
   try {
@@ -366,11 +363,7 @@ export async function requireBrowserSession(
     )
   }
   if (sessionIsFresh(provider, current, now)) return current
-  if (
-    req.method !== 'GET' ||
-    req.headers.get('sec-fetch-mode') !== 'navigate' ||
-    req.headers.get('sec-fetch-dest') !== 'document'
-  ) {
+  if (!isDocumentNavigation(req)) {
     return respond(401, 'Session revalidation required')
   }
   try {

@@ -175,20 +175,20 @@ Resolution order for a request:
 6. `/` → when `PUBLIC_INDEX=true`, list the newest 200 public artefacts by creation time; otherwise show the branded landing page.
 7. Anything else → 404.
 
-Unknown artefact, unauthorized share request and missing file all return the same 404.
+Unknown artefacts, unauthorized share requests and missing files return the same 404, but a missing file in a private artefact only returns 404 to a reader with access. Other readers get the handoff or pending response regardless of whether the file exists.
 
 Response headers:
 
 - All responses: `X-Content-Type-Options: nosniff`; `Referrer-Policy: same-origin`.
 - `X-Robots-Tag: noindex`, unless the artefact is public and indexing is enabled.
-- Caching: `/s/` and non-public content send `Cache-Control: private, no-store`. Public content sends `no-cache` with the blob hash as `ETag`, so every request, including a `304`, goes through the access check. A `304` retains the current `Content-Type`.
+- Caching: `/s/` and non-public content send `Cache-Control: private, no-store`. Public content sends `no-cache` and a strong `ETag` combining the blob SHA-256 and the first eight hex digits of the served content type's SHA-256. Every request, including a `304`, goes through the access check. A type change invalidates the cache even when the bytes are unchanged.
 - Range requests are served from R2.
 
 **Login handoff.** Sessions live on the manage host; the read host keeps its own cookie, bound to that session.
 
-1. A top-level navigation to a private artefact without a read session sets or refreshes the ten-minute `__Host-forge-state` browser cookie (HttpOnly, Secure, SameSite=None). It redirects to `/auth/handoff` on the manage host with the return path, a per-flow nonce and a challenge derived from the browser cookie and nonce. Unauthenticated subresources return an empty, non-cacheable 401 without starting a handoff.
+1. A top-level navigation to a private artefact without a read session sets or refreshes the ten-minute `__Host-forge-state` browser cookie (HttpOnly, Secure, SameSite=None). It redirects to `/auth/handoff` on the manage host with the return path, a per-flow nonce and a challenge derived from the browser cookie and nonce. Unauthenticated subresources return an empty, non-cacheable 401 without starting a handoff. If Fetch Metadata is missing, a GET accepting `text/html` is treated as a navigation unless the available metadata indicates otherwise.
 2. The manage host requires a valid session (signing in if needed). It validates the return as a read-host path starting with `/a/` (decoded, normalised, no scheme or empty segments), stores a single-use code (60 s) with the session and the state hash, then serves an auto-submitting form that POSTs the code, challenge and nonce to `/_forge/session` on the read host. The code never enters a URL. A pending member can establish identity on the read host to receive the pending page, not the file.
-3. The read host atomically consumes the code (`DELETE … RETURNING`) before verifying the challenge against the cookie and nonce. A valid redemption sets `__Host-forge` (HttpOnly, Secure, SameSite=Lax), an HMAC-signed `{sessionIdHash, exp}`, then 303s to the stored path. It keeps the browser-state cookie for other pending tabs. Failed redemptions return 404 without creating a session.
+3. The read host reads at most 4 KiB of the form body and atomically consumes the code (`DELETE … RETURNING`) before verifying the challenge against the cookie and nonce. A valid redemption sets `__Host-forge` (HttpOnly, Secure, SameSite=Lax), an HMAC-signed `{sessionIdHash, exp}`, then 303s to the stored path. It keeps the browser-state cookie for other pending tabs. A binding mismatch returns a non-cacheable 400 with a manual retry link to the validated return path, including when initial tabs raced to set the cookie. Unknown, expired and already-used codes return 404.
 4. Each private read checks that the bound manage session is still valid and its member active. Signing out, session revocation and identity revocation on the manage side end read access too. Stale OIDC sessions follow §10.
 
 ## 8. Publishing semantics
