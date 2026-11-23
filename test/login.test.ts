@@ -29,6 +29,10 @@ describe('Worker boundary', () => {
     ['non-HTTPS origin', { READ_ORIGIN: 'http://read.forge.example' }],
     ['malformed origin', { READ_ORIGIN: 'not a URL' }],
     ['malformed issuer', { AUTH_PROVIDERS: JSON.stringify([{ ...provider, issuer: 'not a URL' }]) }],
+    [
+      'a revalidation interval between 0 and 1 minute',
+      { AUTH_PROVIDERS: JSON.stringify([{ ...provider, revalidateAfterMinutes: 0.5 }]) },
+    ],
     ['no providers', { AUTH_PROVIDERS: '[]' }],
     ['duplicate providers', { AUTH_PROVIDERS: JSON.stringify([provider, provider]) }],
     ['missing provider secret', { AUTH_TEAM_CLIENT_SECRET: undefined }],
@@ -220,8 +224,8 @@ describe('session lifetime', () => {
     return start
   }
 
-  async function revalidation(b: Browser) {
-    const response = await b.request('/', { headers: navigation })
+  async function revalidation(b: Browser, path = '/') {
+    const response = await b.request(path, { headers: navigation })
     expect(response.status).toBe(302)
     const authorize = location(response)
     expect(authorize.origin).toBe(issuer)
@@ -237,6 +241,7 @@ describe('session lifetime', () => {
     const original = b.cookieHeader()
     vi.setSystemTime(start + 55 * minute)
     const authorize = await revalidation(b)
+    expect(authorize.searchParams.get('login_hint')).toBe('hard-cap@example.test')
     const renewed = await b.request(await idp.issue(authorize, 'hard-cap'))
     expect(renewed.status).toBe(302)
     expect(location(renewed).href).toBe(`${manage}/`)
@@ -245,6 +250,25 @@ describe('session lifetime', () => {
     vi.setSystemTime(start + 61 * minute)
     const expired = await send('/', { headers: { ...navigation, cookie: original } })
     expect(location(expired)).toMatchObject({ origin: manage, pathname: '/login' })
+  })
+
+  it('keeps the session when another tab finishes revalidation first', async () => {
+    const start = freezeTime()
+    const idp = mockProvider()
+    const b = await idp.signedIn(runtime(), 'two-tabs')
+    const original = b.cookie(sessionCookie)
+    const path = '/?tab=second'
+    vi.setSystemTime(start + 11 * minute)
+    const first = await revalidation(b)
+    const second = await revalidation(b, path)
+    vi.setSystemTime(start + 12 * minute)
+    expect((await b.request(await idp.issue(first, 'two-tabs'))).status).toBe(302)
+    vi.setSystemTime(start + 13 * minute)
+    const delayed = await b.request(await idp.issue(second, 'two-tabs'))
+    expect(delayed.status).toBe(302)
+    expect(location(delayed).href).toBe(`${manage}${path}`)
+    expect(b.cookie(sessionCookie)).toBe(original)
+    expect((await b.request(path, { headers: api })).status).toBe(200)
   })
 
   it('returns 401 for a stale non-navigation request without contacting the provider', async () => {
@@ -260,22 +284,109 @@ describe('session lifetime', () => {
     expect(idp.requests).toBe(upstreamRequests)
   })
 
-  it('ends the session on login_required and rejects the old cookie', async () => {
+  it('uses the subject as a login hint when the email is unverified', async () => {
+    const start = freezeTime()
+    const idp = mockProvider()
+    const send = runtime({
+      AUTH_PROVIDERS: JSON.stringify([{ ...provider, requireClaims: { active_member: true } }]),
+    })
+    const b = await idp.signedIn(send, 'unverified', { userinfo: { email_verified: false } })
+    vi.setSystemTime(start + 11 * minute)
+    expect((await revalidation(b)).searchParams.get('login_hint')).toBe('unverified')
+  })
+
+  function interactiveRetry(response: Response, authorize: URL) {
+    expect(response.status).toBe(302)
+    const retry = location(response)
+    expect(retry.origin).toBe(issuer)
+    expect(retry.searchParams.has('prompt')).toBe(false)
+    expect(retry.searchParams.get('login_hint')).toBe(authorize.searchParams.get('login_hint'))
+    expect(retry.searchParams.get('state')).not.toBe(authorize.searchParams.get('state'))
+    return retry
+  }
+
+  it.each(['interaction_required', 'login_required', 'account_selection_required', 'consent_required'])(
+    'retries %s interactively and restores access to the original path',
+    async (error) => {
+      const start = freezeTime()
+      const idp = mockProvider()
+      const b = await idp.signedIn(runtime(), 'interactive')
+      const original = b.cookie(sessionCookie)
+      const path = '/?view=account'
+      vi.setSystemTime(start + 11 * minute)
+      const authorize = await revalidation(b, path)
+      const exchanges = idp.exchanges
+      const response = await b.request(idp.callback(authorize, { error, error_subtype: 'test' }))
+      const retry = interactiveRetry(response, authorize)
+      expect(idp.exchanges).toBe(exchanges)
+      const renewed = await b.request(await idp.issue(retry, 'interactive'))
+      expect(renewed.status).toBe(302)
+      expect(location(renewed).href).toBe(`${manage}${path}`)
+      expect(b.cookie(sessionCookie)).toBe(original)
+      expect((await b.request(path, { headers: api })).status).toBe(200)
+    },
+  )
+
+  it.each(['interaction_required', 'different subject'])(
+    'revokes the session without another retry when interactive revalidation returns %s',
+    async (failure) => {
+      const start = freezeTime()
+      const send = runtime()
+      const idp = mockProvider()
+      const b = await idp.signedIn(send, 'original-account')
+      const original = b.cookieHeader()
+      vi.setSystemTime(start + 5 * minute)
+      const otherBrowser = await idp.signedIn(send, 'original-account', { sid: 'other-browser' })
+      vi.setSystemTime(start + 11 * minute)
+      const authorize = await revalidation(b)
+      const response = await b.request(idp.callback(authorize, { error: 'interaction_required' }))
+      const retry = interactiveRetry(response, authorize)
+      const result = await b.request(
+        failure === 'interaction_required'
+          ? idp.callback(retry, { error: failure })
+          : await idp.issue(retry, 'different-account'),
+      )
+      expect(result.status).toBe(401)
+      expect(result.headers.get('location')).toBeNull()
+      expect(b.cookie(sessionCookie)).toBeUndefined()
+      const expired = await send('/', { headers: { ...navigation, cookie: original } })
+      expect(location(expired)).toMatchObject({ origin: manage, pathname: '/login' })
+      expect((await otherBrowser.request('/', { headers: api })).status).toBe(200)
+    },
+  )
+
+  it('refuses access_denied without a retry or session revocation', async () => {
+    const start = freezeTime()
+    const idp = mockProvider()
+    const b = await idp.signedIn(runtime(), 'denied')
+    const original = b.cookie(sessionCookie)
+    vi.setSystemTime(start + 11 * minute)
+    const authorize = await revalidation(b)
+    const result = await b.request(idp.callback(authorize, { error: 'access_denied' }))
+    expect(result.status).toBe(401)
+    expect(result.headers.get('location')).toBeNull()
+    expect(b.cookie(sessionCookie)).toBe(original)
+    expect((await b.request('/', { headers: api })).status).toBe(401)
+    await revalidation(b)
+  })
+
+  it('honors revocations received during the silent attempt when retrying interactively', async () => {
     const start = freezeTime()
     const send = runtime()
     const idp = mockProvider()
-    const b = await idp.signedIn(send, 'requires-login')
-    const original = b.cookieHeader()
-    vi.setSystemTime(start + 5 * minute)
-    const otherBrowser = await idp.signedIn(send, 'requires-login', { sid: 'other-browser' })
+    const b = await idp.signedIn(send, 'revoked-sid')
+    const original = b.cookie(sessionCookie)
     vi.setSystemTime(start + 11 * minute)
     const authorize = await revalidation(b)
-    const callback = await b.request(idp.callback(authorize, { error: 'login_required' }))
-    expect(callback.status).toBe(401)
-    expect(b.cookie(sessionCookie)).toBeUndefined()
-    const expired = await send('/', { headers: { ...navigation, cookie: original } })
-    expect(location(expired)).toMatchObject({ origin: manage, pathname: '/login' })
-    expect((await otherBrowser.request('/', { headers: api })).status).toBe(200)
+    vi.setSystemTime(start + 12 * minute)
+    expect((await idp.backchannel(send, 'revoked-upstream', { sid: 'next-sid' })).status).toBe(200)
+    vi.setSystemTime(start + 13 * minute)
+    const response = await b.request(idp.callback(authorize, { error: 'interaction_required' }))
+    const retry = interactiveRetry(response, authorize)
+    const result = await b.request(await idp.issue(retry, 'revoked-sid', { sid: 'next-sid' }))
+    expect(result.status).toBe(401)
+    expect(result.headers.get('location')).toBeNull()
+    expect(b.cookie(sessionCookie)).toBe(original)
   })
 
   it('fails closed with 503 when silent revalidation cannot reach the provider', async () => {

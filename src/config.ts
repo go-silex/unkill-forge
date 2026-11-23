@@ -53,7 +53,7 @@ const providersSchema = z
         requireClaims: z.record(z.string(), z.json()).optional(),
         hostedDomains: z.array(z.string().min(1)).min(1).optional(),
         autoJoinRole: z.enum(['viewer', 'publisher']).optional(),
-        revalidateAfterMinutes: z.number().min(0).default(15),
+        revalidateAfterMinutes: z.union([z.literal(0), z.number().min(1)]).default(15),
         backchannelLogout: z.boolean().default(true),
         tokenAuthMethod: z.enum(['client_secret_basic', 'client_secret_post']).default('client_secret_basic'),
       }),

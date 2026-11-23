@@ -11,6 +11,7 @@ const transportTimeout = 5_000
 export class ProviderUnavailable extends Error {}
 export class IdentityDenied extends Error {}
 export class SessionDenied extends Error {}
+export class InteractionRequired extends SessionDenied {}
 export class InvalidProviderResponse extends Error {}
 
 // `error` comes verbatim from the callback query or the provider's token response; log only
@@ -248,7 +249,7 @@ export async function oidcIdentity(
         error.error === 'consent_required' ||
         error.error === 'account_selection_required')
     ) {
-      throw new SessionDenied()
+      throw new InteractionRequired()
     }
     if (
       (error instanceof oauth.AuthorizationResponseError || error instanceof oauth.ResponseBodyError) &&

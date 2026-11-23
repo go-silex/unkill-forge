@@ -14,6 +14,7 @@ type FlowKey = { stateHash: string; browserHash: string; provider: string }
 type ConsumedFlow = {
   returnPath: string
   sessionHash: string | null
+  retryLoginHint: string | null
   createdAt: number
   inviteHash: string | null
   generation: number
@@ -23,6 +24,7 @@ export type BrowserSession = {
   idHash: string
   provider: string
   subject: string
+  loginHint: string
   sid: string | null
   validatedAt: number
   expiresAt: number
@@ -64,12 +66,14 @@ export async function putFlow(db: D1Database, flow: PendingFlow): Promise<void> 
         flow.createdAt,
         flow.expiresAt,
       ),
-    ...(flow.inviteHash === null
+    ...(flow.inviteHash === null && flow.retryLoginHint === null
       ? []
       : [
           db
-            .prepare('UPDATE login_flow_metadata SET invite_hash = ? WHERE state_hash = ?')
-            .bind(flow.inviteHash, flow.stateHash),
+            .prepare(
+              'UPDATE login_flow_metadata SET invite_hash = ?, retry_login_hint = ? WHERE state_hash = ?',
+            )
+            .bind(flow.inviteHash, flow.retryLoginHint, flow.stateHash),
         ]),
   ])
 }
@@ -81,6 +85,7 @@ export async function consumeFlow(
   const [flow] = await db.batch<ConsumedFlow>([
     db
       .prepare(`SELECT return_path AS returnPath, session_hash AS sessionHash, created_at AS createdAt,
+        retry_login_hint AS retryLoginHint,
         invite_hash AS inviteHash, COALESCE(generation, 0) AS generation
         FROM login_flows f LEFT JOIN login_flow_metadata m USING (state_hash)
         WHERE f.state_hash = ? AND browser_hash = ? AND provider = ? AND expires_at > ?`)
@@ -173,7 +178,7 @@ export async function admitIdentity(db: D1Database, input: Admission): Promise<M
 
 export async function createSession(
   db: D1Database,
-  session: Omit<BrowserSession, 'member' | 'generation'> & {
+  session: Omit<BrowserSession, 'member' | 'generation' | 'loginHint'> & {
     authTime: number
     createdAt: number
     memberId: string
@@ -230,9 +235,11 @@ export async function readSession(
   now: number,
 ): Promise<BrowserSession | null> {
   const row = await db
-    .prepare(`SELECT s.id_hash AS idHash, provider, subject, sid, validated_at AS validatedAt, expires_at AS expiresAt,
-    m.id, kind, name, email, role, status, m.generation
+    .prepare(`SELECT s.id_hash AS idHash, s.provider, s.subject, sid, validated_at AS validatedAt, expires_at AS expiresAt,
+    COALESCE(CASE WHEN i.email_verified = 1 THEN i.email END, s.subject) AS loginHint,
+    m.id, m.kind, m.name, m.email, m.role, m.status, m.generation
     FROM sessions s JOIN members m ON s.member_id = m.id
+    LEFT JOIN identities i ON i.member_id = m.id AND i.provider = s.provider AND i.subject = s.subject
     WHERE s.id_hash = ? AND s.expires_at > ? AND s.revoked_at IS NULL AND m.status <> 'removed'
     AND s.generation = m.generation`)
     .bind(idHash, now)
