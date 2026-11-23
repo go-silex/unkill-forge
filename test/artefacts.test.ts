@@ -40,6 +40,8 @@ async function bot(send: Handle, role: 'viewer' | 'publisher' = 'publisher', nam
   const token = /<code>(fgt_[A-Za-z0-9_-]+)<\/code>/.exec(await response.text())?.[1]
   if (!token) throw new Error('Expected a bot token')
   return {
+    id,
+    owner,
     token,
     async call(name: string, args: object = {}, transport = send) {
       const response = (await rpc(transport, token, 'tools/call', { name, arguments: args })) as {
@@ -754,7 +756,7 @@ const textUpload = { path: 'body.txt', size: 5, sha256: uploadHash }
 async function uploadUrl(
   call: (name: string, args: object) => Promise<unknown>,
   slug: string,
-  file = textUpload,
+  file: typeof textUpload & { contentType?: string } = textUpload,
 ) {
   const response = await call('create_uploads', { slug, files: [file] })
   const { files } = z
@@ -765,7 +767,13 @@ async function uploadUrl(
   return files[0]
 }
 
-function putUpload(send: Handle, url: string, body: BodyInit = 'hello', length = 5, origin?: string) {
+function putUpload(
+  send: Handle,
+  url: string,
+  body: BodyInit = 'hello',
+  length: number | string = 5,
+  origin?: string,
+) {
   const headers = new Headers({ 'content-length': String(length), 'content-type': 'image/png' })
   if (origin) headers.set('origin', origin)
   return send(url, { method: 'PUT', headers, body })
@@ -781,8 +789,8 @@ it('claims an upload atomically, refuses replay, and serves no cross-origin allo
   expect(preflight.status).toBe(405)
   expect(preflight.headers.has('access-control-allow-origin')).toBe(false)
   const concurrent = await Promise.all([
-    putUpload(send, url, 'hello', 5, 'https://example.test'),
-    putUpload(send, url),
+    putUpload(send, url, 'hello', '0005', 'https://example.test'),
+    putUpload(send, url, 'hello', '0005'),
   ])
   expect(concurrent.map(({ status }) => status).sort()).toEqual([204, 404])
   for (const response of concurrent) {
@@ -795,6 +803,42 @@ it('claims an upload atomically, refuses replay, and serves no cross-origin allo
   ).toMatchObject({
     revision: 1,
   })
+})
+
+it('refuses a demoted, removed, or reinstated issuer even with the original capability', async () => {
+  const send = runtime()
+  const { id, owner, call } = await bot(send)
+  const { url } = await uploadUrl(call, 'upload-revocation')
+  const members = '/admin/members'
+  expect((await owner.post(members, { id, action: 'role', role: 'viewer' })).status).toBe(303)
+  expect((await putUpload(send, url)).status).toBe(404)
+  expect((await owner.post(members, { id, action: 'role', role: 'publisher' })).status).toBe(303)
+  expect((await owner.post(members, { id, action: 'remove' })).status).toBe(303)
+  expect((await putUpload(send, url)).status).toBe(404)
+  expect((await owner.post(members, { id, action: 'reinstate', role: 'publisher' })).status).toBe(303)
+  expect((await putUpload(send, url)).status).toBe(404)
+  expect(await bucket.head(`blobs/${uploadHash}`)).toBeNull()
+})
+
+it('audits each issued upload and successful store without revealing capabilities', async () => {
+  const send = runtime()
+  const { call, id } = await bot(send)
+  const slug = 'audited-uploads'
+  const declarations = [textUpload, { ...textUpload, path: 'other.txt' }]
+  const { files } = await call('create_uploads', { slug, files: declarations })
+  expect((await putUpload(send, files[0].url)).status).toBe(204)
+  expect((await putUpload(send, files[1].url, 'world')).status).toBe(422)
+  const { results } = await db
+    .prepare(`SELECT action, member_id AS memberId, detail_json AS detail FROM audit_log
+      WHERE action IN ('upload.issue', 'upload.store') ORDER BY action, json_extract(detail_json, '$.path')`)
+    .all<{ action: string; memberId: string; detail: string }>()
+  expect(
+    results.map(({ action, memberId, detail }) => ({ action, memberId, detail: JSON.parse(detail) })),
+  ).toEqual([
+    { action: 'upload.issue', memberId: id, detail: { slug, ...declarations[0] } },
+    { action: 'upload.issue', memberId: id, detail: { slug, ...declarations[1] } },
+    { action: 'upload.store', memberId: id, detail: { slug, ...declarations[0] } },
+  ])
 })
 
 it('burns failed capabilities without storing an object on length or checksum mismatch', async () => {
@@ -817,6 +861,39 @@ it('burns failed capabilities without storing an object on length or checksum mi
       files: [{ path: corrupt.path, uploadId: corrupt.uploadId }],
     }),
   ).toMatchObject({ error: 'not_found' })
+})
+
+it.each([4, 6])(
+  'refuses a five-byte stream with a matching declared length and header of %s',
+  async (size) => {
+    const send = runtime()
+    const { call } = await bot(send)
+    const slug = 'wrong-stream-length'
+    const { url } = await uploadUrl(call, slug, { ...textUpload, size })
+    expect((await putUpload(send, url, 'hello', size)).status).toBe(400)
+    expect((await putUpload(send, url, 'hello', size)).status).toBe(404)
+    expect(await bucket.head(`blobs/${uploadHash}`)).toBeNull()
+  },
+)
+
+it('does not store a matching hash prefix followed by a trailing chunk', async () => {
+  const send = runtime()
+  const { call } = await bot(send)
+  const { url } = await uploadUrl(call, 'trailing-upload-chunk')
+  const stream = new FixedLengthStream(6)
+  const writing = (async () => {
+    const writer = stream.writable.getWriter()
+    try {
+      await writer.write(new TextEncoder().encode('hello'))
+      await writer.write(new Uint8Array([33]))
+      await writer.close()
+    } catch {
+      // The worker may cancel the source when rejecting the upload.
+    }
+  })()
+  const [response] = await Promise.all([putUpload(send, url, stream.readable, 5), writing])
+  expect(response.status).toBe(400)
+  expect(await bucket.head(`blobs/${uploadHash}`)).toBeNull()
 })
 
 it('binds uploads to member, slug and path and consumes only on a committing publish', async () => {
@@ -875,6 +952,67 @@ it('binds uploads to member, slug and path and consumes only on a committing pub
   expect(await call('read_file', { slug, path })).toMatchObject({ revision: 4, text: 'hello' })
 })
 
+it('rolls back the revision and head if consuming its upload fails in D1', async () => {
+  const send = runtime()
+  const { call, token } = await bot(send)
+  const slug = 'upload-rollback'
+  expect(
+    await call('publish', { slug, mode: 'replace', files: [file('index.html', 'original')] }),
+  ).toMatchObject({ revision: 1 })
+  const { path, url, uploadId } = await uploadUrl(call, slug)
+  expect((await putUpload(send, url)).status).toBe(204)
+  await db
+    .prepare(`CREATE TRIGGER reject_consumption BEFORE UPDATE OF state ON uploads
+    WHEN NEW.state = 'consumed' BEGIN SELECT RAISE(ABORT, 'test: consumption blocked'); END`)
+    .run()
+  const input = { slug, mode: 'merge', expectedRevision: 1, files: [{ path, uploadId }] }
+  const result = await mcpPost(
+    send,
+    token,
+    JSON.stringify({
+      jsonrpc: '2.0',
+      id: 1,
+      method: 'tools/call',
+      params: { name: 'publish', arguments: input },
+    }),
+  )
+  expect(await result.json()).toMatchObject({ error: { code: -32603 } })
+  expect(await call('get_artefact', { slug })).toMatchObject({ revision: 1, files: [{ path: 'index.html' }] })
+  const { results } = await db
+    .prepare('SELECT number FROM revisions JOIN artefacts ON id = artefact_id WHERE slug = ?')
+    .bind(slug)
+    .all()
+  expect(results).toEqual([{ number: 1 }])
+  expect(
+    await db.prepare('SELECT state FROM uploads WHERE upload_id = ?').bind(uploadId).first('state'),
+  ).toBe('stored')
+  await db.prepare('DROP TRIGGER reject_consumption').run()
+  expect(await call('publish', input)).toMatchObject({ revision: 2 })
+})
+
+it('allows only one concurrent publish to consume the same upload ID', async () => {
+  const send = runtime()
+  const { call } = await bot(send)
+  const slug = 'upload-consumption-race'
+  expect(
+    await call('publish', { slug, mode: 'replace', files: [file('index.html', 'original')] }),
+  ).toMatchObject({ revision: 1 })
+  const { path, url, uploadId } = await uploadUrl(call, slug)
+  expect((await putUpload(send, url)).status).toBe(204)
+  const input = { slug, mode: 'merge', files: [{ path, uploadId }] }
+  const results = await Promise.all([call('publish', input), call('publish', input)])
+  expect(results).toEqual(
+    expect.arrayContaining([
+      expect.objectContaining({ revision: 2 }),
+      expect.objectContaining({ error: 'not_found' }),
+    ]),
+  )
+  expect(await call('get_artefact', { slug })).toMatchObject({ revision: 2 })
+  expect(
+    await db.prepare('SELECT state FROM uploads WHERE upload_id = ?').bind(uploadId).first('state'),
+  ).toBe('consumed')
+})
+
 it('refuses expired capabilities and stored IDs after their respective deadlines', async () => {
   const send = runtime()
   const { call } = await bot(send)
@@ -926,11 +1064,14 @@ it('publishes an already-referenced hash without a PUT and verifies the declared
   expect(await call('read_file', { slug, path })).toMatchObject({ text: 'hello' })
 })
 
-it('can publish a verified orphaned R2 object without overwriting it', async () => {
+it('verifies each PUT body before reusing an orphaned R2 object without overwriting it', async () => {
   const orphan = await bucket.put(`blobs/${uploadHash}`, 'hello', { sha256: uploadHash })
   const send = runtime()
   const { call } = await bot(send)
   const slug = 'orphan-upload'
+  const corrupt = await uploadUrl(call, slug)
+  expect((await putUpload(send, corrupt.url, 'world')).status).toBe(422)
+  expect((await putUpload(send, corrupt.url)).status).toBe(404)
   const { path, url, uploadId } = await uploadUrl(call, slug)
   expect((await putUpload(send, url)).status).toBe(204)
   expect(await call('publish', { slug, mode: 'replace', files: [{ path, uploadId }] })).toMatchObject({
@@ -938,6 +1079,58 @@ it('can publish a verified orphaned R2 object without overwriting it', async () 
   })
   expect(await call('read_file', { slug, path })).toMatchObject({ text: 'hello' })
   expect((await bucket.head(`blobs/${uploadHash}`))?.version).toBe(orphan.version)
+  expect((await bucket.list({ prefix: 'upload-verification/' })).objects).toEqual([])
+})
+
+it('edits uploaded text without changing its declared media type', async () => {
+  const send = runtime()
+  const { call } = await bot(send)
+  const slug = 'uploaded-media-type'
+  const { path, url, uploadId } = await uploadUrl(call, slug, {
+    ...textUpload,
+    path: 'page.bin',
+    contentType: 'text/plain',
+  })
+  expect((await putUpload(send, url)).status).toBe(204)
+  const input = { slug, mode: 'replace', files: [{ path, uploadId }] }
+  expect(await call('publish', input)).toMatchObject({ revision: 1 })
+  expect(
+    await call('edit_file', { slug, path, oldText: 'hello', newText: 'world', expectedRevision: 1 }),
+  ).toMatchObject({ revision: 2 })
+  expect(await call('read_file', { slug, path })).toMatchObject({ text: 'world', type: 'text/plain' })
+})
+
+it.each(['text/html', 'Text/HTML ; charset="utf-8"; title="test; value"'])(
+  'ranks %s by base media type in MCP and the public index',
+  async (contentType) => {
+    const send = runtime({ PUBLIC_INDEX: 'true' })
+    const { call } = await bot(send)
+    const slug = 'html-entry'
+    const { path, uploadId, url } = await uploadUrl(call, slug, { ...textUpload, path: 'z.bin', contentType })
+    expect((await putUpload(send, url)).status).toBe(204)
+    const files = [file('a.txt', 'fallback'), { path, uploadId }]
+    expect(await call('publish', { slug, mode: 'replace', files })).toMatchObject({
+      url: `${read}/a/${slug}/${path}`,
+    })
+    expect(await call('get_artefact', { slug })).toMatchObject({ url: `${read}/a/${slug}/${path}` })
+    expect(await call('set_visibility', { slug, visibility: 'public' })).toEqual({ visibility: 'public' })
+    expect(await (await send(`${read}/`)).text()).toContain(`href="${read}/a/${slug}/${path}"`)
+  },
+)
+
+it('refuses malformed or oversized upload media types', async () => {
+  const { call } = await bot(runtime())
+  for (const contentType of [
+    'html',
+    'text/html; bare',
+    'text/html; bad=a,b',
+    'text/html;\r\nx=y',
+    `text/${'x'.repeat(251)}`,
+  ]) {
+    expect(
+      await call('create_uploads', { slug: 'invalid-media', files: [{ ...textUpload, contentType }] }),
+    ).toMatchObject({ error: 'invalid_input' })
+  }
 })
 
 it('streams a multi-MB binary upload and reads its tail through the read host', async () => {

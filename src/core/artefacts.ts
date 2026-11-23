@@ -28,7 +28,7 @@ type Artefact = {
   deletedAt: number | null
 }
 type File = { path: string; size: number; type: string; sha256: string }
-type InlineFile = { path: string; content: string; encoding?: 'utf8' | 'base64' }
+type InlineFile = { path: string; content: string; encoding?: 'utf8' | 'base64'; type?: string }
 type Publish = {
   slug: string
   title?: string
@@ -110,7 +110,9 @@ async function liveHead(db: D1Database, slug: string) {
 function selectEntry(db: D1Database, id: string, revision: number) {
   return db
     .prepare(`SELECT path FROM files WHERE artefact_id = ? AND revision = ? ORDER BY CASE
-    WHEN path = 'index.html' THEN 0 WHEN content_type = 'text/html; charset=utf-8' THEN 1 ELSE 2 END, path LIMIT 1`)
+    WHEN path = 'index.html' THEN 0
+    WHEN lower(trim(substr(content_type, 1, instr(content_type || ';', ';') - 1), char(32, 9))) = 'text/html'
+    THEN 1 ELSE 2 END, path LIMIT 1`)
     .bind(id, revision)
 }
 
@@ -124,7 +126,8 @@ export async function publicArtefacts({ env: { DB: db }, config }: Runtime) {
     .prepare(`SELECT a.slug, a.title, (
       SELECT f.path FROM files f WHERE f.artefact_id = a.id AND f.revision = a.current_revision
       ORDER BY CASE WHEN f.path = 'index.html' THEN 0
-        WHEN f.content_type = 'text/html; charset=utf-8' THEN 1 ELSE 2 END, f.path LIMIT 1
+        WHEN lower(trim(substr(f.content_type, 1, instr(f.content_type || ';', ';') - 1), char(32, 9))) = 'text/html'
+        THEN 1 ELSE 2 END, f.path LIMIT 1
     ) AS path FROM artefacts a WHERE a.deleted_at IS NULL AND a.visibility = 'public'
     ORDER BY a.created_at DESC, a.slug LIMIT 200`)
     .all<{ slug: string; title: string; path: string | null }>()
@@ -335,7 +338,7 @@ export async function publish(runtime: Runtime, member: Member, input: Publish) 
     }
     const bytes = inlineBytes(file, remaining, maxBytes)
     remaining -= bytes.length
-    pending.push({ path: file.path, type: contentType(file.path), bytes })
+    pending.push({ path: file.path, type: file.type ?? contentType(file.path), bytes })
   }
   const newFiles: File[] = []
   let artefact = await head(db, input.slug)
@@ -541,7 +544,7 @@ export async function editFile(
   if (previous < text.length) parts.push(text.slice(previous))
   return publish(runtime, member, {
     slug: input.slug,
-    files: [{ path: input.path, content: parts.join('') }],
+    files: [{ path: input.path, content: parts.join(''), type: file.type }],
     mode: 'merge',
     expectedRevision: input.expectedRevision,
   })

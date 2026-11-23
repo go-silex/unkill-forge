@@ -2,6 +2,7 @@ CREATE TABLE uploads (
   token_hash TEXT PRIMARY KEY NOT NULL,
   upload_id TEXT NOT NULL UNIQUE,
   member_id TEXT NOT NULL REFERENCES members(id),
+  member_generation INTEGER NOT NULL,
   slug TEXT NOT NULL,
   path TEXT NOT NULL,
   sha256 TEXT NOT NULL,
