@@ -218,7 +218,8 @@ adminPages.get(
     const filter = visibility.safeParse(rawVisibility)
     if (rawVisibility && !filter.success) return c.text(t('malformed'), 400)
     const selected = filter.data
-    const { artefacts, nextCursor } = await searchArtefacts(c.env, actor, q, selected, c.req.query('cursor'))
+    const cursor = c.req.query('cursor')
+    const { artefacts, nextCursor } = await searchArtefacts(c.env, actor, q, selected, cursor)
     const params = new URLSearchParams()
     if (q) params.set('q', q)
     if (selected) params.set('visibility', selected)
@@ -255,7 +256,7 @@ adminPages.get(
             </tr>
           )),
           t,
-          nextCursor ? 'noNewMatches' : 'noResults',
+          nextCursor ? 'noNewMatches' : cursor ? 'noMoreResults' : 'noResults',
         )}
         {nextPage(cataloguePath, nextCursor, t('next'), params)}
       </>,

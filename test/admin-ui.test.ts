@@ -314,6 +314,35 @@ it('keeps modified seek cursors inside the prefix and explains duplicate-only pa
   expect(await html(owner, tampered)).toBe(first)
 })
 
+it('shows a localized end-of-results message when a catalogue continuation exhausts duplicate matches', async () => {
+  const send = runtime()
+  const owner = await mockProvider().signedIn(send, admin)
+  await publish(send, await issueToken(owner, 'Catalogue duplicate fixture'), 'report', 'Report duplicate')
+  await db
+    .prepare(`WITH RECURSIVE numbers(n) AS (SELECT 1 UNION ALL SELECT n + 1 FROM numbers WHERE n < 64)
+    INSERT INTO artefacts (id, slug, title, visibility, current_revision, created_by, created_at, updated_at)
+    SELECT printf('10000000-0000-4000-8000-%012d', n), printf('report-%03d', n), title, 'private',
+    current_revision, created_by, created_at, updated_at FROM artefacts, numbers WHERE slug = 'report'`)
+    .run()
+  const next = (page: string) => {
+    const href = /href="([^"]+)"[^>]*>Next page<\/a>/.exec(page)?.[1]?.replaceAll('&amp;', '&')
+    if (!href) throw new Error('Expected catalogue continuation')
+    return href
+  }
+  const first = await html(owner, '/artefacts?q=report')
+  const second = await html(owner, next(first))
+  expect(first.match(/href="\/artefacts\/report[^"]*"/g)).toHaveLength(50)
+  expect(second.match(/href="\/artefacts\/report[^"]*"/g)).toHaveLength(15)
+  const lastPath = next(second)
+  const exhausted = await html(owner, lastPath)
+  expect(exhausted).toContain('No more results.')
+  expect(exhausted).not.toContain('No results.')
+  expect(exhausted).not.toContain('Next page')
+  const french = await runtime({ LOCALE: 'fr' })(lastPath, { headers: { Cookie: owner.cookieHeader() } })
+  expect(french.status).toBe(200)
+  expect(await french.text()).toContain('Il n’y a plus de résultats.')
+})
+
 it('uses bounded index seeks for missing and sparse matches in a large catalogue', async () => {
   const send = runtime()
   const owner = await mockProvider().signedIn(send, admin)
