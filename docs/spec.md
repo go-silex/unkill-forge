@@ -347,7 +347,7 @@ Deployment needs a Cloudflare zone for the two hostnames, plus at least one iden
 3. Attach the two custom domains.
 4. Sign in with an `ADMIN_EMAILS` address.
 
-Database migrations are additive and must keep the previous Worker working; `INSERT` statements always name their columns.
+Database migrations are additive and must keep the previous Worker working; `INSERT` statements always name their columns. Any degraded behaviour of the previous Worker during the rollout window is listed in the README upgrade steps.
 
 Operators who keep their configuration private run `npm run deploy -- --config <path>` with a file outside the repository. Workers Free is enough for light use; Workers Paid is recommended for large publishes (CPU time).
 

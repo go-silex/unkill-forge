@@ -61,6 +61,7 @@ After deploying with `0004_invites.sql`:
 1. Anyone whose membership was ever removed must sign in again after reinstatement. Sessions created by the previous Worker between migration and rollout also require signing in again.
 2. Reissue API tokens for any bot that was ever removed, including tokens issued after a Gate 0 reinstatement. Tokens for other bots are unaffected.
 3. Reauthorize all OAuth clients. Gate 0 grants cannot be exchanged, refreshed, or used on MCP.
+4. Between the migration and the Worker rollout, the previous Worker can answer HTTP 409 to a member removal that did succeed. Reload the member list to confirm.
 
 ## Connect an agent
 
