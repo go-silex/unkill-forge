@@ -9,20 +9,37 @@ CREATE TABLE invites (
   CHECK ((used_by IS NULL) = (used_at IS NULL))
 );
 CREATE INDEX invites_expiry ON invites(expires_at);
-ALTER TABLE login_flows ADD COLUMN invite_hash TEXT;
 
--- Gate 0 cleared removed_at on reinstatement; recover those removals from its audit trail.
-UPDATE members SET removed_at = COALESCE(removed_at, (
-  SELECT MAX(at) FROM audit_log WHERE action = 'member.remove' AND json_extract(detail_json, '$.id') = members.id
-));
-UPDATE sessions SET revoked_at = (SELECT removed_at FROM members WHERE id = sessions.member_id)
-WHERE revoked_at IS NULL AND created_at <= (SELECT removed_at FROM members WHERE id = sessions.member_id);
-UPDATE api_tokens SET revoked_at = (SELECT removed_at FROM members WHERE id = api_tokens.member_id)
-WHERE revoked_at IS NULL AND created_at <= (SELECT removed_at FROM members WHERE id = api_tokens.member_id);
+ALTER TABLE members ADD COLUMN generation INTEGER NOT NULL DEFAULT 0;
+
+-- Gate 0 cleared removed_at on reinstatement. Revoke legacy credentials for anyone previously removed.
+UPDATE members SET generation = 1 WHERE removed_at IS NOT NULL OR id IN (
+  SELECT json_extract(detail_json, '$.id') FROM audit_log WHERE action = 'member.remove'
+);
+CREATE INDEX members_generation ON members(generation);
+UPDATE sessions SET revoked_at = unixepoch('subsec') * 1000
+WHERE revoked_at IS NULL AND member_id IN (SELECT id FROM members WHERE generation > 0);
+UPDATE api_tokens SET revoked_at = unixepoch('subsec') * 1000
+WHERE revoked_at IS NULL AND member_id IN (SELECT id FROM members WHERE generation > 0);
+
+-- Preserve Gate 0's positional INSERT; snapshot a D1-ordered watermark for every new flow.
+CREATE TABLE login_flow_metadata (
+  state_hash TEXT PRIMARY KEY REFERENCES login_flows(state_hash) ON DELETE CASCADE,
+  generation INTEGER NOT NULL,
+  invite_hash TEXT
+);
+CREATE TRIGGER snapshot_login_flow_generation AFTER INSERT ON login_flows
+BEGIN
+  INSERT INTO login_flow_metadata (state_hash, generation)
+  VALUES (NEW.state_hash, (SELECT COALESCE(MAX(generation), 0) FROM members));
+END;
 
 CREATE TRIGGER revoke_member_credentials AFTER UPDATE OF status ON members
 WHEN NEW.status = 'removed' AND OLD.status <> 'removed'
 BEGIN
-  UPDATE sessions SET revoked_at = NEW.removed_at WHERE member_id = NEW.id AND revoked_at IS NULL;
-  UPDATE api_tokens SET revoked_at = NEW.removed_at WHERE member_id = NEW.id AND revoked_at IS NULL;
+  UPDATE members
+  SET generation = (SELECT MAX(generation) + 1 FROM members)
+  WHERE id = NEW.id;
+  UPDATE sessions SET revoked_at = unixepoch('subsec') * 1000 WHERE member_id = NEW.id AND revoked_at IS NULL;
+  UPDATE api_tokens SET revoked_at = unixepoch('subsec') * 1000 WHERE member_id = NEW.id AND revoked_at IS NULL;
 END;

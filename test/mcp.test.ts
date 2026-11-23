@@ -542,7 +542,7 @@ describe('OAuth with DCR enabled for this runtime only', () => {
     expect((await mcpCall(send, rotated.access_token)).status).toBe(401)
   })
 
-  it('requires fresh sign-in and OAuth approval after reinstatement', async () => {
+  it('requires fresh sign-in and OAuth approval after reinstatement and refuses a pre-removal login flow', async () => {
     const send = runtime({ ALLOW_DCR: 'true' })
     const idp = mockProvider()
     const owner = await idp.signedIn(send, admin)
@@ -551,6 +551,8 @@ describe('OAuth with DCR enabled for this runtime only', () => {
     const issued = await tokens(await old.exchange())
     const person = await whoami(send, issued.access_token)
     const approvedBeforeRemoval = await authorize(send, member, false)
+    const staleBrowser = new Browser(send)
+    const staleCallback = await idp.issue(await idp.begin(staleBrowser), 'reinstated')
     const viewer = await idp.signedIn(send, 'unprivileged')
     const path = '/admin/members'
     expect((await owner.post(path, { id: person.id, action: 'remove' })).status).toBe(303)
@@ -564,6 +566,8 @@ describe('OAuth with DCR enabled for this runtime only', () => {
     expect((await mcpCall(send, issued.access_token)).status).toBe(401)
     await expectInvalidGrant(await old.refresh(issued.refresh_token))
     await expectInvalidGrant(await approvedBeforeRemoval.exchange())
+    expect((await staleBrowser.request(staleCallback)).status).toBe(401)
+    expect(staleBrowser.cookie(sessionCookie)).toBeUndefined()
 
     const fresh = new Browser(send)
     expect((await idp.login(fresh, 'reinstated')).status).toBe(302)
@@ -572,6 +576,31 @@ describe('OAuth with DCR enabled for this runtime only', () => {
     const renewed = await tokens(await freshGrant.exchange())
     expect(await whoami(send, renewed.access_token)).toEqual(person)
     expect((await freshGrant.refresh(renewed.refresh_token)).status).toBe(200)
+  })
+
+  it('rejects an approval finalized after a removal that committed after the consent read', async () => {
+    const path = '/admin/members'
+    const subject = 'consent-overlap'
+    const idp = mockProvider()
+    const owner = await idp.signedIn(runtime(), admin)
+    let id: string | undefined
+    let interrupted = false
+    const send = withKvPut(async (key, write) => {
+      if (key.startsWith('grant:') && id && !interrupted) {
+        interrupted = true
+        // Model the old Worker committing a removal whose clock lagged the consent Worker.
+        await bindings.DB.prepare("UPDATE members SET status = 'removed', removed_at = 1 WHERE id = ?")
+          .bind(id)
+          .run()
+        expect((await owner.post(path, { id, action: 'reinstate' })).status).toBe(303)
+      }
+      await write()
+    })
+    const member = await idp.signedIn(send, subject)
+    id = await listedId(owner, path, `${subject}@example.test`)
+    const overlapping = await authorize(send, member, false)
+    expect(interrupted).toBe(true)
+    await expectInvalidGrant(await overlapping.exchange())
   })
 
   it('rejects both exchange and refresh for a revoked sub as well as existing access tokens', async () => {

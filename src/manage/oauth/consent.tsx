@@ -114,6 +114,7 @@ export async function authorize(
       subject: current.subject,
       sid: current.sid,
       grantedAt,
+      generation: current.generation,
     }
     const { redirectTo } = await helpers.completeAuthorization({
       request: authRequest,

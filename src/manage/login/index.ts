@@ -30,6 +30,7 @@ import {
 
 const flowCookie = '__Host-forge-flow'
 const sessionCookie = '__Host-forge-session'
+const inviteCookie = '__Host-forge-invite'
 const flowSeconds = 300
 const encoder = new TextEncoder()
 
@@ -64,6 +65,11 @@ function respond(status: number, body: string | null, location?: string, cookie?
   return new Response(body, { status, headers })
 }
 
+export async function openInvite(runtime: Runtime, token: string): Promise<Response | null> {
+  if (!(await activeInviteHash(runtime.env.DB, token, Date.now()))) return null
+  return respond(303, null, '/login', writeCookie(inviteCookie, token, 600))
+}
+
 function callbackUri(runtime: Runtime, provider: Provider): string {
   return `${runtime.config.manageOrigin}/login/${encodeURIComponent(provider.id)}/callback`
 }
@@ -93,9 +99,9 @@ async function start(
   provider: Provider,
   path: string,
   sessionHash: string | null,
-  invite: string | null = null,
 ): Promise<Response> {
   const now = Date.now()
+  const invite = sessionHash === null ? readCookie(req, inviteCookie) : null
   const browser = readCookie(req, flowCookie) ?? randomSecret()
   const state = randomSecret()
   const target = await authorizationEndpoint(provider)
@@ -126,7 +132,9 @@ async function start(
     expiresAt: now + flowSeconds * 1_000,
     inviteHash: invite === null ? null : await activeInviteHash(runtime.env.DB, invite, now),
   })
-  return respond(302, null, target.href, writeCookie(flowCookie, browser, flowSeconds))
+  const response = respond(302, null, target.href, writeCookie(flowCookie, browser, flowSeconds))
+  if (invite !== null) response.headers.append('Set-Cookie', writeCookie(inviteCookie, '', 0))
+  return response
 }
 
 async function callback(
@@ -243,6 +251,7 @@ async function callback(
       validatedAt,
       expiresAt: validatedAt + cap,
       flowCreatedAt: flow.createdAt,
+      flowGeneration: flow.generation,
     }))
   )
     return respond(401, 'Sign-in refused')
@@ -287,6 +296,7 @@ async function logout(req: Request, runtime: Runtime): Promise<Response> {
   if (session) await revokeSession(runtime.env.DB, await hashSecret(session), Date.now())
   const response = respond(303, null, '/login', writeCookie(sessionCookie, '', 0))
   response.headers.append('Set-Cookie', writeCookie(flowCookie, '', 0))
+  response.headers.append('Set-Cookie', writeCookie(inviteCookie, '', 0))
   return response
 }
 
@@ -307,10 +317,8 @@ export async function loginRoute(req: Request, runtime: Runtime): Promise<Respon
 
   try {
     if (req.method === 'GET' && !action) {
-      const invite = url.searchParams.get('invite')
-      const path =
-        invite === null ? returnPath(url.searchParams.get('return'), runtime.config.manageOrigin) : '/'
-      return await start(req, runtime, provider, path, null, invite)
+      const path = returnPath(url.searchParams.get('return'), runtime.config.manageOrigin)
+      return await start(req, runtime, provider, path, null)
     }
     if (req.method === 'GET' && action === 'callback')
       return await callback(req, runtime, provider, url.searchParams)

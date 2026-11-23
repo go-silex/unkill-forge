@@ -11,8 +11,8 @@ import {
   listTokens,
   revokeApiToken,
 } from '../../core/admin'
-import { activeInviteHash, createInvite, inviteKey, listInvites, revokeInvite } from '../../core/invites'
-import { requireBrowserSession, returnPath } from '../login'
+import { createInvite, inviteKey, listInvites, revokeInvite } from '../../core/invites'
+import { openInvite, requireBrowserSession, returnPath } from '../login'
 
 export function Page({ config, title, children }: { config: Config; title: string; children: Child }) {
   return (
@@ -115,18 +115,15 @@ app.get('/login', (c) => {
 })
 
 app.get('/invite/:token', async (c) => {
-  const { config, env } = c.env
-  const token = c.req.param('token')
+  const redirect = await openInvite(c.env, c.req.param('token'))
+  if (redirect) return redirect
   c.header('Referrer-Policy', 'no-referrer')
-  if (!(await activeInviteHash(env.DB, token, Date.now()))) {
-    return c.html(
-      <Page config={config} title="Invite invalid or expired">
-        <a href="/login">Sign in</a>
-      </Page>,
-      404,
-    )
-  }
-  return c.html(<SignIn config={config} query={new URLSearchParams({ invite: token })} />)
+  return c.html(
+    <Page config={c.env.config} title="Invite invalid or expired">
+      <a href="/login">Sign in</a>
+    </Page>,
+    404,
+  )
 })
 
 app.get('/', async (c) => {

@@ -16,6 +16,7 @@ export type LoginFlow = {
   createdAt: number
   expiresAt: number
   inviteHash: string | null
+  generation: number
 }
 export type BrowserSession = {
   idHash: string
@@ -26,6 +27,7 @@ export type BrowserSession = {
   createdAt: number
   validatedAt: number
   expiresAt: number
+  generation: number
   member: Member
 }
 export type Grant = {
@@ -34,6 +36,7 @@ export type Grant = {
   subject: string
   sid: string | null
   grantedAt: number
+  generation: number
 }
 
 function base64url(bytes: Uint8Array): string {
@@ -51,13 +54,13 @@ export async function hashSecret(value: string): Promise<string> {
   return base64url(new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(value))))
 }
 
-export async function putFlow(db: D1Database, flow: LoginFlow): Promise<void> {
+export async function putFlow(db: D1Database, flow: Omit<LoginFlow, 'generation'>): Promise<void> {
   await db.batch([
     db.prepare('DELETE FROM login_flows WHERE expires_at <= ?').bind(flow.createdAt),
     db
       .prepare(`INSERT INTO login_flows
-        (state_hash, browser_hash, provider, return_path, session_hash, created_at, expires_at, invite_hash)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?)`)
+        (state_hash, browser_hash, provider, return_path, session_hash, created_at, expires_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?)`)
       .bind(
         flow.stateHash,
         flow.browserHash,
@@ -66,21 +69,36 @@ export async function putFlow(db: D1Database, flow: LoginFlow): Promise<void> {
         flow.sessionHash,
         flow.createdAt,
         flow.expiresAt,
-        flow.inviteHash,
       ),
+    ...(flow.inviteHash === null
+      ? []
+      : [
+          db
+            .prepare('UPDATE login_flow_metadata SET invite_hash = ? WHERE state_hash = ?')
+            .bind(flow.inviteHash, flow.stateHash),
+        ]),
   ])
 }
 
-export function consumeFlow(
+export async function consumeFlow(
   db: D1Database,
   key: Pick<LoginFlow, 'stateHash' | 'browserHash' | 'provider'> & { now: number },
 ): Promise<LoginFlow | null> {
-  return db
-    .prepare(`DELETE FROM login_flows WHERE state_hash = ? AND browser_hash = ? AND provider = ? AND expires_at > ?
-    RETURNING state_hash AS stateHash, browser_hash AS browserHash, provider, return_path AS returnPath,
-    session_hash AS sessionHash, created_at AS createdAt, expires_at AS expiresAt, invite_hash AS inviteHash`)
-    .bind(key.stateHash, key.browserHash, key.provider, key.now)
-    .first<LoginFlow>()
+  const [flow] = await db.batch<LoginFlow>([
+    db
+      .prepare(`SELECT f.state_hash AS stateHash, browser_hash AS browserHash, provider,
+        return_path AS returnPath, session_hash AS sessionHash, created_at AS createdAt,
+        expires_at AS expiresAt, invite_hash AS inviteHash, COALESCE(generation, 0) AS generation
+        FROM login_flows f LEFT JOIN login_flow_metadata m USING (state_hash)
+        WHERE f.state_hash = ? AND browser_hash = ? AND provider = ? AND expires_at > ?`)
+      .bind(key.stateHash, key.browserHash, key.provider, key.now),
+    db
+      .prepare(
+        `DELETE FROM login_flows WHERE state_hash = ? AND browser_hash = ? AND provider = ? AND expires_at > ?`,
+      )
+      .bind(key.stateHash, key.browserHash, key.provider, key.now),
+  ])
+  return flow.results[0] ?? null
 }
 
 type Admission = {
@@ -123,11 +141,11 @@ export async function admitIdentity(db: D1Database, input: Admission): Promise<M
       ? []
       : [
           db
-            .prepare(`UPDATE invites SET used_by = m.id, used_at = ?
+            .prepare(`UPDATE invites SET used_by = m.id, used_at = unixepoch('subsec') * 1000
               FROM identities i JOIN members m ON m.id = i.member_id
-              WHERE token_hash = ? AND used_at IS NULL AND expires_at > ?
+              WHERE token_hash = ? AND used_at IS NULL AND expires_at > unixepoch('subsec') * 1000
               AND i.provider = ? AND i.subject = ? AND m.status = 'pending' RETURNING role`)
-            .bind(now, input.inviteHash, now, provider, subject),
+            .bind(input.inviteHash, provider, subject),
           // D1 runs the batch on one connection: only the immediately preceding claim may admit.
           db
             .prepare(`UPDATE members SET status = 'active', role = (SELECT role FROM invites WHERE token_hash = ?)
@@ -135,9 +153,9 @@ export async function admitIdentity(db: D1Database, input: Admission): Promise<M
             .bind(input.inviteHash, input.inviteHash),
           db
             .prepare(`INSERT INTO audit_log (id, at, member_id, action, detail_json)
-              SELECT ?, ?, used_by, 'invite.consume', json_object('id', token_hash, 'role', role)
+              SELECT ?, used_at, used_by, 'invite.consume', json_object('id', token_hash, 'role', role)
               FROM invites WHERE token_hash = ? AND changes() = 1`)
-            .bind(crypto.randomUUID(), now, input.inviteHash),
+            .bind(crypto.randomUUID(), input.inviteHash),
         ]),
     ...(input.autoJoinRole === undefined
       ? []
@@ -162,7 +180,11 @@ export async function admitIdentity(db: D1Database, input: Admission): Promise<M
 
 export async function createSession(
   db: D1Database,
-  session: Omit<BrowserSession, 'member'> & { memberId: string; flowCreatedAt: number },
+  session: Omit<BrowserSession, 'member' | 'generation'> & {
+    memberId: string
+    flowCreatedAt: number
+    flowGeneration: number
+  },
 ): Promise<boolean> {
   const {
     idHash,
@@ -175,6 +197,7 @@ export async function createSession(
     validatedAt,
     expiresAt,
     flowCreatedAt,
+    flowGeneration,
   } = session
   const [result] = await db.batch([
     db
@@ -182,8 +205,7 @@ export async function createSession(
       SELECT ?, ?, ?, ?, ?, ?, ?, ?, ? WHERE NOT EXISTS (
         SELECT 1 FROM identity_revocations r WHERE r.provider = ? AND r.received_at >= ?
         AND ((r.sid IS NULL AND r.subject = ?) OR (r.sid = ? AND (r.subject IS NULL OR r.subject = ?))))
-      AND EXISTS (SELECT 1 FROM members WHERE id = ? AND status <> 'removed'
-        AND (removed_at IS NULL OR removed_at < ?))`)
+      AND EXISTS (SELECT 1 FROM members WHERE id = ? AND status <> 'removed' AND generation <= ?)`)
       .bind(
         idHash,
         memberId,
@@ -200,7 +222,7 @@ export async function createSession(
         sid,
         subject,
         memberId,
-        flowCreatedAt,
+        flowGeneration,
       ),
     auditChange(db, createdAt, memberId, 'session.start', { provider }),
   ])
@@ -214,7 +236,8 @@ export async function readSession(
 ): Promise<BrowserSession | null> {
   const row = await db
     .prepare(`SELECT s.id_hash AS idHash, provider, subject, sid, auth_time AS authTime,
-    s.created_at AS createdAt, validated_at AS validatedAt, expires_at AS expiresAt, m.id, kind, name, email, role, status
+    s.created_at AS createdAt, validated_at AS validatedAt, expires_at AS expiresAt,
+    m.id, kind, name, email, role, status, generation
     FROM sessions s JOIN members m ON s.member_id = m.id
     WHERE s.id_hash = ? AND s.expires_at > ? AND s.revoked_at IS NULL AND m.status <> 'removed'`)
     .bind(idHash, now)
@@ -279,7 +302,8 @@ export async function recordRevocation(
   const { provider, jti, subject, sid, now } = input
   const [result] = await db.batch([
     db
-      .prepare('INSERT INTO identity_revocations VALUES (?, ?, ?, ?, ?) ON CONFLICT DO NOTHING')
+      .prepare(`INSERT INTO identity_revocations (provider, jti, subject, sid, received_at)
+        VALUES (?, ?, ?, ?, ?) ON CONFLICT DO NOTHING`)
       .bind(provider, jti, subject, sid, now),
     auditChange(db, now, null, 'identity.revoke', { provider, by: sid === null ? 'subject' : 'sid' }),
     db
@@ -314,11 +338,19 @@ export function grantMember(db: D1Database, grant: Grant, grantId: string): Prom
   return db
     .prepare(`SELECT m.id, m.kind, m.name, m.email, m.role, m.status FROM members m
     JOIN identities i ON m.id = i.member_id WHERE m.id = ? AND i.provider = ? AND i.subject = ? AND m.status = 'active'
-    AND (m.removed_at IS NULL OR m.removed_at < ?)
+    AND m.generation = ?
     AND NOT EXISTS (SELECT 1 FROM identity_revocations r WHERE r.provider = i.provider AND r.received_at >= ?
       AND ((r.sid IS NULL AND r.subject = i.subject) OR (r.sid = ? AND (r.subject IS NULL OR r.subject = i.subject))))
     AND NOT EXISTS (SELECT 1 FROM oauth_code_replays WHERE grant_id = ?)`)
-    .bind(grant.memberId, grant.provider, grant.subject, grant.grantedAt, grant.grantedAt, grant.sid, grantId)
+    .bind(
+      grant.memberId,
+      grant.provider,
+      grant.subject,
+      grant.generation,
+      grant.grantedAt,
+      grant.sid,
+      grantId,
+    )
     .first<Member>()
 }
 
@@ -367,7 +399,9 @@ export async function putConsent(
   await db.batch([
     db.prepare('DELETE FROM oauth_consents WHERE expires_at <= ?').bind(now),
     db
-      .prepare('INSERT INTO oauth_consents VALUES (?, ?, ?, ?)')
+      .prepare(
+        'INSERT INTO oauth_consents (token_hash, session_hash, request_url, expires_at) VALUES (?, ?, ?, ?)',
+      )
       .bind(tokenHash, sessionHash, request, now + 300_000),
   ])
 }
