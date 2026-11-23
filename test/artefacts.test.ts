@@ -1134,33 +1134,37 @@ it('verifies each PUT body before reusing an orphaned R2 object without overwrit
   expect((await bucket.list({ prefix: 'upload-verification/' })).objects).toEqual([])
 })
 
-it.each(['; charset=iso-8859-1', ''])(
-  'serves edited UTF-8 text with a corrected or added charset (%s)',
-  async (charset) => {
-    const send = runtime()
-    const { call } = await bot(send)
-    const slug = 'uploaded-media-type'
-    const mediaType = 'text/plain; note="keep; charset=quoted"'
-    const { path, url, uploadId } = await uploadUrl(call, slug, {
-      ...textUpload,
-      path: 'page.bin',
-      contentType: mediaType + charset,
-    })
-    expect((await putUpload(send, url)).status).toBe(204)
-    const input = { slug, mode: 'replace', files: [{ path, uploadId }] }
-    expect(await call('publish', input)).toMatchObject({ revision: 1 })
-    expect(
-      await call('edit_file', { slug, path, oldText: 'hello', newText: 'café', expectedRevision: 1 }),
-    ).toMatchObject({ revision: 2 })
-    const type = `${mediaType}; charset=utf-8`
-    expect(await call('read_file', { slug, path })).toMatchObject({ text: 'café', type })
-    expect(await call('set_visibility', { slug, visibility: 'public' })).toEqual({ visibility: 'public' })
-    const response = await send(`${read}/a/${slug}/${path}`)
-    expect(response.status).toBe(200)
-    expect(response.headers.get('content-type')).toBe(type)
-    expect(await response.text()).toBe('café')
-  },
-)
+it.each([
+  ['text/plain', '; charset=iso-8859-1', 'hello'],
+  ['text/plain', '', 'hello'],
+  ['application/xml', '; charset=iso-8859-1', '<example>hello</example>'],
+])('serves edited %s with a corrected or added charset (%s)', async (baseType, charset, body) => {
+  const send = runtime()
+  const { call } = await bot(send)
+  const slug = 'uploaded-media-type'
+  const mediaType = `${baseType}; note="keep; charset=quoted"`
+  const bytes = new TextEncoder().encode(body)
+  const { path, url, uploadId } = await uploadUrl(call, slug, {
+    size: bytes.length,
+    sha256: Buffer.from(await crypto.subtle.digest('SHA-256', bytes)).toString('hex'),
+    path: 'page.bin',
+    contentType: mediaType + charset,
+  })
+  expect((await putUpload(send, url, body, bytes.length)).status).toBe(204)
+  const input = { slug, mode: 'replace', files: [{ path, uploadId }] }
+  expect(await call('publish', input)).toMatchObject({ revision: 1 })
+  expect(
+    await call('edit_file', { slug, path, oldText: 'hello', newText: 'café', expectedRevision: 1 }),
+  ).toMatchObject({ revision: 2 })
+  const type = `${mediaType}; charset=utf-8`
+  const edited = body.replace('hello', 'café')
+  expect(await call('read_file', { slug, path })).toMatchObject({ text: edited, type })
+  expect(await call('set_visibility', { slug, visibility: 'public' })).toEqual({ visibility: 'public' })
+  const response = await send(`${read}/a/${slug}/${path}`)
+  expect(response.status).toBe(200)
+  expect(response.headers.get('content-type')).toBe(type)
+  expect(await response.text()).toBe(edited)
+})
 
 it.each(['text/html', 'Text/HTML ; charset="utf-8"; title="test; value"'])(
   'ranks %s by base media type in MCP and the public index',

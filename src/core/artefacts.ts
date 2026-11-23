@@ -542,18 +542,15 @@ export async function editFile(
     previous = at + input.oldText.length
   }
   if (previous < text.length) parts.push(text.slice(previous))
-  let type = file.type
-  if (/^text\//i.test(type)) {
-    let hasCharset = false
-    // Consume whole parameter values, including quoted semicolons.
-    type = type.replace(/;[ \t]*([^=;]+)=(?:"(?:[^"\\]|\\.)*"|[^;]*)/g, (param, name: string) => {
-      if (name.toLowerCase() !== 'charset') return param
-      if (hasCharset) return ''
-      hasCharset = true
-      return '; charset=utf-8'
-    })
-    if (!hasCharset) type += '; charset=utf-8'
-  }
+  let hasCharset = false
+  // Consume whole parameter values, including quoted semicolons.
+  let type = file.type.replace(/;[ \t]*([^=;]+)=(?:"(?:[^"\\]|\\.)*"|[^;]*)/g, (param, name: string) => {
+    if (name.toLowerCase() !== 'charset') return param
+    if (hasCharset) return ''
+    hasCharset = true
+    return '; charset=utf-8'
+  })
+  if (!hasCharset) type += '; charset=utf-8'
   return publish(runtime, member, {
     slug: input.slug,
     files: [{ path: input.path, content: parts.join(''), type }],
