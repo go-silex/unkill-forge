@@ -35,27 +35,41 @@ export function contentType(path: string): string {
   return Object.hasOwn(binaryTypes, extension) ? binaryTypes[extension] : 'application/octet-stream'
 }
 
-export async function storeBlob(bucket: R2Bucket, bytes: Uint8Array, stored: Set<string>): Promise<string> {
-  const checksum = await crypto.subtle.digest('SHA-256', bytes)
-  const sha256 = Array.from(new Uint8Array(checksum), (byte) => byte.toString(16).padStart(2, '0')).join('')
-  if (stored.has(sha256)) return sha256
-  const key = `blobs/${sha256}`
-  if (!(await bucket.head(key))) {
-    await bucket.put(key, bytes, { sha256: checksum, onlyIf: new Headers({ 'If-None-Match': '*' }) })
+export async function storeBlobs(db: D1Database, bucket: R2Bucket, pending: { bytes: Uint8Array }[]) {
+  const unique = new Map<string, { checksum: ArrayBuffer; bytes: Uint8Array }>()
+  const hashes: string[] = []
+  for (const { bytes } of pending) {
+    const checksum = await crypto.subtle.digest('SHA-256', bytes)
+    const sha256 = Array.from(new Uint8Array(checksum), (byte) => byte.toString(16).padStart(2, '0')).join('')
+    if (!unique.has(sha256)) unique.set(sha256, { checksum, bytes })
+    hashes.push(sha256)
   }
-  stored.add(sha256)
-  return sha256
+  // One JSON parameter covers every distinct hash, even above D1's 100-bind cap.
+  const { results } = await db
+    .prepare(
+      'SELECT value AS sha256 FROM json_each(?) WHERE EXISTS (SELECT 1 FROM files WHERE sha256 = value)',
+    )
+    .bind(JSON.stringify([...unique.keys()]))
+    .all<{ sha256: string }>()
+  for (const { sha256 } of results) unique.delete(sha256)
+
+  const onlyIf = new Headers({ 'If-None-Match': '*' })
+  for (const [sha256, { bytes, checksum }] of unique) {
+    await bucket.put(`blobs/${sha256}`, bytes, { sha256: checksum, onlyIf })
+  }
+  return hashes
 }
+
+export const MAX_TEXT_BYTES = 8 * 1024 * 1024
 
 export async function blobText(bucket: R2Bucket, file: { type: string; size: number; sha256: string }) {
   const type = file.type.split(';', 1)[0].trim().toLowerCase()
   if (!type.startsWith('text/') && !['application/json', 'application/xml', 'image/svg+xml'].includes(type))
     return { reason: 'binary' } as const
-  const max = 8 * 1024 * 1024
-  if (file.size > max) return { reason: 'text_too_large' } as const
+  if (file.size > MAX_TEXT_BYTES) return { reason: 'text_too_large' } as const
   const blob = await bucket.get(`blobs/${file.sha256}`)
   if (!blob) throw new Error('Missing artefact blob')
-  if (blob.size > max) {
+  if (blob.size > MAX_TEXT_BYTES) {
     await blob.body.cancel()
     return { reason: 'text_too_large' } as const
   }

@@ -1,5 +1,7 @@
 import { Server } from '@modelcontextprotocol/sdk/server/index.js'
+import { readRequestBody } from '@modelcontextprotocol/sdk/server/requestBody.js'
 import { WebStandardStreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js'
+import { isJsonContentType } from '@modelcontextprotocol/sdk/shared/mediaType.js'
 import {
   CallToolRequestSchema,
   ErrorCode,
@@ -13,6 +15,7 @@ import type { Member } from '../../core'
 
 import {
   ArtefactError,
+  checkPublishArrayLengths,
   editFile,
   getArtefact,
   listArtefacts,
@@ -34,6 +37,7 @@ function tool<S extends z.ZodObject>(
   input: S,
   run: (input: z.output<S>) => Record<string, unknown> | Promise<Record<string, unknown>>,
   readOnly = false,
+  checkArguments?: (args: unknown) => void,
 ) {
   const schema = z.toJSONSchema(input, { io: 'input' }) as Tool['inputSchema']
   const definition: Tool = {
@@ -45,10 +49,11 @@ function tool<S extends z.ZodObject>(
   return {
     definition,
     async call(args: unknown) {
-      const parsed = input.safeParse(args ?? {})
-      if (!parsed.success)
-        return result({ error: 'invalid_input', message: 'Arguments do not match the tool schema' }, true)
       try {
+        checkArguments?.(args)
+        const parsed = input.safeParse(args ?? {})
+        if (!parsed.success)
+          return result({ error: 'invalid_input', message: 'Arguments do not match the tool schema' }, true)
         return result(await run(parsed.data))
       } catch (error) {
         if (error instanceof ArtefactError) {
@@ -71,8 +76,46 @@ const inlineFile = z.strictObject({
   encoding: z.enum(['utf8', 'base64']).optional().describe('Defaults to utf8'),
 })
 
+function requestError(status: number, code: ErrorCode, message: string, error: string) {
+  return Response.json({ jsonrpc: '2.0', id: null, error: { code, message, data: { error } } }, { status })
+}
+
 export async function handleMcp(request: Request, runtime: Runtime, member: Member): Promise<Response> {
   const { config } = runtime
+  let parsedBody: unknown
+  const accept = request.headers.get('accept')
+  // Keep the SDK's HTTP header checks ahead of body parsing.
+  if (
+    request.method === 'POST' &&
+    accept?.includes('application/json') &&
+    accept.includes('text/event-stream') &&
+    isJsonContentType(request.headers.get('content-type'))
+  ) {
+    // Allow worst-case JSON string escaping (which also covers base64 expansion),
+    // both path arrays, and envelope metadata, without exceeding the Worker memory budget.
+    const maxBody = Math.min(
+      32 * 1024 * 1024,
+      65_536 + config.maxInlineBytes * 6 + config.maxFilesPerCall * 12_544,
+    )
+    try {
+      const body = await readRequestBody(request, maxBody)
+      if (body.tooLarge) {
+        return requestError(413, ErrorCode.InvalidRequest, `MCP body exceeds ${maxBody} bytes`, 'too_large')
+      }
+      parsedBody = JSON.parse(body.text)
+    } catch {
+      return requestError(400, ErrorCode.ParseError, 'Invalid JSON', 'parse_error')
+    }
+    if (Array.isArray(parsedBody)) {
+      return requestError(
+        400,
+        ErrorCode.InvalidRequest,
+        'MCP does not accept JSON-RPC batches',
+        'invalid_request',
+      )
+    }
+  }
+
   const server = new Server({ name: config.name, version: '0.0.0' }, { capabilities: { tools: {} } })
   const tools = [
     tool(
@@ -92,7 +135,7 @@ export async function handleMcp(request: Request, runtime: Runtime, member: Memb
     tool(
       'list_artefacts',
       'Find live artefacts by slug or title without changing them. Tell the user which results match; use nextCursor for more.',
-      z.strictObject({ query: z.string().optional(), cursor }),
+      z.strictObject({ query: z.string().max(200).optional(), cursor }),
       (input) => listArtefacts(runtime, member, input.query, input.cursor),
       true,
     ),
@@ -121,14 +164,18 @@ export async function handleMcp(request: Request, runtime: Runtime, member: Memb
       'Create or publish a revision with inline files. New artefacts are private. Merge keeps unmentioned paths; replace drops them. Use expectedRevision to avoid overwriting a newer head. Tell the user the entry URL and revision.',
       z.strictObject({
         slug,
-        title: z.string().optional(),
-        files: z.array(inlineFile),
+        title: z.string().max(200).optional(),
+        files: z.array(inlineFile).max(config.maxFilesPerCall),
         mode: z.enum(['merge', 'replace']),
-        delete: z.array(path).optional(),
+        delete: z.array(path).max(config.maxFilesPerCall).optional(),
         expectedRevision: z.int().nonnegative().optional().describe('Use 0 to require a new slug'),
-        message: z.string().optional(),
+        message: z.string().max(1_000).optional(),
       }),
       (input) => publish(runtime, member, input),
+      false,
+      (args) => {
+        if (typeof args === 'object' && args !== null) checkPublishArrayLengths(args, config.maxFilesPerCall)
+      },
     ),
     tool(
       'edit_file',
@@ -156,15 +203,10 @@ export async function handleMcp(request: Request, runtime: Runtime, member: Memb
     if (!entry) return result({ error: 'invalid_input', message: 'Unknown Forge tool' }, true)
     return entry.call(params.arguments)
   })
-  // A byte can take six JSON bytes, and a path can contain 512 pairs of escaped surrogates.
-  const maxRequestBodySize = 65_536 + config.maxInlineBytes * 6 + config.maxFilesPerArtefact * 12_544
-  const transport = new WebStandardStreamableHTTPServerTransport({
-    enableJsonResponse: true,
-    maxRequestBodySize,
-  })
+  const transport = new WebStandardStreamableHTTPServerTransport({ enableJsonResponse: true })
   await server.connect(transport)
   try {
-    return await transport.handleRequest(request)
+    return await transport.handleRequest(request, { parsedBody })
   } finally {
     await server.close()
   }

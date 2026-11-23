@@ -78,6 +78,7 @@ const vars = z
       .transform((value) => value === 'true'),
     FORGE_COOKIE_KEY: z.string().min(32),
     MAX_FILES_PER_ARTEFACT: positiveInt.default(1_000),
+    MAX_FILES_PER_CALL: positiveInt.pipe(z.int().max(900)).default(500),
     MAX_INLINE_BYTES: positiveInt.default(2_097_152),
     DB: z.custom<D1Database>(
       (value) => typeof (value as D1Database | undefined)?.prepare === 'function',
@@ -85,7 +86,6 @@ const vars = z
     ),
     BLOBS: z.custom<R2Bucket>(
       (value) =>
-        typeof (value as R2Bucket | undefined)?.head === 'function' &&
         typeof (value as R2Bucket | undefined)?.get === 'function' &&
         typeof (value as R2Bucket | undefined)?.put === 'function',
       'Missing R2 binding',
@@ -113,6 +113,7 @@ export type Config = {
   mcpAllowedOrigins: string[]
   allowDcr: boolean
   maxFilesPerArtefact: number
+  maxFilesPerCall: number
   maxInlineBytes: number
 }
 export type Runtime = { config: Config; env: Env }
@@ -154,6 +155,7 @@ export function configuration(env: Env): Config | null {
         mcpAllowedOrigins: value.MCP_ALLOWED_ORIGINS,
         allowDcr: value.ALLOW_DCR,
         maxFilesPerArtefact: value.MAX_FILES_PER_ARTEFACT,
+        maxFilesPerCall: value.MAX_FILES_PER_CALL,
         maxInlineBytes: value.MAX_INLINE_BYTES,
       }
   }

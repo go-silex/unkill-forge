@@ -1,7 +1,7 @@
 import { base64url } from 'jose'
 import { z } from 'zod'
 import type { Runtime } from '../config'
-import { blobText, contentType, storeBlob, textSlice } from './blobs'
+import { blobText, contentType, MAX_TEXT_BYTES, storeBlobs, textSlice } from './blobs'
 import type { Member } from './index'
 
 type ErrorCode = 'not_found' | 'forbidden' | 'conflict' | 'invalid_input' | 'too_large'
@@ -222,8 +222,22 @@ function tooLarge(field: string, limit: number) {
   return new ArtefactError('too_large', `${field} exceeds the configured limit of ${limit}`)
 }
 
+// Also used by the MCP adapter before Zod walks entries in either array.
+export function checkPublishArrayLengths(args: { files?: unknown; delete?: unknown }, limit: number) {
+  for (const array of [args.files, args.delete]) {
+    if (Array.isArray(array) && array.length > limit) {
+      throw new ArtefactError(
+        'too_large',
+        `At most ${limit} paths per input array; split into several merge publishes`,
+      )
+    }
+  }
+}
+
 function inlineBytes(file: InlineFile, remaining: number, limit: number): Uint8Array {
   if (file.encoding !== 'base64') {
+    if (!file.content.isWellFormed())
+      throw new ArtefactError('invalid_input', 'UTF-8 content contains a lone surrogate')
     if (file.content.length > remaining) throw tooLarge('Decoded inline bytes', limit)
     const bytes = new TextEncoder().encode(file.content)
     if (bytes.length > remaining) throw tooLarge('Decoded inline bytes', limit)
@@ -255,6 +269,7 @@ export async function publish(runtime: Runtime, member: Member, input: Publish) 
   checkSlug(input.slug)
   const maxFiles = config.maxFilesPerArtefact
   const maxBytes = config.maxInlineBytes
+  checkPublishArrayLengths(input, config.maxFilesPerCall)
   if (input.files.length > maxFiles) throw tooLarge('File count', maxFiles)
 
   const deletes = new Set(input.delete)
@@ -305,11 +320,13 @@ export async function publish(runtime: Runtime, member: Member, input: Publish) 
     if (count === 0) throw new ArtefactError('invalid_input', 'The revision must contain at least one file')
     if (count > maxFiles) throw tooLarge('File count', maxFiles)
 
-    const stored = new Set<string>()
-    for (const { path, type, bytes } of pending) {
-      newFiles.push({ path, type, size: bytes.length, sha256: await storeBlob(blobs, bytes, stored) })
+    if (pending.length > 0) {
+      const hashes = await storeBlobs(db, blobs, pending)
+      for (const [index, { path, type, bytes }] of pending.entries()) {
+        newFiles.push({ path, type, size: bytes.length, sha256: hashes[index] })
+      }
+      pending.length = 0
     }
-    pending.length = 0
     const revision = current + 1
     const now = Date.now()
     const statements = []
@@ -398,9 +415,15 @@ export async function editFile(
   const { DB: db, BLOBS: blobs } = runtime.env
   const artefact = await liveHead(db, input.slug)
   checkRevision(input.expectedRevision, artefact.revision)
+  if (!input.oldText.isWellFormed() || !input.newText.isWellFormed()) {
+    throw new ArtefactError('invalid_input', 'oldText and newText must not contain lone surrogates')
+  }
   if (!input.oldText) throw new ArtefactError('invalid_input', 'oldText must not be empty', { matches: 0 })
   const file = await findFile(db, artefact.id, artefact.revision, input.path)
+  const inlineLimit = runtime.config.maxInlineBytes
+  if (file.size > inlineLimit) throw tooLarge('File size', inlineLimit)
   const result = await blobText(blobs, file)
+  if (result.reason === 'text_too_large') throw tooLarge('Text file size', MAX_TEXT_BYTES)
   if (result.text === undefined)
     throw new ArtefactError('invalid_input', `File cannot be edited as text: ${result.reason}`)
   const { text } = result
@@ -419,12 +442,20 @@ export async function editFile(
     )
   }
   // Bound expansion before creating the replacement string; publish checks exact UTF-8 bytes.
-  if (text.length + matches * (input.newText.length - input.oldText.length) > runtime.config.maxInlineBytes) {
-    throw tooLarge('Decoded inline bytes', runtime.config.maxInlineBytes)
+  if (text.length + matches * (input.newText.length - input.oldText.length) > inlineLimit) {
+    throw tooLarge('Decoded inline bytes', inlineLimit)
   }
+  const parts: string[] = []
+  let previous = 0
+  for (let at = text.indexOf(input.oldText); at !== -1; at = text.indexOf(input.oldText, previous)) {
+    if (at > previous) parts.push(text.slice(previous, at))
+    if (input.newText) parts.push(input.newText)
+    previous = at + input.oldText.length
+  }
+  if (previous < text.length) parts.push(text.slice(previous))
   return publish(runtime, member, {
     slug: input.slug,
-    files: [{ path: input.path, content: text.replaceAll(input.oldText, () => input.newText) }],
+    files: [{ path: input.path, content: parts.join('') }],
     mode: 'merge',
     expectedRevision: input.expectedRevision,
   })
