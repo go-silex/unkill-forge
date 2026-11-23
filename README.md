@@ -4,7 +4,7 @@ Forge is a self-hosted service for publishing HTML artefacts at stable URLs, con
 
 **Phase 1:** this build delivers public and private artefacts, revocable share links, revision history and restore, rename redirects, and soft deletion. MCP also supports publishing, editing, reading and streamed binary uploads. Sign-in, member administration and bot administration are available; deleted-artefact restoration and hard purge are core-only until the admin UI adds them. See [the specification](docs/spec.md).
 
-The runtime is 5,116 lines under `src/`.
+The runtime is 5,153 lines under `src/`.
 
 ## Configure sign-in
 
@@ -85,7 +85,7 @@ After deploying with `0004_invites.sql`:
 
 Before upgrading to the share-link release, set `FORGE_SEAL_KEY` on the target Worker. Migration `0007_share_links.sql` adds the shares table and a nullable revision entry path. Existing revisions populate their entry path when first needed.
 
-Migration `0008_redirects.sql` adds redirects and purge bookkeeping. The previous Worker can still publish and serve content after migration, but does not enforce redirect reservations or the complete purge fence. Do not run purge during mixed-version rollout or roll back with an active purge.
+Migration `0008_redirects.sql` adds redirects and purge bookkeeping, including leases so interrupted purge batches can be retried. The previous Worker can still publish and serve content after migration. Do not run purge during mixed-version rollout or roll back with an active purge.
 
 ## Connect an agent
 

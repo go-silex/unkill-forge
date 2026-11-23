@@ -939,11 +939,14 @@ export async function renameArtefact(
   if (slug === newSlug) throw new ArtefactError('invalid_input', 'Choose a different slug')
   const now = Date.now()
   try {
-    const [rename, , , entry] = await db.batch<RevisionEntry>([
+    const [rename, , , , entry] = await db.batch<RevisionEntry>([
       db
         .prepare(`UPDATE artefacts SET slug = ?1, updated_at = MAX(?2, updated_at)
           WHERE id = ?3 AND slug = ?4 AND deleted_at IS NULL
-          AND NOT EXISTS (SELECT 1 FROM reserved_lifecycle_slugs WHERE slug = ?1)`)
+          AND NOT EXISTS (SELECT 1 FROM artefact_purges WHERE slug = ?1)
+          AND NOT EXISTS (
+            SELECT 1 FROM redirects WHERE source_slug = ?1 AND target_artefact_id <> ?3
+          )`)
         .bind(newSlug, now, id, slug),
       audit(db, now, member, id, 'artefact.rename', { from: slug, to: newSlug }),
       db
@@ -952,6 +955,9 @@ export async function renameArtefact(
           ON CONFLICT(from_prefix) DO UPDATE SET target_artefact_id = excluded.target_artefact_id,
             target_path = excluded.target_path, created_at = excluded.created_at, created_by = excluded.created_by`)
         .bind(JSON.stringify([`/a/${slug}/`, `/s/${slug}/`]), slug, id, now, member.id),
+      db
+        .prepare(`DELETE FROM redirects WHERE source_slug = ? AND target_artefact_id = ? AND changes() = 2`)
+        .bind(newSlug, id),
       computeRevisionEntry(db, id, null),
     ])
     if (rename.meta.changes !== 1)

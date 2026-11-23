@@ -24,6 +24,10 @@ export const maxRedirectPrefix = 6_212 // 512 four-byte code points, plus the na
 export function redirectPrefix(value: string) {
   if (value.length > maxRedirectPrefix || !value.endsWith('/') || /[?#\\\p{Cc}]/u.test(value)) return null
   if (URL.parse(value, 'https://forge.invalid')?.pathname !== value) return null
+  for (const [encoded, hex] of value.matchAll(/%([0-9A-Fa-f]{2})/g)) {
+    if (encoded !== encoded.toUpperCase() || /[A-Za-z0-9._~-]/.test(String.fromCharCode(parseInt(hex, 16))))
+      return null
+  }
   const canonical = artefactPath(value)
   if (canonical && canonical.path !== undefined) return { ...canonical, kind: 'a' } as const
   // Share redirects move the slug, never match or replace bearer keys.

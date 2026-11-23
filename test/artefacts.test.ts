@@ -2041,3 +2041,265 @@ it('refuses to mark a verifying upload stored when its incumbent blob is concurr
     await call('publish', { slug: 'verifying', mode: 'replace', files: [{ path, uploadId }] }),
   ).toMatchObject({ error: 'not_found' })
 })
+
+function watchBatches(
+  before?: (sql: string[]) => Promise<void>,
+  after?: (results: D1Result[]) => void,
+): D1Database {
+  const statementsByProxy = new WeakMap<
+    D1PreparedStatement,
+    { statement: D1PreparedStatement; sql: string }
+  >()
+  function trace(statement: D1PreparedStatement, sql: string): D1PreparedStatement {
+    const proxy = new Proxy(statement, {
+      get(target, key) {
+        if (key === 'bind') return (...values: unknown[]) => trace(target.bind(...values), sql)
+        if (key === 'run' || key === 'all') {
+          return async () => {
+            const result = await target[key]()
+            after?.([result])
+            return result
+          }
+        }
+        if (key === 'first') return target.first.bind(target)
+        return Reflect.get(target, key)
+      },
+    })
+    statementsByProxy.set(proxy, { statement, sql })
+    return proxy
+  }
+  return {
+    prepare: (sql: string) => trace(db.prepare(sql), sql),
+    async batch(statements: D1PreparedStatement[]) {
+      const originals = statements.map((statement) => statementsByProxy.get(statement))
+      await before?.(originals.map((item) => item?.sql ?? ''))
+      const results = await db.batch(statements.map((statement, i) => originals[i]?.statement ?? statement))
+      after?.(results)
+      return results
+    },
+  } as D1Database
+}
+
+it('does not issue an alreadyStored receipt after purge removes the file reference during upload creation', async () => {
+  const send = runtime()
+  const { call } = await bot(send)
+  const { member, core } = await coreAdmin()
+  const slug = 'source-of-dedup'
+  await call('publish', { slug, mode: 'replace', files: [file('index.html')] })
+  const id = await artefactId(slug)
+  await call('delete_artefact', { slug })
+  const racing = runtime({
+    DB: watchBatches(async (sql) => {
+      if (!sql.some((text) => text.includes('INSERT INTO uploads'))) return
+      expect(await purgeArtefact(core, member, id)).toEqual({ done: true })
+      expect(await bucket.head(`blobs/${uploadHash}`)).toBeNull()
+    }),
+  })
+  const request = { slug: 'upload-after-purge', files: [textUpload] }
+  expect(await call('create_uploads', request, racing)).toMatchObject({ error: 'conflict' })
+  expect(await db.prepare('SELECT state FROM uploads WHERE slug = ?').bind(request.slug).first()).toBeNull()
+})
+
+it('bounds purge reference probes by page size even with a large backlog of candidate hashes', async () => {
+  const { call } = await bot(runtime())
+  const { member, core } = await coreAdmin()
+  const slug = 'purge-backlog'
+  const id = crypto.randomUUID()
+  await db.prepare('INSERT INTO artefact_purges (slug, artefact_id) VALUES (?, ?)').bind(slug, id).run()
+  const candidates = 10_000
+  await call('publish', { slug: 'retaining-hashes', mode: 'replace', files: [file('index.html')] })
+  const liveId = await artefactId('retaining-hashes')
+  await db
+    .prepare(`WITH RECURSIVE numbers(n) AS (SELECT 1 UNION ALL SELECT n + 1 FROM numbers WHERE n < ?)
+      INSERT INTO purge_candidates (slug, sha256) SELECT ?, printf('%064x', n) FROM numbers`)
+    .bind(candidates, slug)
+    .run()
+  await db
+    .prepare(`INSERT INTO files (artefact_id, revision, path, sha256, size, content_type)
+      SELECT ?, 1, sha256, sha256, 0, 'text/plain' FROM purge_candidates WHERE slug = ?`)
+    .bind(liveId, slug)
+    .run()
+  let reads = 0
+  const measured = watchBatches(undefined, (results) => {
+    for (const result of results) reads += result.meta.rows_read
+  })
+  expect(await purgeArtefact({ ...core, env: { ...core.env, DB: measured } }, member, id)).toEqual({
+    done: false,
+  })
+  expect(reads).toBeGreaterThan(0)
+  expect(reads).toBeLessThan(2_000)
+  expect(
+    await db
+      .prepare('SELECT count(*) AS count FROM purge_candidates WHERE slug = ?')
+      .bind(slug)
+      .first('count'),
+  ).toBe(candidates - 64)
+})
+
+it('retries an owned purge claim after a failed R2 delete and releases the hash for publishing', async () => {
+  const { call } = await bot(runtime())
+  const { member, core } = await coreAdmin()
+  const slug = 'purge-retry'
+  const input = { slug, mode: 'replace', files: [file('index.html')] }
+  await call('publish', input)
+  const id = await artefactId(slug)
+  await call('delete_artefact', { slug })
+  const fault = {
+    ...core,
+    env: {
+      ...core.env,
+      BLOBS: {
+        async delete(_keys: Parameters<R2Bucket['delete']>[0]): Promise<void> {
+          throw new Error('R2 delete failed')
+        },
+      } as R2Bucket,
+    },
+  }
+  await expect(purgeArtefact(fault, member, id)).rejects.toThrow('R2 delete failed')
+  expect(await bucket.head(`blobs/${uploadHash}`)).not.toBeNull()
+  expect(await call('publish', { ...input, slug: 'reuse-retry' })).toMatchObject({ error: 'conflict' })
+  expect(await purgeArtefact(core, member, id)).toEqual({ done: true })
+  expect(await bucket.head(`blobs/${uploadHash}`)).toBeNull()
+  expect(await call('publish', { ...input, slug: 'reuse-retry' })).toMatchObject({ revision: 1 })
+})
+
+it('respects a fresh purge lease and resumes its outstanding claim after expiry', async () => {
+  const { call } = await bot(runtime())
+  const { member, core } = await coreAdmin()
+  const slug = 'purge-lease'
+  await call('publish', { slug, mode: 'replace', files: [file('index.html')] })
+  const id = await artefactId(slug)
+  await call('delete_artefact', { slug })
+  // Durable state left by a worker stopped after claiming the blob and before deleting it.
+  await db.batch([
+    db.prepare('INSERT INTO artefact_purges (slug, artefact_id) VALUES (?, ?)').bind(slug, id),
+    db.prepare('INSERT INTO purge_candidates (slug, sha256) VALUES (?, ?)').bind(slug, uploadHash),
+    db.prepare('DELETE FROM artefacts WHERE id = ?').bind(id),
+    db.prepare('INSERT INTO blob_purge_claims (sha256, owner) VALUES (?, ?)').bind(uploadHash, id),
+    db
+      .prepare('INSERT INTO purge_attempts (artefact_id, token, expires_at) VALUES (?, ?, ?)')
+      .bind(id, 'stopped-attempt', Date.now() + 60_000),
+  ])
+  const key = `blobs/${uploadHash}`
+  expect(await purgeArtefact(core, member, id)).toEqual({ done: false })
+  expect(await bucket.head(key)).not.toBeNull()
+  expect(
+    await db.prepare('SELECT token FROM purge_attempts WHERE artefact_id = ?').bind(id).first('token'),
+  ).toBe('stopped-attempt')
+  await db.prepare('UPDATE purge_attempts SET expires_at = 0 WHERE artefact_id = ?').bind(id).run()
+  expect(await purgeArtefact(core, member, id)).toEqual({ done: true })
+  expect(await bucket.head(key)).toBeNull()
+})
+
+it('returns uniform 404 from canonical and share aliases pointing at a soft-deleted target', async () => {
+  const send = runtime()
+  const { call } = await bot(send)
+  const slug = 'deleted-alias'
+  await call('publish', { slug, mode: 'replace', files: [file('index.html')] })
+  await call('set_visibility', { slug, visibility: 'public' })
+  const { url } = await call('create_share_link', { slug })
+  await call('rename_artefact', { slug, newSlug: 'deleted-target' })
+  await call('delete_artefact', { slug: 'deleted-target' })
+  const missing = await send(`${read}/missing`)
+  const body = await missing.text()
+  for (const location of [`${read}/a/${slug}/`, url]) {
+    const response = await send(location)
+    expect(response.status).toBe(404)
+    expect([...response.headers]).toEqual([...missing.headers])
+    expect(await response.text()).toBe(body)
+  }
+})
+
+it('commits exactly one rename when both calls read the same source slug', async () => {
+  const send = runtime()
+  const { call } = await bot(send)
+  const slug = 'rename-race'
+  await call('publish', { slug, mode: 'replace', files: [file('index.html')] })
+  await call('set_visibility', { slug, visibility: 'public' })
+  const both = Promise.withResolvers<void>()
+  let arrivals = 0
+  const racing = runtime({
+    DB: watchBatches(async (sql) => {
+      if (!sql.some((text) => text.includes('UPDATE artefacts SET slug'))) return
+      if (++arrivals === 2) both.resolve()
+      await both.promise
+    }),
+  })
+  const outcomes = await Promise.all(
+    ['first-target', 'second-target'].map((newSlug) => call('rename_artefact', { slug, newSlug }, racing)),
+  )
+  const successes = outcomes.filter((outcome) => outcome.url)
+  expect(successes).toHaveLength(1)
+  expect(outcomes.filter((outcome) => outcome.error)).toEqual([
+    expect.objectContaining({ error: 'conflict' }),
+  ])
+  const alias = await send(`${read}/a/${slug}/`)
+  expect(alias.status).toBe(302)
+  expect(new URL(alias.headers.get('location') ?? '', read).href).toBe(successes[0].url)
+})
+
+it('rejects creating a slug reserved by set_redirects after the publish preflight', async () => {
+  const send = runtime()
+  const { call } = await bot(send)
+  const { member, core } = await coreAdmin()
+  const slug = 'reservation-race'
+  await call('publish', { slug: 'reserved-target', mode: 'replace', files: [file('index.html')] })
+  const racing = withBucket({
+    async put(key, bytes, options) {
+      await setRedirects(core, member, {
+        add: [{ fromPrefix: `/a/${slug}/`, toPrefix: '/a/reserved-target/' }],
+        remove: [],
+      })
+      return bucket.put(key, bytes, options)
+    },
+  })
+  expect(
+    await call('publish', { slug, mode: 'replace', files: [file('index.html', 'unique')] }, racing),
+  ).toMatchObject({ error: 'conflict', currentRevision: 0 })
+  expect(await call('get_artefact', { slug })).toMatchObject({ error: 'not_found' })
+})
+
+it('rejects escaped unreserved characters and lowercase escape hex without reserving the source slug', async () => {
+  const { call } = await bot(runtime())
+  const { member, core } = await coreAdmin()
+  const slug = 'escape-alias'
+  await call('publish', { slug: 'escape-target', mode: 'replace', files: [file('index.html')] })
+  for (const path of ['%65ntry/', 'space%c2%a0/']) {
+    await expect(
+      setRedirects(core, member, {
+        add: [{ fromPrefix: `/a/${slug}/${path}`, toPrefix: '/a/escape-target/' }],
+        remove: [],
+      }),
+    ).rejects.toMatchObject({ code: 'invalid_input' })
+    await expect(
+      setRedirects(core, member, {
+        add: [{ fromPrefix: `/a/${slug}/`, toPrefix: `/a/escape-target/${path}` }],
+        remove: [],
+      }),
+    ).rejects.toMatchObject({ code: 'invalid_input' })
+  }
+  expect(await call('publish', { slug, mode: 'replace', files: [file('index.html')] })).toMatchObject({
+    revision: 1,
+  })
+})
+
+it('renames back to a slug reserved only by its own aliases and removes those aliases', async () => {
+  const send = runtime()
+  const { call } = await bot(send)
+  const slug = 'rename-return'
+  await call('publish', { slug, mode: 'replace', files: [file('index.html')] })
+  await call('set_visibility', { slug, visibility: 'public' })
+  const { url } = await call('create_share_link', { slug })
+  await call('rename_artefact', { slug, newSlug: 'rename-away' })
+  expect(await call('rename_artefact', { slug: 'rename-away', newSlug: slug })).toEqual({
+    url: `${read}/a/${slug}/`,
+  })
+  expect(await (await send(`${read}/a/${slug}/`)).text()).toBe('hello')
+  expect(await (await send(url)).text()).toBe('hello')
+  const alias = await send(url.replace(`/${slug}/`, '/rename-away/'))
+  expect(alias.status).toBe(302)
+  expect(new URL(alias.headers.get('location') ?? '', read).href).toBe(url)
+  expect(
+    await db.prepare('SELECT from_prefix FROM redirects WHERE source_slug = ?').bind(slug).first(),
+  ).toBeNull()
+})

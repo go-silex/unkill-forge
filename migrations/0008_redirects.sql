@@ -14,6 +14,13 @@ CREATE TABLE artefact_purges (
   slug TEXT PRIMARY KEY NOT NULL,
   artefact_id TEXT NOT NULL UNIQUE
 );
+
+CREATE TABLE purge_attempts (
+  artefact_id TEXT PRIMARY KEY NOT NULL REFERENCES artefact_purges(artefact_id) ON DELETE CASCADE,
+  token TEXT NOT NULL,
+  expires_at INTEGER NOT NULL
+);
+
 CREATE VIEW reserved_lifecycle_slugs AS
 SELECT source_slug AS slug FROM redirects
 UNION ALL SELECT slug FROM artefact_purges;
