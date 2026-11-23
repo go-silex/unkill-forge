@@ -73,6 +73,11 @@ const positiveInt = z
 
 export const MAX_ARTEFACT_FILES = 10_000
 
+const booleanVar = z
+  .enum(['true', 'false'])
+  .default('false')
+  .transform((value) => value === 'true')
+
 const vars = z
   .object({
     FORGE_NAME: z.string().trim().min(1),
@@ -85,18 +90,9 @@ const vars = z
       .transform((emails) => emails.map((email) => email.toLowerCase())),
     AUTH_PROVIDERS: parseJson.pipe(providersSchema),
     MCP_ALLOWED_ORIGINS: csv.pipe(z.array(origin)).optional().default([]),
-    ALLOW_DCR: z
-      .enum(['true', 'false'])
-      .default('false')
-      .transform((value) => value === 'true'),
-    PUBLIC_INDEX: z
-      .enum(['true', 'false'])
-      .default('false')
-      .transform((value) => value === 'true'),
-    ALLOW_INDEXING: z
-      .enum(['true', 'false'])
-      .default('false')
-      .transform((value) => value === 'true'),
+    ALLOW_DCR: booleanVar,
+    PUBLIC_INDEX: booleanVar,
+    ALLOW_INDEXING: booleanVar,
     FORGE_COOKIE_KEY: z.string().min(32),
     FORGE_SEAL_KEY: z.string().min(32),
     MAX_FILES_PER_ARTEFACT: positiveInt.pipe(z.int().max(MAX_ARTEFACT_FILES)).default(1_000),
@@ -153,7 +149,8 @@ const cache = new WeakMap<Env, Config | null>()
 const secret = z.string().min(1)
 
 export function configuration(env: Env): Config | null {
-  if (cache.has(env)) return cache.get(env) ?? null
+  const cached = cache.get(env)
+  if (cached !== undefined) return cached
   const parsed = vars.safeParse(env)
   let config: Config | null = null
   if (!parsed.success) {

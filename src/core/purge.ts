@@ -1,6 +1,6 @@
 import type { Runtime } from '../config'
 import { ArtefactError, checkSlug, requireAdmin } from './artefacts'
-import type { Member } from './index'
+import { auditChange, type Member } from './index'
 
 // Bound each relational cleanup and each R2 delete independently of artefact size.
 const rowStep = 256
@@ -128,10 +128,7 @@ async function runPurgeStep(
           AND NOT EXISTS (SELECT 1 FROM purge_candidates WHERE slug = artefact_purges.slug)
           AND NOT EXISTS (SELECT 1 FROM artefacts WHERE id = ?1)`)
         .bind(id, token),
-      db
-        .prepare(`INSERT INTO audit_log (id, at, member_id, action, artefact_id, detail_json)
-          SELECT ?, ?, ?, 'artefact.purge', ?, ? WHERE changes() = 1`)
-        .bind(crypto.randomUUID(), Date.now(), memberId, id, JSON.stringify({ slug })),
+      auditChange(db, Date.now, memberId, 'artefact.purge', { slug }, id),
       db.prepare('SELECT 1 FROM artefact_purges WHERE artefact_id = ?').bind(id),
     ])
     return { done: finished.meta.changes === 1 || remaining.results.length === 0 }

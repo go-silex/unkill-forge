@@ -18,7 +18,7 @@ Design target: one person can read the whole codebase in an afternoon and deploy
 | G2  | Three ways to read: members (private), anyone holding a revocable share link, everyone (public).                                                                                                                                                |
 | G3  | Sign-in through GitHub, Google, or an external identity manager over OIDC (an in-house identity provider, Cloudflare Access, Keycloak, Entra…). Deactivation at the identity manager reaches Forge. Instance roles; bot members for automation. |
 | G4  | Forkable: Cloudflare only (Workers, D1, R2, KV); branding through configuration and assets, not code edits.                                                                                                                                     |
-| G5  | Small: a runtime budget around 5,000 lines of TypeScript, tracked, not a release gate; at most four guides besides README (see §17).                                                                                                            |
+| G5  | Small: a runtime budget around 7,000 lines of TypeScript, tracked, not a release gate; at most four guides besides README (see §17).                                                                                                            |
 | G6  | Safe defaults: new artefacts are private; untrusted HTML runs on its own origin; every authorization decision reads live state.                                                                                                                 |
 
 Non-goals:
@@ -453,3 +453,4 @@ See [security and known limits](security.md) for the trust model, browser isolat
 35. **Deploy button:** provision D1, R2 and KV and apply the schema with `npm run deploy`, but keep the Worker unrouted until operators configure providers, secrets, the R2 lifecycle rule and Custom Domains.
 36. **Documentation budget:** G5 counts the four maintained guides (self-hosting, MCP, architecture, security); the product specification and root project metadata are not operator guides.
 37. **Bootstrap:** `ADMIN_EMAILS` applies only during first admission of a new identity, not on an existing pending member's next login; document how to use another eligible identity before bootstrap rather than broadening the authorization path.
+38. **Runtime budget:** G5 was revised from about 5,000 to about 7,000 lines after Phase 1 (#22). Behaviour-preserving cuts brought `src/` from 7,224 to 7,098 lines. Reaching the original 5,000-line target would require removing features, and Phase 2 migrates production at feature parity.

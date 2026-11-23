@@ -1003,6 +1003,55 @@ it('audits each issued upload and successful store without revealing capabilitie
   ])
 })
 
+it('stores and audits an upload if verification finishes just before the receiving deadline', async () => {
+  const send = runtime()
+  const { call, id } = await bot(send)
+  const { url, uploadId } = await uploadUrl(call, 'receiving-deadline')
+  const claimedAt = Date.now()
+  const clock = vi.spyOn(Date, 'now').mockReturnValue(claimedAt)
+  let deadline = 0
+  const put = runtime({
+    DB: {
+      prepare(sql: string) {
+        const statement = db.prepare(sql)
+        // Simulate synchronous batch assembly crossing the deadline after verification.
+        if (sql.startsWith("UPDATE uploads SET state = 'failed'")) clock.mockReturnValue(deadline)
+        return statement
+      },
+      batch: db.batch.bind(db),
+    } as D1Database,
+    BLOBS: {
+      async head(key: string) {
+        const row = await db
+          .prepare('SELECT expires_at AS deadline FROM uploads WHERE upload_id = ?')
+          .bind(uploadId)
+          .first<{ deadline: number }>()
+        if (!row) throw new Error('Expected a receiving upload')
+        deadline = row.deadline
+        clock.mockReturnValue(deadline - 1)
+        return bucket.head(key)
+      },
+      get: bucket.get.bind(bucket),
+      put: bucket.put.bind(bucket),
+      delete: bucket.delete.bind(bucket),
+    } as R2Bucket,
+  })
+  try {
+    expect((await putUpload(put, url)).status).toBe(204)
+  } finally {
+    clock.mockRestore()
+  }
+  expect(
+    await db.prepare('SELECT state FROM uploads WHERE upload_id = ?').bind(uploadId).first('state'),
+  ).toBe('stored')
+  expect(
+    await db
+      .prepare("SELECT at FROM audit_log WHERE action = 'upload.store' AND member_id = ?")
+      .bind(id)
+      .first('at'),
+  ).toBe(deadline - 1)
+})
+
 it('burns failed capabilities without storing an object on length or checksum mismatch', async () => {
   const send = runtime()
   const { call } = await bot(send)

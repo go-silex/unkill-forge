@@ -29,7 +29,7 @@ import { readForm } from '../../http'
 import { type AdminMessage, type AdminTranslate, adminMessages } from '../../i18n'
 import { requireBrowserSession } from '../login'
 import { localClientPath } from '../oauth'
-import { flash, page, time, type UiContext } from './page'
+import { Action, flash, page, pageLink, time, type UiContext } from './page'
 
 export const adminPages = new Hono<{ Bindings: Runtime }>({
   getPath: (request) => new URL(request.url).pathname,
@@ -131,26 +131,6 @@ async function runAction<S extends z.ZodType>(
   return flash(c, session, result.path ?? path, t(result.message), result.secret)
 }
 
-function Action({
-  action,
-  label,
-  fields,
-}: {
-  action: string
-  label: string
-  fields?: Record<string, string | number>
-}) {
-  return (
-    <form method="post">
-      {fields &&
-        Object.entries(fields).map(([name, value]) => <input type="hidden" name={name} value={value} />)}
-      <button type="submit" name="action" value={action}>
-        {label}
-      </button>
-    </form>
-  )
-}
-
 function VisibilityOptions({
   t,
   value,
@@ -203,11 +183,7 @@ function nextPage(
   if (!cursor) return null
   const query = new URLSearchParams(params)
   query.set(key, cursor)
-  return (
-    <p>
-      <a href={`${path}?${query}`}>{label}</a>
-    </p>
-  )
+  return pageLink(`${path}?${query}`, label)
 }
 
 adminPages.get(
@@ -274,9 +250,7 @@ adminPages.get(
     const fileCursor = c.req.query('files')
     const revisionCursor = c.req.query('revisions')
     const artefact = await getArtefactDetails(c.env, actor, currentSlug, fileCursor)
-    const history = await listRevisions(c.env, actor, currentSlug, revisionCursor, {
-      expectedId: artefact.id,
-    })
+    const history = await listRevisions(c.env, actor, currentSlug, revisionCursor, artefact.id)
     const canWrite = actor.role !== 'viewer'
     const params = new URLSearchParams()
     if (fileCursor) params.set('files', fileCursor)
@@ -304,18 +278,14 @@ adminPages.get(
           <dd>{t(artefact.visibility)}</dd>
         </dl>
         {canWrite && (
-          <form method="post">
-            <input type="hidden" name="artefactId" value={artefact.id} />
+          <Action action="visibility" label={t('saveVisibility')} fields={{ artefactId: artefact.id }}>
             <label>
               {t('visibility')}{' '}
               <select name="visibility">
                 <VisibilityOptions t={t} value={artefact.visibility} />
               </select>
             </label>
-            <button type="submit" name="action" value="visibility">
-              {t('saveVisibility')}
-            </button>
-          </form>
+          </Action>
         )}
         <h2>{t('files')}</h2>
         {table(
@@ -363,8 +333,7 @@ adminPages.get(
           <>
             <h2>{t('shareLinks')}</h2>
             <p>{t('shareWarning')}</p>
-            <form method="post">
-              <input type="hidden" name="artefactId" value={artefact.id} />
+            <Action action="create-share" label={t('createShare')} fields={{ artefactId: artefact.id }}>
               <label>
                 {t('shareLabel')} <input name="label" maxlength={maxShareLabelLength} />
               </label>
@@ -380,10 +349,7 @@ adminPages.get(
                   />
                 </label>
               )}
-              <button type="submit" name="action" value="create-share">
-                {t('createShare')}
-              </button>
-            </form>
+            </Action>
             {table(
               [t('shareLabel'), t('created'), t('lastUsed'), t('actions')],
               artefact.shareLinks.map((share) => (
@@ -400,15 +366,11 @@ adminPages.get(
               t,
             )}
             <h2>{t('rename')}</h2>
-            <form method="post">
-              <input type="hidden" name="artefactId" value={artefact.id} />
+            <Action action="rename" label={t('rename')} fields={{ artefactId: artefact.id }}>
               <label>
                 {t('newSlug')} <input name="slug" required maxlength={64} />
               </label>
-              <button type="submit" name="action" value="rename">
-                {t('rename')}
-              </button>
-            </form>
+            </Action>
             <h2>{t('delete')}</h2>
             <p>{t('deleteHelp')}</p>
             <Action action="delete" label={t('delete')} fields={{ artefactId: artefact.id }} />
@@ -538,14 +500,11 @@ adminPages.get(
       t('tokens'),
       <>
         <p>{t('ownCredentialHelp')}</p>
-        <form method="post">
+        <Action action="create" label={t('createCredential')}>
           <label>
             {t('ownCredentialName')} <input name="name" required maxlength={maxNameLength} />
           </label>
-          <button type="submit" name="action" value="create">
-            {t('createCredential')}
-          </button>
-        </form>
+        </Action>
         {table(
           [t('ownCredentialName'), t('ownCredentialPrefix'), t('lastUsed'), t('revokedAt'), t('actions')],
           tokens.map((token) => (
@@ -596,7 +555,7 @@ adminPages.get(
       t('redirects'),
       <>
         <p>{t('redirectHelp')}</p>
-        <form method="post">
+        <Action action="add" label={t('addRedirect')}>
           <label>
             {t('fromPrefix')}{' '}
             <input name="fromPrefix" required maxlength={maxRedirectPrefix} placeholder="/a/old/" />
@@ -605,10 +564,7 @@ adminPages.get(
             {t('toPrefix')}{' '}
             <input name="toPrefix" required maxlength={maxRedirectPrefix} placeholder="/a/new/" />
           </label>
-          <button type="submit" name="action" value="add">
-            {t('addRedirect')}
-          </button>
-        </form>
+        </Action>
         {table(
           [t('fromPrefix'), t('toPrefix'), t('actions')],
           redirects.map((entry) => (
@@ -653,6 +609,20 @@ adminPages.post(
   ),
 )
 
+function connectSection(name: string, instructions: string, ...snippets: string[]) {
+  return (
+    <>
+      <h2>{name}</h2>
+      <p>{instructions}</p>
+      {snippets.map((snippet) => (
+        <pre>
+          <code>{snippet}</code>
+        </pre>
+      ))}
+    </>
+  )
+}
+
 adminPages.get(
   '/connect',
   browser('viewer', async (c, session, _actor, t) => {
@@ -675,33 +645,17 @@ adminPages.get(
         <p>
           {t('endpoint')} <code>{url}</code>
         </p>
-        <h2>claude.ai</h2>
-        <p>{t('claudeAi')}</p>
-        <h2>Claude Desktop</h2>
-        <p>{t('claudeDesktop')}</p>
-        <h2>Claude Code</h2>
-        <p>{t('claudeCode')}</p>
-        <pre>
-          <code>{`claude mcp add --transport http forge ${url}`}</code>
-        </pre>
-        <h2>Codex</h2>
-        <p>{t('codex')}</p>
-        <pre>
-          <code>{`codex mcp add forge --url ${url}\ncodex mcp login forge`}</code>
-        </pre>
-        <h2>OMP</h2>
-        <p>{t('omp')}</p>
-        <pre>
-          <code>{JSON.stringify({ mcpServers: { forge: omp } }, null, 2)}</code>
-        </pre>
-        <h2>Hermes</h2>
-        <p>{t('hermes')}</p>
-        <pre>
-          <code>{`${variable}=…`}</code>
-        </pre>
-        <pre>
-          <code>{`mcp_servers:\n  forge:\n    url: ${JSON.stringify(url)}\n    headers:\n      Authorization: "Bearer \${${variable}}"`}</code>
-        </pre>
+        {connectSection('claude.ai', t('claudeAi'))}
+        {connectSection('Claude Desktop', t('claudeDesktop'))}
+        {connectSection('Claude Code', t('claudeCode'), `claude mcp add --transport http forge ${url}`)}
+        {connectSection('Codex', t('codex'), `codex mcp add forge --url ${url}\ncodex mcp login forge`)}
+        {connectSection('OMP', t('omp'), JSON.stringify({ mcpServers: { forge: omp } }, null, 2))}
+        {connectSection(
+          'Hermes',
+          t('hermes'),
+          `${variable}=…`,
+          `mcp_servers:\n  forge:\n    url: ${JSON.stringify(url)}\n    headers:\n      Authorization: "Bearer \${${variable}}"`,
+        )}
         <p>{t('verifyAgent')}</p>
       </>,
     )

@@ -6,31 +6,16 @@ import { handoffChallenge, readBoundSession, redeemHandoff, validHandoffState } 
 import { randomSecret } from '../core/index'
 import { artefactPath, maxReadReturnLength, readReturnPath, sharePath } from '../core/read-path'
 import { DocumentHead } from '../head'
-import { isDocumentNavigation, readBoundedBody } from '../http'
+import { isDocumentNavigation, readBoundedBody, readCookie, writeCookie } from '../http'
 import { messages } from '../i18n'
 import { serveFile } from './file'
 import { readHeaders } from './headers'
 
 const stateCookie = '__Host-forge-state'
-const readCookie = '__Host-forge'
+const readSessionCookie = '__Host-forge'
 const callback = '/_forge/session'
 // Form encoding can triple the bounded return value; leave room for the fixed handoff fields.
 const handoffBodyLimit = 32 * 1024
-
-function cookie(request: Request, name: string) {
-  let value: string | null = null
-  for (const entry of request.headers.get('Cookie')?.split(';') ?? []) {
-    const part = entry.trim()
-    if (!part.startsWith(`${name}=`)) continue
-    if (value !== null) return null
-    value = part.slice(name.length + 1)
-  }
-  return value
-}
-
-function setCookie(name: string, value: string, maxAge: number, sameSite: 'Lax' | 'None' = 'Lax') {
-  return `${name}=${value}; Path=/; Max-Age=${maxAge}; Secure; HttpOnly; SameSite=${sameSite}`
-}
 
 function redirect(location: string, status = 302, cookies: string[] = []) {
   const headers = readHeaders()
@@ -62,7 +47,7 @@ function page(config: Config, title: string, children: Child, head: boolean, sta
 }
 
 async function startHandoff(request: Request, url: URL, runtime: Runtime) {
-  const current = cookie(request, stateCookie)
+  const current = readCookie(request, stateCookie)
   const browser = validHandoffState(current) ? current : randomSecret()
   const nonce = randomSecret()
   const target = new URL('/auth/handoff', runtime.config.manageOrigin)
@@ -73,7 +58,7 @@ async function startHandoff(request: Request, url: URL, runtime: Runtime) {
     state: await handoffChallenge(browser, nonce),
     nonce,
   }).toString()
-  return redirect(target.href, 302, [setCookie(stateCookie, browser, 600, 'None')])
+  return redirect(target.href, 302, [writeCookie(stateCookie, browser, 600, 'None')])
 }
 
 async function completeHandoff(request: Request, runtime: Runtime) {
@@ -89,7 +74,7 @@ async function completeHandoff(request: Request, runtime: Runtime) {
     fields.get('code'),
     fields.get('state'),
     fields.get('nonce'),
-    cookie(request, stateCookie),
+    readCookie(request, stateCookie),
   )
   if (!result) return notFound(config)
   if (result.kind === 'retry') {
@@ -110,7 +95,7 @@ async function completeHandoff(request: Request, runtime: Runtime) {
       400,
     )
   }
-  return redirect(result.path, 303, [setCookie(readCookie, result.cookie, result.maxAge)])
+  return redirect(result.path, 303, [writeCookie(readSessionCookie, result.cookie, result.maxAge)])
 }
 
 export async function read(
@@ -126,52 +111,47 @@ export async function read(
   try {
     if (request.method === 'POST' && url.pathname === callback) return await completeHandoff(request, runtime)
     if (request.method !== 'GET' && !head) return notFound(config)
+    let decision: Awaited<ReturnType<typeof canonicalRead> | ReturnType<typeof shareRead>> | undefined
     if (url.pathname.startsWith('/s/')) {
       const target = sharePath(url.pathname)
       if (!target) return notFound(config, head)
-      const decision = await shareRead(runtime, target.slug, target.key, target.path, url.pathname, ctx)
-      if (decision.kind === 'not-found') return notFound(config, head)
-      if (decision.kind === 'slash') return redirect(`${url.pathname}/${url.search}`, 301)
-      if (decision.kind === 'redirect') return redirect(`${decision.location}${url.search}`)
-      if (decision.kind === 'entry') return redirect(`${url.pathname}${decision.path}${url.search}`)
-      return await serveFile(request, runtime.env.BLOBS, decision.file, false, false)
-    }
-    const target = artefactPath(url.pathname)
-    if (target) {
-      if (target.path === undefined) return redirect(`${url.pathname}/${url.search}`, 301)
-      const decision = await canonicalRead(runtime, target.slug, target.path, url.pathname, () =>
-        readBoundSession(runtime, cookie(request, readCookie), Date.now()),
-      )
-      switch (decision.kind) {
-        case 'serve':
-          return await serveFile(
-            request,
-            runtime.env.BLOBS,
-            decision.file,
-            decision.public,
-            config.allowIndexing,
-          )
-        case 'slash':
-          return redirect(`${url.pathname}/${url.search}`, 301)
-        case 'redirect':
-          return redirect(`${decision.location}${url.search}`)
-        case 'sign-in':
-        case 'revalidate':
-          if (isDocumentNavigation(request)) return await startHandoff(request, url, runtime)
-          return new Response(null, { status: 401, headers: readHeaders() })
-        case 'pending':
-          return page(
-            config,
-            `${common.pending} — ${config.name}`,
-            <>
-              <h1>{common.pending}</h1>
-              <p>{text.askAdmin}</p>
-            </>,
-            head,
-          )
-        case 'not-found':
-          return notFound(config, head)
+      decision = await shareRead(runtime, target.slug, target.key, target.path, url.pathname, ctx)
+    } else {
+      const target = artefactPath(url.pathname)
+      if (target) {
+        if (target.path === undefined) return redirect(`${url.pathname}/${url.search}`, 301)
+        decision = await canonicalRead(runtime, target.slug, target.path, url.pathname, () =>
+          readBoundSession(runtime, readCookie(request, readSessionCookie), Date.now()),
+        )
       }
+    }
+    switch (decision?.kind) {
+      case 'serve': {
+        const isPublic = 'public' in decision && decision.public === true
+        return await serveFile(request, runtime.env.BLOBS, decision.file, isPublic, config.allowIndexing)
+      }
+      case 'slash':
+        return redirect(`${url.pathname}/${url.search}`, 301)
+      case 'redirect':
+        return redirect(`${decision.location}${url.search}`)
+      case 'entry':
+        return redirect(`${url.pathname}${decision.path}${url.search}`)
+      case 'sign-in':
+      case 'revalidate':
+        if (isDocumentNavigation(request)) return await startHandoff(request, url, runtime)
+        return new Response(null, { status: 401, headers: readHeaders() })
+      case 'pending':
+        return page(
+          config,
+          `${common.pending} — ${config.name}`,
+          <>
+            <h1>{common.pending}</h1>
+            <p>{text.askAdmin}</p>
+          </>,
+          head,
+        )
+      case 'not-found':
+        return notFound(config, head)
     }
     if (url.pathname === '/') {
       const { name, publicIndex, brand } = config

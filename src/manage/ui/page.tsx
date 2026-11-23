@@ -9,6 +9,39 @@ import { type Locale, messages } from '../../i18n'
 
 export type UiContext = Context<{ Bindings: Runtime }>
 
+export function Action({
+  action,
+  label,
+  fields,
+  path,
+  children,
+}: {
+  action: string
+  label: string
+  fields?: Record<string, string | number>
+  path?: string
+  children?: Child
+}) {
+  return (
+    <form action={path} method="post">
+      {fields &&
+        Object.entries(fields).map(([name, value]) => <input type="hidden" name={name} value={value} />)}
+      {children}
+      <button type="submit" name="action" value={action}>
+        {label}
+      </button>
+    </form>
+  )
+}
+
+export function pageLink(href: string, label: string) {
+  return (
+    <p>
+      <a href={href}>{label}</a>
+    </p>
+  )
+}
+
 const copyScript =
   'document.addEventListener("click",async(e)=>{const b=e.target.closest("button[data-copy]");if(!b)return;try{await navigator.clipboard.writeText(b.previousElementSibling.textContent);b.textContent=b.dataset.copied}catch{b.textContent=b.dataset.failed}});addEventListener("pageshow",(e)=>{if(e.persisted)document.querySelector("[data-secret-flash]")?.remove()});'
 export const copyScriptSource = "'sha256-YpBfT0WFfrJI9blwi4A0xOODReRSb4tKB5oO3wQz02k='"
