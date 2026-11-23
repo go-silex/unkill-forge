@@ -6,19 +6,28 @@
   "compatibility_flags": ["nodejs_compat", "global_fetch_strictly_public"],
   "workers_dev": false,
   "preview_urls": false,
-  "routes": [
-    { "pattern": "forge.example.com", "custom_domain": true },
-    { "pattern": "manage.forge.example.com", "custom_domain": true }
-  ],
+  // Add two custom_domain routes for the configured origins before opening the instance.
+  "routes": [],
+  "triggers": { "crons": ["0 3 * * *"] },
+  "observability": { "enabled": true, "logs": { "invocation_logs": false } },
+  // Set FORGE_COOKIE_KEY, FORGE_SEAL_KEY and AUTH_<ID>_CLIENT_SECRET as Worker secrets.
   "vars": {
     "FORGE_NAME": "Forge",
+    "LOCALE": "en",
+    "BRAND": "{}",
     "READ_ORIGIN": "https://forge.example.com",
     "MANAGE_ORIGIN": "https://manage.forge.example.com",
-    "ADMIN_EMAILS": "admin@example.com",
+    "ADMIN_EMAILS": "",
     "AUTH_PROVIDERS": "[{\"id\":\"github\",\"type\":\"github\",\"label\":\"GitHub\",\"clientId\":\"replace-with-client-id\"}]",
+    "MCP_ALLOWED_ORIGINS": "",
     "ALLOW_DCR": "false",
     "PUBLIC_INDEX": "false",
-    "ALLOW_INDEXING": "false"
+    "ALLOW_INDEXING": "false",
+    "MAX_FILES_PER_ARTEFACT": "1000",
+    "MAX_BLOB_WRITES_PER_CALL": "500",
+    "MAX_INLINE_BYTES": "2097152",
+    "MAX_UPLOAD_BYTES": "100000000",
+    "REVISION_RETENTION": "20"
   },
   "d1_databases": [
     {
@@ -28,6 +37,6 @@
       "migrations_dir": "migrations"
     }
   ],
-  "r2_buckets": [{ "binding": "BLOBS", "bucket_name": "replace-with-r2-bucket-name" }],
+  "r2_buckets": [{ "binding": "BLOBS", "bucket_name": "forge-blobs" }],
   "kv_namespaces": [{ "binding": "OAUTH_KV", "id": "replace-with-kv-id" }]
 }

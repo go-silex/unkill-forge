@@ -1021,7 +1021,7 @@ export async function deleteArtefact(
   return {}
 }
 
-const deletedRetentionMs = 30 * 24 * 60 * 60 * 1_000
+export const deletedRetentionMs = 30 * 24 * 60 * 60 * 1_000
 
 export async function listDeletedArtefacts({ env: { DB: db } }: Runtime, member: Member, after = '') {
   requireAdmin(member)

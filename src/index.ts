@@ -1,5 +1,6 @@
 import { brandAsset } from './brand'
 import { configuration, type Env } from './config'
+import { maintain } from './core/maintenance'
 import { messages } from './i18n'
 import { manageHandoff } from './manage/handoff'
 import { loginRoute } from './manage/login'
@@ -48,5 +49,9 @@ export default {
       console.error('Forge request failed', error instanceof Error ? error.name : 'unknown')
       return manageHeaders(new Response(messages(config).unavailable, { status: 503 }))
     }
+  },
+  async scheduled(controller: ScheduledController, env: Env): Promise<void> {
+    const config = configuration(env)
+    if (config) await maintain({ config, env }, Math.min(controller.scheduledTime, Date.now()))
   },
 }

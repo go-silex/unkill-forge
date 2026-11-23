@@ -7,36 +7,64 @@ const rowStep = 256
 const blobStep = 64
 const attemptLeaseMs = 15 * 60 * 1000
 
-/** Drive an explicit purge by stable artefact ID until `done`. A live artefact must be deleted first. */
-export async function purgeArtefact(
-  { env: { DB: db, BLOBS: blobs } }: Runtime,
-  member: Member,
+export function registerPurge(
+  db: D1Database,
   id: string,
-  expectedSlug?: string,
+  { actor, slug, deletedBefore }: { actor: string | null; slug?: string; deletedBefore?: number },
 ) {
-  requireAdmin(member)
-  if (expectedSlug !== undefined) checkSlug(expectedSlug)
-  const [, , job] = await db.batch<{ slug: string; deleted: number }>([
+  const now = Date.now()
+  return [
     db
-      .prepare(`INSERT INTO artefact_purges (slug, artefact_id)
-        SELECT slug, id FROM artefacts WHERE id = ?1 AND deleted_at IS NOT NULL
-          AND (?2 IS NULL OR slug = ?2) ON CONFLICT DO NOTHING`)
-      .bind(id, expectedSlug ?? null),
+      .prepare(`INSERT INTO artefact_purges (slug, artefact_id, last_attempted_at)
+        SELECT slug, id, ?3 FROM artefacts WHERE id = ?1 AND deleted_at IS NOT NULL
+          AND (?2 IS NULL OR slug = ?2) AND (?4 IS NULL OR deleted_at < ?4) ON CONFLICT DO NOTHING`)
+      .bind(id, slug ?? null, now, deletedBefore ?? null),
     db
       .prepare(`INSERT INTO audit_log (id, at, member_id, action, artefact_id, detail_json)
         SELECT ?, ?, ?, 'artefact.purge_start', artefact_id, json_object('slug', slug)
         FROM artefact_purges WHERE artefact_id = ? AND changes() = 1`)
-      .bind(crypto.randomUUID(), Date.now(), member.id, id),
-    db
-      .prepare(`SELECT p.slug, a.id IS NULL AS deleted FROM artefact_purges p
-        LEFT JOIN artefacts a ON a.id = p.artefact_id WHERE p.artefact_id = ?`)
-      .bind(id),
+      .bind(crypto.randomUUID(), now, actor, id),
+  ]
+}
+
+type PurgeJob = { slug: string; deleted: number }
+
+function purgeJob(db: D1Database, id: string) {
+  return db
+    .prepare(`SELECT p.slug, a.id IS NULL AS deleted FROM artefact_purges p
+      LEFT JOIN artefacts a ON a.id = p.artefact_id WHERE p.artefact_id = ?`)
+    .bind(id)
+}
+
+/** Drive an explicit purge by stable artefact ID until `done`. A live artefact must be deleted first. */
+export async function purgeArtefact(runtime: Runtime, member: Member, id: string, expectedSlug?: string) {
+  requireAdmin(member)
+  if (expectedSlug !== undefined) checkSlug(expectedSlug)
+  const { DB: db } = runtime.env
+  const [, , job] = await db.batch<PurgeJob>([
+    ...registerPurge(db, id, { actor: member.id, slug: expectedSlug }),
+    purgeJob(db, id),
   ])
-  const pending = job.results[0]
+  return runPurgeStep(runtime, id, job.results[0], member.id, expectedSlug)
+}
+
+/** Advance a registered purge only; automatic work has no human audit actor. */
+export async function resumeArtefactPurge(runtime: Runtime, id: string) {
+  const job = await purgeJob(runtime.env.DB, id).first<PurgeJob>()
+  return runPurgeStep(runtime, id, job, null)
+}
+
+async function runPurgeStep(
+  { env: { DB: db, BLOBS: blobs } }: Runtime,
+  id: string,
+  pending: PurgeJob | null | undefined,
+  memberId: string | null,
+  expectedSlug?: string,
+) {
   if (expectedSlug !== undefined && pending?.slug !== expectedSlug)
     throw new ArtefactError('conflict', 'The deleted artefact has changed')
   if (!pending) {
-    if (await db.prepare('SELECT 1 FROM artefacts WHERE id = ?').bind(id).first())
+    if (memberId !== null && (await db.prepare('SELECT 1 FROM artefacts WHERE id = ?').bind(id).first()))
       throw new ArtefactError('conflict', 'Delete the artefact before purging')
     return { done: true }
   }
@@ -93,7 +121,7 @@ export async function purgeArtefact(
   if (attempt.meta.changes === 0) return { done: false }
   try {
     await deleteBlobPage(db, blobs, id, slug, token)
-    const [finished] = await db.batch([
+    const [finished, , remaining] = await db.batch([
       db
         .prepare(`DELETE FROM artefact_purges WHERE artefact_id = ?1
           AND EXISTS (SELECT 1 FROM purge_attempts WHERE artefact_id = ?1 AND token = ?2)
@@ -103,13 +131,10 @@ export async function purgeArtefact(
       db
         .prepare(`INSERT INTO audit_log (id, at, member_id, action, artefact_id, detail_json)
           SELECT ?, ?, ?, 'artefact.purge', ?, ? WHERE changes() = 1`)
-        .bind(crypto.randomUUID(), Date.now(), member.id, id, JSON.stringify({ slug })),
+        .bind(crypto.randomUUID(), Date.now(), memberId, id, JSON.stringify({ slug })),
+      db.prepare('SELECT 1 FROM artefact_purges WHERE artefact_id = ?').bind(id),
     ])
-    return {
-      done:
-        finished.meta.changes === 1 ||
-        !(await db.prepare('SELECT 1 FROM artefact_purges WHERE artefact_id = ?').bind(id).first()),
-    }
+    return { done: finished.meta.changes === 1 || remaining.results.length === 0 }
   } finally {
     // Keep hash claims on failure, but let the next request retry once this delete has settled.
     await db.prepare('DELETE FROM purge_attempts WHERE artefact_id = ? AND token = ?').bind(id, token).run()
