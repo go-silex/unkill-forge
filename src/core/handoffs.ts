@@ -99,7 +99,7 @@ export async function redeemHandoff(
     (await handoffChallenge(browser, nonce)) !== state ||
     (await hashSecret(state)) !== handoff.stateHash
   ) {
-    return { kind: 'retry', path: handoff.path } as const
+    return { kind: 'retry' } as const
   }
   const session = await readSession(db, handoff.sessionIdHash, now)
   const provider = session && config.providers.find(({ id }) => id === session.provider)

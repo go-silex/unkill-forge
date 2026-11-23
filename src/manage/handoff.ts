@@ -1,3 +1,4 @@
+import { html } from 'hono/html'
 import type { Runtime } from '../config'
 import { issueHandoff, validHandoffState } from '../core/handoffs'
 import { readReturnPath } from '../core/read-path'
@@ -34,6 +35,7 @@ export async function manageHandoff(request: Request, url: URL, runtime: Runtime
 <input type="hidden" name="code" value="${code}">
 <input type="hidden" name="state" value="${state}">
 <input type="hidden" name="nonce" value="${nonce}">
+${html`<input type="hidden" name="return" value="${path}">`}
 <button type="submit">Continue to Forge</button>
 </form><script>${submitForm}</script></html>`,
     {

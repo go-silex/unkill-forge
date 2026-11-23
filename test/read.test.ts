@@ -117,7 +117,7 @@ async function issue(manageBrowser: Browser, handoff: URL): Promise<Handoff> {
   const hash = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(script))
   expect(policy).toContain(`script-src 'sha256-${btoa(String.fromCharCode(...new Uint8Array(hash)))}'`)
   const fields = new URLSearchParams()
-  for (const field of ['code', 'state', 'nonce']) fields.set(field, formValue(html, field))
+  for (const field of ['code', 'state', 'nonce', 'return']) fields.set(field, formValue(html, field))
   return { url, fields }
 }
 
@@ -142,6 +142,7 @@ async function noReadSession(browser: Browser, callback: Handoff, status = 404) 
   expect(result.status).toBe(status)
   expect(result.headers.getSetCookie()).toEqual([])
   expect(browser.cookie(readCookie)).toBeUndefined()
+  return result
 }
 
 it('redirects slashless URLs and reads the current revision in exact, directory, extension order', async () => {
@@ -265,8 +266,19 @@ it('redeems only via POST and burns codes on success, bad state, wrong browser o
   const foreign = new Browser(send)
   const handoff = await start(reader)
   await start(foreign)
-  const wrongBrowser = await issue(owner, handoff)
-  await noReadSession(foreign, wrongBrowser, 400)
+  const storedPath = '/a/private/internal-draft'
+  const storedQuery = 'ticket=internal-reference'
+  const wrongBrowser = await issue(owner, await start(reader, `${read}${storedPath}?${storedQuery}`))
+  expect(wrongBrowser.fields.get('return')).toBe(`${storedPath}?${storedQuery}`)
+  const foreignFields = new URLSearchParams(wrongBrowser.fields)
+  foreignFields.set('return', '//outside.example/retry')
+  const mismatch = await noReadSession(foreign, { ...wrongBrowser, fields: foreignFields }, 400)
+  expect(mismatch.headers.has('Location')).toBe(false)
+  const mismatchBody = await mismatch.text()
+  expect(mismatchBody).toContain('Sign-in did not complete')
+  expect(mismatchBody).not.toContain(storedPath)
+  expect(mismatchBody).not.toContain(storedQuery)
+  expect(mismatchBody).not.toContain('outside.example')
   await noReadSession(reader, wrongBrowser)
 
   const wrongState = await issue(owner, handoff)
@@ -344,7 +356,10 @@ it('offers a manual retry when two first-time navigations race to set browser st
   if (!href) throw new Error('Expected a retry link')
   const nextHandoff = await start(browser, new URL(href, read).href)
   expect((await submit(browser, await issue(owner, nextHandoff))).headers.get('Location')).toBe(href)
-  expect((await submit(browser, currentCallback)).status).toBe(303)
+  currentCallback.fields.set('return', '/a/public/?tab=unbound')
+  const completed = await submit(browser, currentCallback)
+  expect(completed.status).toBe(303)
+  expect(completed.headers.get('Location')).toBe(current.searchParams.get('return'))
 })
 
 it('starts anonymous HTML navigation without Fetch Metadata but not image requests', async () => {

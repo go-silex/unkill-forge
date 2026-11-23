@@ -3,7 +3,7 @@ import type { Runtime } from '../config'
 import { canonicalRead, publicArtefacts } from '../core/artefacts'
 import { handoffChallenge, readBoundSession, redeemHandoff, validHandoffState } from '../core/handoffs'
 import { randomSecret } from '../core/index'
-import { artefactPath } from '../core/read-path'
+import { artefactPath, readReturnPath } from '../core/read-path'
 import { isDocumentNavigation, readBoundedBody } from '../http'
 import { serveFile } from './file'
 import { readHeaders } from './headers'
@@ -86,13 +86,16 @@ async function completeHandoff(request: Request, runtime: Runtime) {
   )
   if (!result) return notFound()
   if (result.kind === 'retry') {
+    const path = readReturnPath(fields.get('return'), runtime.config.readOrigin)
     return page(
       'Sign-in did not complete',
       <>
         <h1>Sign-in did not complete</h1>
-        <p>
-          <a href={result.path}>Try signing in again</a>
-        </p>
+        {path && (
+          <p>
+            <a href={path}>Try signing in again</a>
+          </p>
+        )}
       </>,
       false,
       400,
