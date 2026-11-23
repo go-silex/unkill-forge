@@ -48,6 +48,7 @@ export function runtime(overrides: Partial<Env> = {}): Handle {
     MCP_ALLOWED_ORIGINS: 'https://allowed-client.example',
     ALLOW_DCR: 'false',
     FORGE_COOKIE_KEY: base64url.encode(new Uint8Array(32).fill(17)),
+    FORGE_SEAL_KEY: base64url.encode(new Uint8Array(32).fill(29)),
     ...overrides,
   } as Env
   return async (path, init) => {
