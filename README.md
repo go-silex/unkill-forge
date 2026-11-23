@@ -2,9 +2,9 @@
 
 Forge is a self-hosted service for publishing HTML artefacts at stable URLs, controlling who can read them, and working with them through remote MCP. It runs on Cloudflare.
 
-**Gate 0:** this build implements sign-in, member and bot administration, and the MCP `whoami` tool. No artefact storage or publishing yet. Live identity-provider and MCP-client compatibility still needs to be validated on a test zone. See [the specification](docs/spec.md).
+This build implements sign-in, member administration (including invites and reinstatement), bot administration, and the MCP `whoami` tool. No artefact storage or publishing yet. Live identity-provider and MCP-client compatibility still needs to be validated on a test zone. See [the specification](docs/spec.md).
 
-Gate 0 runtime: 2,236 lines under `src/`.
+Runtime: 2,395 lines under `src/`.
 
 ## Configure sign-in
 
@@ -40,7 +40,11 @@ Store each client's secret in Wrangler, not in the file: `AUTH_GITHUB_CLIENT_SEC
 
 For OIDC, `tokenAuthMethod` defaults to `client_secret_basic`. Set `client_secret_post` for Google or any client registered for POST. A registration accepts its configured method even when discovery lists both.
 
-The first eligible verified address in `ADMIN_EMAILS` can bootstrap an administrator. This is a one-time action. Later sign-ins create pending members unless an OIDC provider grants `autoJoinRole` after its claim checks. Keep an active administrator to manage access.
+The first eligible verified address in `ADMIN_EMAILS` can bootstrap an administrator, once per instance. Afterwards, a valid invite takes precedence over OIDC `autoJoinRole`. Without either, new members are pending until an administrator admits them.
+
+In **Members**, choose a role and create an invite link. Copy it when it appears: it is shown once, expires after seven days, and admits one new or pending member when they open it and sign in. Admins can revoke unused links from the same page.
+
+Only an admin can reinstate a removed member. Reinstatement restores the role, not access for old sessions, OAuth grants, or API tokens. Sign in again, authorize MCP clients again, or issue new API tokens as appropriate. Keep an active administrator to manage access.
 
 ## Deploy
 

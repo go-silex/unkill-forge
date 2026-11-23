@@ -3,7 +3,7 @@ import { base64url } from 'jose'
 import { describe, expect, it, vi } from 'vitest'
 import {
   admin,
-  type Browser,
+  Browser,
   formValue,
   type Handle,
   jsonHeaders,
@@ -13,6 +13,7 @@ import {
   mcpCall,
   read,
   runtime,
+  sessionCookie,
   setupStorage,
   whoami,
 } from './http'
@@ -236,7 +237,7 @@ describe('MCP discovery and bot credentials', () => {
     expect(await whoami(send, issued.access_token)).toMatchObject({ role: 'admin' })
   })
 
-  it('authenticates a bot only on MCP, then enforces token revocation and member removal', async () => {
+  it('authenticates a bot only on MCP and does not restore old API tokens on reinstatement', async () => {
     const send = runtime()
     const owner = await mockProvider().signedIn(send, admin)
     const path = '/admin/bots'
@@ -276,6 +277,9 @@ describe('MCP discovery and bot credentials', () => {
 
     expect((await owner.post('/admin/members', { action: 'remove', id: memberId })).status).toBe(303)
     expect((await mcpCall(send, second)).status).toBe(401)
+    expect((await owner.post('/admin/members', { action: 'reinstate', id: memberId })).status).toBe(303)
+    expect((await mcpCall(send, second)).status).toBe(401)
+    expect((await whoami(send, await mint('Token after reinstatement'))).id).toBe(memberId)
   })
 })
 
@@ -536,6 +540,38 @@ describe('OAuth with DCR enabled for this runtime only', () => {
     await expectInvalidGrant(await grant.refresh(rotated.refresh_token))
     await expectInvalidGrant(await pendingGrant.exchange())
     expect((await mcpCall(send, rotated.access_token)).status).toBe(401)
+  })
+
+  it('requires fresh sign-in and OAuth approval after reinstatement', async () => {
+    const send = runtime({ ALLOW_DCR: 'true' })
+    const idp = mockProvider()
+    const owner = await idp.signedIn(send, admin)
+    const member = await idp.signedIn(send, 'reinstated')
+    const old = await authorize(send, member, false)
+    const issued = await tokens(await old.exchange())
+    const person = await whoami(send, issued.access_token)
+    const approvedBeforeRemoval = await authorize(send, member, false)
+    const viewer = await idp.signedIn(send, 'unprivileged')
+    const path = '/admin/members'
+    expect((await owner.post(path, { id: person.id, action: 'remove' })).status).toBe(303)
+    const reinstate = { id: person.id, action: 'reinstate' }
+    expect((await owner.post(path, reinstate, read)).status).toBe(403)
+    expect((await viewer.post(path, reinstate)).status).toBe(403)
+    expect((await idp.login(new Browser(send), 'reinstated')).status).toBe(403)
+    expect((await owner.post(path, reinstate)).status).toBe(303)
+
+    expect(location(await member.request('/')).pathname).toBe('/login')
+    expect((await mcpCall(send, issued.access_token)).status).toBe(401)
+    await expectInvalidGrant(await old.refresh(issued.refresh_token))
+    await expectInvalidGrant(await approvedBeforeRemoval.exchange())
+
+    const fresh = new Browser(send)
+    expect((await idp.login(fresh, 'reinstated')).status).toBe(302)
+    expect(fresh.cookie(sessionCookie)).not.toBe(member.cookie(sessionCookie))
+    const freshGrant = await authorize(send, fresh, false)
+    const renewed = await tokens(await freshGrant.exchange())
+    expect(await whoami(send, renewed.access_token)).toEqual(person)
+    expect((await freshGrant.refresh(renewed.refresh_token)).status).toBe(200)
   })
 
   it('rejects both exchange and refresh for a revoked sub as well as existing access tokens', async () => {

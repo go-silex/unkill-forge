@@ -15,6 +15,7 @@ export type LoginFlow = {
   sessionHash: string | null
   createdAt: number
   expiresAt: number
+  inviteHash: string | null
 }
 export type BrowserSession = {
   idHash: string
@@ -54,7 +55,9 @@ export async function putFlow(db: D1Database, flow: LoginFlow): Promise<void> {
   await db.batch([
     db.prepare('DELETE FROM login_flows WHERE expires_at <= ?').bind(flow.createdAt),
     db
-      .prepare('INSERT INTO login_flows VALUES (?, ?, ?, ?, ?, ?, ?)')
+      .prepare(`INSERT INTO login_flows
+        (state_hash, browser_hash, provider, return_path, session_hash, created_at, expires_at, invite_hash)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)`)
       .bind(
         flow.stateHash,
         flow.browserHash,
@@ -63,6 +66,7 @@ export async function putFlow(db: D1Database, flow: LoginFlow): Promise<void> {
         flow.sessionHash,
         flow.createdAt,
         flow.expiresAt,
+        flow.inviteHash,
       ),
   ])
 }
@@ -74,7 +78,7 @@ export function consumeFlow(
   return db
     .prepare(`DELETE FROM login_flows WHERE state_hash = ? AND browser_hash = ? AND provider = ? AND expires_at > ?
     RETURNING state_hash AS stateHash, browser_hash AS browserHash, provider, return_path AS returnPath,
-    session_hash AS sessionHash, created_at AS createdAt, expires_at AS expiresAt`)
+    session_hash AS sessionHash, created_at AS createdAt, expires_at AS expiresAt, invite_hash AS inviteHash`)
     .bind(key.stateHash, key.browserHash, key.provider, key.now)
     .first<LoginFlow>()
 }
@@ -87,6 +91,7 @@ type Admission = {
   emailVerified: boolean
   adminEmails: readonly string[]
   autoJoinRole?: 'viewer' | 'publisher'
+  inviteHash: string | null
   now: number
 }
 
@@ -101,20 +106,10 @@ export async function admitIdentity(db: D1Database, input: Admission): Promise<M
         AND NOT EXISTS (SELECT 1 FROM members WHERE role = 'admin' AND status = 'active') AS bootstrap
     )
     INSERT INTO members (id, kind, name, email, role, status, created_at)
-    SELECT ?, 'human', ?, ?, CASE WHEN bootstrap THEN 'admin' ELSE COALESCE(?, 'viewer') END,
-      CASE WHEN bootstrap OR ? IS NOT NULL THEN 'active' ELSE 'pending' END, ?
+    SELECT ?, 'human', ?, ?, CASE WHEN bootstrap THEN 'admin' ELSE 'viewer' END,
+      CASE WHEN bootstrap THEN 'active' ELSE 'pending' END, ?
     FROM candidate WHERE NOT EXISTS (SELECT 1 FROM identities WHERE provider = ? AND subject = ?)`)
-      .bind(
-        bootstrap ? 1 : 0,
-        id,
-        name,
-        email,
-        input.autoJoinRole ?? null,
-        input.autoJoinRole ?? null,
-        now,
-        provider,
-        subject,
-      ),
+      .bind(bootstrap ? 1 : 0, id, name, email, now, provider, subject),
     db
       .prepare(`INSERT INTO identities (provider, subject, member_id, email, email_verified, last_login_at)
       SELECT ?, ?, id, ?, ?, ? FROM members WHERE id = ?`)
@@ -124,6 +119,33 @@ export async function admitIdentity(db: D1Database, input: Admission): Promise<M
       SELECT ?, ?, id, CASE WHEN role = 'admin' THEN 'member.bootstrap' ELSE 'member.join' END, ?
       FROM members WHERE id = ?`)
       .bind(crypto.randomUUID(), now, JSON.stringify({ provider }), id),
+    ...(input.inviteHash === null
+      ? []
+      : [
+          db
+            .prepare(`UPDATE invites SET used_by = m.id, used_at = ?
+              FROM identities i JOIN members m ON m.id = i.member_id
+              WHERE token_hash = ? AND used_at IS NULL AND expires_at > ?
+              AND i.provider = ? AND i.subject = ? AND m.status = 'pending' RETURNING role`)
+            .bind(now, input.inviteHash, now, provider, subject),
+          // D1 runs the batch on one connection: only the immediately preceding claim may admit.
+          db
+            .prepare(`UPDATE members SET status = 'active', role = (SELECT role FROM invites WHERE token_hash = ?)
+              WHERE id = (SELECT used_by FROM invites WHERE token_hash = ?) AND changes() = 1`)
+            .bind(input.inviteHash, input.inviteHash),
+          db
+            .prepare(`INSERT INTO audit_log (id, at, member_id, action, detail_json)
+              SELECT ?, ?, used_by, 'invite.consume', json_object('id', token_hash, 'role', role)
+              FROM invites WHERE token_hash = ? AND changes() = 1`)
+            .bind(crypto.randomUUID(), now, input.inviteHash),
+        ]),
+    ...(input.autoJoinRole === undefined
+      ? []
+      : [
+          db
+            .prepare("UPDATE members SET role = ?, status = 'active' WHERE id = ? AND status = 'pending'")
+            .bind(input.autoJoinRole, id),
+        ]),
     db
       .prepare(`UPDATE identities SET email = ?, email_verified = ?, last_login_at = ?
       WHERE provider = ? AND subject = ? AND member_id IN (SELECT id FROM members WHERE status <> 'removed')`)
@@ -133,7 +155,7 @@ export async function admitIdentity(db: D1Database, input: Admission): Promise<M
       FROM identities i JOIN members m ON m.id = i.member_id WHERE i.provider = ? AND i.subject = ?`)
       .bind(provider, subject),
   ]
-  const member = (await db.batch<Member>(queries))[4]?.results[0]
+  const member = (await db.batch<Member>(queries)).at(-1)?.results[0]
   if (!member) throw new Error('Identity admission did not produce a member')
   return member
 }
@@ -160,7 +182,8 @@ export async function createSession(
       SELECT ?, ?, ?, ?, ?, ?, ?, ?, ? WHERE NOT EXISTS (
         SELECT 1 FROM identity_revocations r WHERE r.provider = ? AND r.received_at >= ?
         AND ((r.sid IS NULL AND r.subject = ?) OR (r.sid = ? AND (r.subject IS NULL OR r.subject = ?))))
-      AND EXISTS (SELECT 1 FROM members WHERE id = ? AND status <> 'removed')`)
+      AND EXISTS (SELECT 1 FROM members WHERE id = ? AND status <> 'removed'
+        AND (removed_at IS NULL OR removed_at < ?))`)
       .bind(
         idHash,
         memberId,
@@ -177,6 +200,7 @@ export async function createSession(
         sid,
         subject,
         memberId,
+        flowCreatedAt,
       ),
     auditChange(db, createdAt, memberId, 'session.start', { provider }),
   ])
@@ -290,10 +314,11 @@ export function grantMember(db: D1Database, grant: Grant, grantId: string): Prom
   return db
     .prepare(`SELECT m.id, m.kind, m.name, m.email, m.role, m.status FROM members m
     JOIN identities i ON m.id = i.member_id WHERE m.id = ? AND i.provider = ? AND i.subject = ? AND m.status = 'active'
+    AND (m.removed_at IS NULL OR m.removed_at < ?)
     AND NOT EXISTS (SELECT 1 FROM identity_revocations r WHERE r.provider = i.provider AND r.received_at >= ?
       AND ((r.sid IS NULL AND r.subject = i.subject) OR (r.sid = ? AND (r.subject IS NULL OR r.subject = i.subject))))
     AND NOT EXISTS (SELECT 1 FROM oauth_code_replays WHERE grant_id = ?)`)
-    .bind(grant.memberId, grant.provider, grant.subject, grant.grantedAt, grant.sid, grantId)
+    .bind(grant.memberId, grant.provider, grant.subject, grant.grantedAt, grant.grantedAt, grant.sid, grantId)
     .first<Member>()
 }
 

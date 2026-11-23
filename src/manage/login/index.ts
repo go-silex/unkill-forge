@@ -14,6 +14,7 @@ import {
   revalidateSession,
   revokeSession,
 } from '../../core/index'
+import { activeInviteHash } from '../../core/invites'
 import {
   authorizationEndpoint,
   discover,
@@ -92,6 +93,7 @@ async function start(
   provider: Provider,
   path: string,
   sessionHash: string | null,
+  invite: string | null = null,
 ): Promise<Response> {
   const now = Date.now()
   const browser = readCookie(req, flowCookie) ?? randomSecret()
@@ -122,6 +124,7 @@ async function start(
     sessionHash,
     createdAt: now,
     expiresAt: now + flowSeconds * 1_000,
+    inviteHash: invite === null ? null : await activeInviteHash(runtime.env.DB, invite, now),
   })
   return respond(302, null, target.href, writeCookie(flowCookie, browser, flowSeconds))
 }
@@ -220,6 +223,7 @@ async function callback(
     email: identity.email,
     emailVerified: identity.emailVerified,
     adminEmails: runtime.config.adminEmails,
+    inviteHash: flow.inviteHash,
     ...(provider.type === 'oidc' &&
       provider.autoJoinRole !== undefined && { autoJoinRole: provider.autoJoinRole }),
     now: validatedAt,
@@ -303,8 +307,10 @@ export async function loginRoute(req: Request, runtime: Runtime): Promise<Respon
 
   try {
     if (req.method === 'GET' && !action) {
-      const path = returnPath(url.searchParams.get('return'), runtime.config.manageOrigin)
-      return await start(req, runtime, provider, path, null)
+      const invite = url.searchParams.get('invite')
+      const path =
+        invite === null ? returnPath(url.searchParams.get('return'), runtime.config.manageOrigin) : '/'
+      return await start(req, runtime, provider, path, null, invite)
     }
     if (req.method === 'GET' && action === 'callback')
       return await callback(req, runtime, provider, url.searchParams)

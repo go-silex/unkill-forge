@@ -108,13 +108,13 @@ wrangler.jsonc    template without account identifiers
 
 | Table                  | Columns (essentials)                                                                                                                                       |
 | ---------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `members`              | `id` PK, `kind` ∈ human/bot, `name`, `email`, `role` ∈ viewer/publisher/admin, `status` ∈ pending/active/removed, `created_at`, `created_by`, `removed_at` |
+| `members`              | `id` PK, `kind` ∈ human/bot, `name`, `email`, `role` ∈ viewer/publisher/admin, `status` ∈ pending/active/removed, `created_at`, `created_by`, `removed_at` (last removal, retained on reinstatement) |
 | `identities`           | (`provider`, `subject`) PK, `member_id` UNIQUE, `email`, `email_verified`, `last_login_at`                                                                 |
-| `login_flows`          | `state_hash` PK, `browser_hash`, `provider`, `return_path`, `session_hash` for silent revalidation, `created_at`, `expires_at`; `invite_hash` in Phase 1   |
+| `login_flows`          | `state_hash` PK, `browser_hash`, `provider`, `return_path`, `session_hash` for silent revalidation, `created_at`, `expires_at`, `invite_hash`                 |
 | `sessions`             | `id_hash` PK, `member_id`, `provider`, `subject`, `sid`, `auth_time`, `created_at`, `validated_at`, `expires_at`, `revoked_at`                             |
 | `identity_revocations` | (`provider`, `jti`) PK, `subject` NULL for sid-only events, `sid` NULL for subject-wide events, `received_at`                                              |
 | `oauth_consents`       | `token_hash` PK, `session_hash`, validated authorization request URL, `expires_at`                                                                         |
-| `invites`              | `token_hash` PK, `role`, `created_by`, `expires_at`, `used_by`, `used_at`                                                                                  |
+| `invites`              | `token_hash` PK, `role`, `created_by`, `created_at`, `expires_at`, `used_by`, `used_at`                                                                      |
 | `artefacts`            | `id` PK, `slug` UNIQUE, `title`, `visibility` ∈ private/public, `current_revision`, `created_by`, `created_at`, `updated_at`, `deleted_at`                 |
 | `revisions`            | (`artefact_id`, `number`) PK, `created_by`, `created_at`, `message`                                                                                        |
 | `files`                | (`artefact_id`, `revision`, `path`) PK, `sha256`, `size`, `content_type`                                                                                   |
@@ -130,7 +130,7 @@ Indexes:
 - `artefacts(deleted_at, updated_at)`, `share_links(artefact_id)`, `files(sha256)`;
 - `sessions(member_id)`, `sessions(provider, subject)`, `sessions(provider, sid)`, `identity_revocations(provider, subject)`;
 - `api_tokens(member_id)`, `audit_log(artefact_id, at)`;
-- `expires_at` on `login_flows`, `uploads`, `handoffs`.
+- `expires_at` on `login_flows`, `invites`, `uploads`, `handoffs`.
 
 Rules:
 
@@ -270,7 +270,7 @@ Each `oidc` provider declares:
 
 - `tokenAuthMethod`: `client_secret_basic` (default) or `client_secret_post` (required for Google). Set the method accepted by the registration regardless of which methods discovery lists.
 - `requireClaims`: claims that must hold, in both ID token and UserInfo, or sign-in is refused. For example `{"email_verified": true, "active_member": true}`, where `active_member` is whatever claim the identity manager uses to say a person belongs to the team.
-- `autoJoinRole`: the role granted at first sign-in when the claims hold. Omit it for pending access in Gate 0 (or an invite in Phase 1).
+- `autoJoinRole`: the role granted at first sign-in when the claims hold and neither bootstrap nor an invite applies. Omit it to require an invite or manual admission.
 - For Google: `hostedDomains`, a list of accepted `hd` values (Workspace domains).
 - `sessionMaxHours` (default 8) and `revalidateAfterMinutes` (default 15, `0` disables).
 - `backchannelLogout` (default `true`; enable delivery separately at a provider that supports it).
@@ -284,11 +284,13 @@ Each `oidc` provider declares:
 **Admission** at first sign-in, first match wins:
 
 1. **Bootstrap**: while the instance has no active admin, a verified email listed in `ADMIN_EMAILS` becomes admin. This happens at most once per instance, even if the original admin is later removed or demoted.
-2. **Invite link** (Phase 1) opened before signing in: its role. Single use, 7 days.
+2. **Invite link**: `https://<manage>/invite/<token>` opens a provider selection page. Forge stores only the SHA-256 hash of the 256-bit token, binds it to the browser's login flow, and rechecks expiry and single use in the same transaction that admits a new identity or a pending member with the invite's role. Active and removed identities do not consume an invite. An expired, used or revoked invite cannot grant a role; an already-started sign-in falls back to normal admission.
 3. **Provider auto-join**: `autoJoinRole` of the provider, once its claims (and `hostedDomains` for Google) hold.
 4. Otherwise: create a member with `status = pending`. An administrator can admit them with a role.
 
 A removed member keeps `status = removed` and is never admitted again automatically; only an admin can reinstate them. Each identity is its own member: a matching email never hands an account to another provider's identity. Bots are created by admins in the UI; they have no sign-in, only API tokens.
+
+Removal revokes the member's sessions and API tokens and invalidates OAuth approvals made at or before the latest removal, including unredeemed codes and grants used for refresh or MCP. Reinstatement restores the member's role, not their credentials: they need a fresh sign-in and new OAuth approvals or API tokens.
 
 **Keeping sessions true to the identity manager.**
 
@@ -313,6 +315,8 @@ Pages:
 - API tokens, redirects;
 - "Connect an agent": MCP URL and per-client steps;
 - OAuth consent.
+
+On **Members**, admins choose a role and create an invite link, valid for seven days and one admission. The URL is shown only at creation. The page lists unused, unexpired invites and lets admins revoke them. Invite creation, consumption and revocation are audited; create, revoke and reinstate forms require the manage origin.
 
 ## 12. Configuration, branding, deployment
 
