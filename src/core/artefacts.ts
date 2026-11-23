@@ -296,7 +296,8 @@ async function deniedCanonical(isPublic: boolean, session: ReadSession): Promise
   return null
 }
 
-async function findRedirect(db: D1Database, kind: 'a' | 's', slug: string, pathname: string) {
+async function findRedirect(db: D1Database, slug: string, pathname: string, keyHash?: string) {
+  const kind = keyHash === undefined ? 'a' : 's'
   const root = `/${kind}/${slug}/`
   const prefixes = [root]
   if (kind === 'a') {
@@ -308,8 +309,11 @@ async function findRedirect(db: D1Database, kind: 'a' | 's', slug: string, pathn
       FROM json_each(?) p JOIN redirects r ON r.from_prefix = p.value
       JOIN artefacts a ON a.id = r.target_artefact_id
       WHERE NOT EXISTS (SELECT 1 FROM artefacts WHERE slug = ?)
+      AND (?3 IS NULL OR EXISTS (
+        SELECT 1 FROM share_links WHERE key_hash = ?3 AND artefact_id = a.id AND revoked_at IS NULL
+      ))
       ORDER BY length(r.from_prefix) DESC LIMIT 1`)
-    .bind(JSON.stringify(prefixes), slug)
+    .bind(JSON.stringify(prefixes), slug, keyHash ?? null)
     .first<{
       prefix: string
       path: string
@@ -333,7 +337,7 @@ export async function canonicalRead(
 ) {
   const artefact = await head(db, slug)
   if (!artefact) {
-    const target = await findRedirect(db, 'a', slug, pathname)
+    const target = await findRedirect(db, slug, pathname)
     if (!target) return { kind: 'not-found' } as const
     return (
       (await deniedCanonical(target.public, session)) ??
@@ -372,15 +376,16 @@ export async function shareRead(
   pathname: string,
   ctx: ExecutionContext,
 ) {
+  const keyHash = await hashSecret(key)
   const link = await db
     .prepare(`SELECT s.id, a.id AS artefactId, s.last_used_at AS lastUsedAt,
       a.current_revision AS revision FROM artefacts a LEFT JOIN share_links s
       ON s.key_hash = ? AND s.artefact_id = a.id AND s.revoked_at IS NULL AND a.deleted_at IS NULL
       WHERE a.slug = ?`)
-    .bind(await hashSecret(key), slug)
+    .bind(keyHash, slug)
     .first<{ id: string | null; artefactId: string; lastUsedAt: number | null; revision: number }>()
   if (!link) {
-    const target = await findRedirect(db, 's', slug, pathname)
+    const target = await findRedirect(db, slug, pathname, keyHash)
     if (target) return { kind: 'redirect', location: target.location } as const
   }
   if (!link?.id) return { kind: 'not-found' } as const
@@ -667,6 +672,16 @@ export async function restoreRevision(
 }
 
 export async function publish(runtime: Runtime, member: Member, input: Publish, ctx?: ExecutionContext) {
+  return publishRevision(runtime, member, input, ctx)
+}
+
+async function publishRevision(
+  runtime: Runtime,
+  member: Member,
+  input: Publish,
+  ctx?: ExecutionContext,
+  expectedArtefactId?: string,
+) {
   checkMember(member, true)
   const {
     env: { DB: db, BLOBS: blobs },
@@ -705,6 +720,7 @@ export async function publish(runtime: Runtime, member: Member, input: Publish, 
   let artefact = await head(db, input.slug)
   for (let attempt = 0; ; attempt++) {
     const current = artefact?.revision ?? 0
+    if (expectedArtefactId !== undefined && expectedArtefactId !== artefact?.id) throw conflict(current)
     if (artefact && artefact.deletedAt !== null) {
       throw new ArtefactError('conflict', 'This slug belongs to a deleted artefact', {
         currentRevision: current,
@@ -876,7 +892,7 @@ export async function editFile(
     return '; charset=utf-8'
   })
   if (!hasCharset) type += '; charset=utf-8'
-  return publish(
+  return publishRevision(
     runtime,
     member,
     {
@@ -886,6 +902,7 @@ export async function editFile(
       expectedRevision: input.expectedRevision,
     },
     ctx,
+    artefact.id,
   )
 }
 

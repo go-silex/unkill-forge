@@ -160,6 +160,7 @@ it('merges, deletes and replaces atomically and audits the visibility change', a
 
 function withBucket(
   overrides: {
+    get?: R2Bucket['get']
     put?: (
       key: string,
       bytes: Uint8Array,
@@ -302,6 +303,56 @@ it('edits literal matches at the expected head; rejects stale, missing, repeated
   expect(await call('read_file', { slug, path: 'index.html' })).toMatchObject({
     revision: 3,
     text: '$& new $& new done',
+  })
+})
+
+it('refuses to apply an in-flight text edit to a replacement artefact at the same slug and revision', async () => {
+  const send = runtime()
+  const { call } = await bot(send)
+  const { member, core } = await coreAdmin()
+  const slug = 'edit-reused'
+  const input = { slug, mode: 'replace', files: [file('index.html', 'original')] }
+  await call('publish', input)
+  const entered = Promise.withResolvers<void>()
+  const resume = Promise.withResolvers<void>()
+  const paused = withBucket({
+    get: (async (key: string) => {
+      const object = await bucket.get(key)
+      entered.resolve()
+      await resume.promise
+      return object
+    }) as R2Bucket['get'],
+  })
+  const editing = call(
+    'edit_file',
+    { slug, path: 'index.html', oldText: 'original', newText: 'edited', expectedRevision: 1 },
+    paused,
+  )
+  await Promise.race([
+    entered.promise,
+    editing.then(() => {
+      throw new Error('Edit did not pause')
+    }),
+  ])
+  try {
+    expect(await call('rename_artefact', { slug, newSlug: 'edit-moved' })).toEqual({
+      url: `${read}/a/edit-moved/`,
+    })
+    await setRedirects(core, member, { add: [], remove: [`/a/${slug}/`, `/s/${slug}/`] })
+    expect(await call('publish', { ...input, files: [file('index.html', 'replacement')] })).toMatchObject({
+      revision: 1,
+    })
+  } finally {
+    resume.resolve()
+  }
+  expect(await editing).toMatchObject({ error: 'conflict', currentRevision: 1 })
+  expect(await call('read_file', { slug, path: 'index.html' })).toMatchObject({
+    revision: 1,
+    text: 'replacement',
+  })
+  expect(await call('read_file', { slug: 'edit-moved', path: 'index.html' })).toMatchObject({
+    revision: 1,
+    text: 'original',
   })
 })
 
@@ -1699,7 +1750,7 @@ it('lists revision history by cursor and rejects reads and restores outside rete
   ).toBe(4)
 })
 
-it('renames canonical and share paths directly across two renames without disclosing key validity', async () => {
+it('renames paths directly across two renames and only redirects an active share key of the target', async () => {
   const send = runtime()
   const { call } = await bot(send)
   const slug = 'rename-a'
@@ -1708,7 +1759,7 @@ it('renames canonical and share paths directly across two renames without disclo
     mode: 'replace',
     files: [file('index.html', 'entry'), file('docs/a b.txt', 'asset')],
   })
-  const { url: share } = await call('create_share_link', { slug })
+  const { id: shareId, url: share } = await call('create_share_link', { slug })
   expect(await call('rename_artefact', { slug, newSlug: 'rename-b' })).toEqual({
     url: `${read}/a/rename-b/`,
   })
@@ -1734,10 +1785,15 @@ it('renames canonical and share paths directly across two renames without disclo
     expect(target.status).toBe(200)
     expect(await target.text()).toBe('entry')
   }
-  const badKey = await send(`${read}/s/${slug}/not-a-valid-share-key/`)
-  expect(badKey.status).toBe(302)
-  expect(badKey.headers.get('location')).toBe('/s/rename-c/not-a-valid-share-key/')
-  expect((await send(`${read}${badKey.headers.get('location')}`)).status).toBe(404)
+  await call('revoke_share_link', { id: shareId })
+  const missing = await send(`${read}/missing`)
+  const body = await missing.text()
+  for (const url of [share, `${read}/s/${slug}/not-a-valid-share-key/`]) {
+    const denied = await send(url)
+    expect(denied.status).toBe(404)
+    expect([...denied.headers]).toEqual([...missing.headers])
+    expect(await denied.text()).toBe(body)
+  }
   expect(await call('publish', { slug, mode: 'replace', files: [file('index.html')] })).toMatchObject({
     error: 'conflict',
   })
