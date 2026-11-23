@@ -27,7 +27,7 @@ Non-goals:
 - Access control per page inside an artefact; assets shared across artefacts.
 - HTML or CSS rewriting; revision-pinned reads.
 - Preview image generation; built-in URL shorteners.
-- A local plugin, native binaries or a CLI. MCP is the programmatic interface (see §17 for a possible HTTP API).
+- A local plugin, native binaries, a CLI or an HTTP API. MCP is the programmatic interface (see §17).
 - Browser upload in the admin UI.
 - Trusted-proxy identity headers (`Cf-Access-Jwt-Assertion`, forward-auth): external managers connect over OIDC.
 - Linking several sign-in identities to one member.
@@ -140,7 +140,7 @@ Rules:
 - Slug: `^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$`. A slug is unavailable while a live artefact, a soft-deleted artefact or a redirect prefix uses it.
 - Path: relative POSIX path, ≤ 512 characters, no empty, `.` or `..` segment, no segment starting with `.`, no backslash or control character.
 - Retention: the last 20 revisions per artefact by default (configurable), so `files` stays bounded within D1's size limits.
-- Defaults (configurable): 1,000 files per artefact; 2 MB of inline content per MCP call; 100 MB per uploaded file.
+- Defaults (configurable): 1,000 files per artefact; 500 distinct new blob writes per publish; 2 MiB of decoded inline content per MCP call; 100 MB per uploaded file. Inline content is capped at 8 MiB; larger files must use uploads. The blob-write limit leaves room within the Workers subrequest budget and does not count hashes already referenced in D1. Split updates with more new blobs into several `merge` publishes.
 
 ## 6. Access model
 
@@ -193,14 +193,15 @@ Response headers:
 
 ## 8. Publishing semantics
 
-- **Atomic commit.** `publish` builds revision _n+1_ and commits it in one D1 batch: insert the `revisions` row, copy unchanged file rows with one `INSERT … SELECT`, insert new file rows, mark uploads consumed, move `current_revision`, append the audit row. The `revisions` primary key is the compare-and-set: if another publish already took _n+1_, the whole batch fails and nothing changes.
-- With `expectedRevision`, a mismatch returns `conflict` and the current revision. Without it, `merge` publishes retry on the new head (at most three times) and `replace` publishes overwrite the head.
-- `mode: "merge"` keeps unmentioned files; `mode: "replace"` makes the call the complete file list; `delete` removes listed paths.
-- A new artefact starts private at revision 1. Content types come from the extension unless supplied. The result returns the entry URL: `/a/<slug>/` when `index.html` exists, otherwise the first HTML file in path order.
+- **Atomic commit.** `publish` builds revision _n+1_ and commits it in one D1 batch: insert the `revisions` row, copy unchanged file rows with `INSERT … SELECT`, insert new file rows, mark uploads consumed, move `current_revision`, append the audit row. The `revisions` primary key is the compare-and-set: if another publish already took _n+1_, the whole batch fails and nothing changes.
+- With `expectedRevision`, a mismatch returns `conflict` and `currentRevision`. Use `0` to require a new slug. Without it, both modes retry on the new head at most three times. Concurrent creation of the same slug always gives one caller a `conflict`.
+- `mode: "merge"` keeps unmentioned files; `mode: "replace"` makes the call the complete file list. `delete` removes listed paths, which must exist at the head. The resulting revision must not be empty.
+- A new artefact starts private at revision 1. Its title defaults to the slug. Content types come from the extension unless supplied. The result returns the entry URL: `/a/<slug>/` when `index.html` exists, otherwise the first HTML file in path order or, if none, the first file in path order.
 - **Restore** creates a new revision from a retained one.
 - **Rename** moves the slug and creates redirects from `/a/<old>/` and `/s/<old>/` to the new prefixes; existing redirects that pointed at the old slug are retargeted, so chains never form. Share links keep working through the redirect.
 - **Delete** is soft for 30 days (admins can restore); a daily cron then purges the D1 rows.
 - **Blobs are append-only.** Nothing deletes them automatically: storage is cheap at team scale, and deleting while another publish reuses the same bytes would corrupt it. An admin **purge** hard-deletes an artefact, then deletes each blob no other file references, rechecked just before deletion. This is for content that must disappear, such as a leaked secret, and is documented as racing with a concurrent publish of identical bytes.
+- Republishing identical bytes does not restore a referenced R2 object deleted out of band: D1-based deduplication skips that write, and the missing blob is an operator incident.
 - The cron also expires login flows, sessions, uploads, handoffs, invites, old identity revocations and revisions beyond retention.
 - A reader who loads a page during a publish may get assets from two revisions. Accepted.
 
@@ -231,13 +232,13 @@ Gate 0 reserves the code's `grant_id` and `redeemed_at` in D1's `oauth_code_rede
 | Tool                | Input                                                                                                                                | Result                                                                                                                |
 | ------------------- | ------------------------------------------------------------------------------------------------------------------------------------ | --------------------------------------------------------------------------------------------------------------------- |
 | `whoami`            | —                                                                                                                                    | member, role, read and manage URLs                                                                                    |
-| `list_artefacts`    | `query?`, `cursor?`                                                                                                                  | slug, title, visibility, revision, updated                                                                            |
-| `get_artefact`      | `slug`, `cursor?`                                                                                                                    | metadata, current revision, a page of files (path, size, type), URL, share links without keys                         |
+| `list_artefacts`    | `query?`, `cursor?`                                                                                                                  | slug, title, visibility, revision, updated, `nextCursor` when more results exist                                      |
+| `get_artefact`      | `slug`, `cursor?`                                                                                                                    | metadata, current revision, a page of files (path, size, type), URL, share links without keys, `nextCursor` if more   |
 | `read_file`         | `slug`, `path`, `revision?`, `offset?`, `limit?`                                                                                     | revision read, total length, a text slice (default 40,000, max 100,000 characters); binary files return metadata only |
 | `publish`           | `slug`, `title?`, `files[]` (`{path, content, encoding?}` or `{path, uploadId}`), `mode`, `delete?`, `expectedRevision?`, `message?` | entry URL, revision                                                                                                   |
 | `edit_file`         | `slug`, `path`, `oldText`, `newText`, `expectedRevision` (required), `replaceAll?`                                                   | new revision; fails unless exactly one match (or `replaceAll`)                                                        |
 | `create_uploads`    | `slug`, `files[]` (`path`, `size`, `sha256`, `contentType?`)                                                                         | per file: `uploadId` and a single-use `PUT` URL valid 15 min, or "already stored" when the blob exists                |
-| `set_visibility`    | `slug`, `visibility`                                                                                                                 | —                                                                                                                     |
+| `set_visibility`    | `slug`, `visibility`                                                                                                                 | `{visibility}`                                                                                                        |
 | `create_share_link` | `slug`, `label?`, `key?` (admin only)                                                                                                | share URL, in full                                                                                                    |
 | `list_share_links`  | `slug`                                                                                                                               | id, label, created, last used                                                                                         |
 | `get_share_link`    | `id`                                                                                                                                 | share URL, to copy it again                                                                                           |
@@ -250,6 +251,11 @@ Gate 0 reserves the code's `grant_id` and `redeemed_at` in D1's `oauth_code_rede
 
 - Tool descriptions are written for agents: when to use the tool, what it changes, what to tell the user.
 - Results are compact JSON text. Errors use stable codes: `not_found`, `forbidden`, `conflict`, `invalid_input`, `too_large`.
+- Send one JSON-RPC message per request; batches return `invalid_request`. Initialization never negotiates a version older than `2025-06-18`: older requests receive the latest supported version.
+- The JSON request envelope is limited to `MAX_REQUEST_BYTES = ceil(MAX_INLINE_BYTES × 4/3) + 512 KiB` (derived, not a separate setting), 64,000 JSON values and 32 levels of object/array nesting. Exceeding any envelope limit returns HTTP 413 with JSON-RPC `data.error: "too_large"`. `publish` must fit both this envelope and the decoded inline byte limit; use uploads for large binaries or heavily escaped text that will not fit. `edit_file` shares the envelope, including its combined `oldText` and `newText` plus JSON overhead.
+- `publish` limits `title` to 200 characters and `message` to 1,000; `list_artefacts` limits `query` to 200. Oversized metadata and lone surrogates in inline UTF-8 or `edit_file` text return `invalid_input`.
+- `list_artefacts` returns up to 50 results per page ordered by most recently updated. `get_artefact` returns up to 200 files per page ordered by path. If the head changes between file pages, restart the listing at the new head.
+- `read_file` counts Unicode code points for slicing. Non-UTF-8 content and text files above 8 MiB return metadata only, with a reason. `edit_file` uses the same text decoding cap and refuses files above `MAX_INLINE_BYTES`. More than 10,000 matches returns `invalid_input` with `matches: 10001`, a lower bound; use `publish` for that change.
 - Members, bots and invites are managed in the admin UI, not over MCP.
 
 **Uploads.** `create_uploads` returns capability URLs on the manage host, `PUT /upload/<token>`. They serve shells that cannot hold the OAuth token.
@@ -328,18 +334,20 @@ On **Members**, admins choose a role and create an invite link, valid for seven 
 | Secrets  | `FORGE_SEAL_KEY`, `FORGE_COOKIE_KEY`, one `AUTH_<ID>_CLIENT_SECRET` per provider                                                                                                                                                       |
 | Bindings | `DB` (D1), `BLOBS` (R2), `OAUTH_KV` (KV), optional rate-limit binding                                                                                                                                                                  |
 
+The publish limits are positive integers: `MAX_FILES_PER_ARTEFACT` (default `1000`, up to `10000`, applied to the resulting revision), `MAX_BLOB_WRITES_PER_CALL` (default `500`, up to `900` to stay within the Workers subrequest budget), and `MAX_INLINE_BYTES` (default `2097152`, up to `8388608`, summed decoded bytes per call). Each of the `files` and `delete` arrays is independently capped at 10,000 entries.
+
 - Configuration is parsed once. Any invalid value makes every request answer 503 and logs the list of errors.
 - **Branding** is data: name, logo, favicon, colours and landing text, from configuration and `brand/`. Page structure, sign-in and consent markup belong to Forge, so forks merge upstream without touching security-relevant templates.
 
 Deployment needs a Cloudflare zone for the two hostnames, plus at least one identity provider. Order:
 
 1. Register Forge as a client of each provider. The callback is `https://<manage>/login/<id>/callback`; for OIDC managers that support it, the back-channel logout URI is `https://<manage>/login/<id>/backchannel-logout`.
-2. For Gate 0, create D1 and KV first. Clone → `npm ci` → configure origins, providers and binding IDs → set secrets → `npm run deploy`. The script applies migrations and deploys; it does not provision resources.
+2. Create D1, R2 and KV first. Clone → `npm ci` → configure origins, providers and bindings → set secrets → `npm run deploy`. The script applies migrations and deploys; it does not provision resources.
    The `0002_oauth_code_redemption.sql` migration upgrades databases that already applied `0001_init.sql`, including those where the redemption table was manually added.
 3. Attach the two custom domains.
 4. Sign in with an `ADMIN_EMAILS` address.
 
-Database migrations are additive and must keep the previous Worker working; `INSERT` statements always name their columns.
+Database migrations are additive and must keep the previous Worker working; `INSERT` statements always name their columns. Any degraded behaviour of the previous Worker during the rollout window is listed in the README upgrade steps.
 
 Operators who keep their configuration private run `npm run deploy -- --config <path>` with a file outside the repository. Workers Free is enough for light use; Workers Paid is recommended for large publishes (CPU time).
 
@@ -402,8 +410,8 @@ Known limits, stated in `docs/security.md`:
 | C10 | A script on the read origin cannot change anything on the manage host; a handoff code or login flow redeemed in another browser does not create a session.                                                                                                                     |
 | C11 | The repository holds no instance data or migration tooling; the runtime line count is reported in the README.                                                                                                                                                                  |
 
-## 17. Open questions
+## 17. Decisions
 
-1. **HTTP API for autonomous agents.** Proposal: none in v2.0. Hermes already speaks remote MCP over Streamable HTTP with configured headers, so an API token on `/mcp` covers it; a REST API would duplicate every tool. Revisit if an agent framework without MCP must publish.
-2. Default revision retention (20 proposed).
-3. Public index on the read host: on or off by default.
+1. **No HTTP API in v2.0.** Autonomous agents use `/mcp` over Streamable HTTP with an API token.
+2. **Revision retention:** 20 revisions per artefact by default, configurable.
+3. **Public index:** off by default (`PUBLIC_INDEX=false`).

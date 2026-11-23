@@ -26,5 +26,6 @@
       "migrations_dir": "migrations"
     }
   ],
+  "r2_buckets": [{ "binding": "BLOBS", "bucket_name": "replace-with-r2-bucket-name" }],
   "kv_namespaces": [{ "binding": "OAUTH_KV", "id": "replace-with-kv-id" }]
 }

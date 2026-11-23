@@ -52,6 +52,18 @@ const providersSchema = z
   )
   .min(1)
 
+const positiveInt = z
+  .union([
+    z.number(),
+    z
+      .string()
+      .regex(/^[0-9]+$/)
+      .transform(Number),
+  ])
+  .pipe(z.int().positive())
+
+export const MAX_ARTEFACT_FILES = 10_000
+
 const vars = z
   .object({
     FORGE_NAME: z.string().trim().min(1),
@@ -67,9 +79,18 @@ const vars = z
       .default('false')
       .transform((value) => value === 'true'),
     FORGE_COOKIE_KEY: z.string().min(32),
+    MAX_FILES_PER_ARTEFACT: positiveInt.pipe(z.int().max(MAX_ARTEFACT_FILES)).default(1_000),
+    MAX_BLOB_WRITES_PER_CALL: positiveInt.pipe(z.int().max(900)).default(500),
+    MAX_INLINE_BYTES: positiveInt.pipe(z.int().max(8 * 1024 * 1024)).default(2_097_152),
     DB: z.custom<D1Database>(
       (value) => typeof (value as D1Database | undefined)?.prepare === 'function',
       'Missing D1 binding',
+    ),
+    BLOBS: z.custom<R2Bucket>(
+      (value) =>
+        typeof (value as R2Bucket | undefined)?.get === 'function' &&
+        typeof (value as R2Bucket | undefined)?.put === 'function',
+      'Missing R2 binding',
     ),
     OAUTH_KV: z.custom<KVNamespace>(
       (value) => typeof (value as KVNamespace | undefined)?.get === 'function',
@@ -83,7 +104,7 @@ const vars = z
 
 type ProviderVars = z.output<typeof providersSchema>[number]
 export type Provider = ProviderVars & { clientSecret: string }
-export type Env = Record<string, unknown> & { DB: D1Database; OAUTH_KV: KVNamespace }
+export type Env = Record<string, unknown> & { DB: D1Database; BLOBS: R2Bucket; OAUTH_KV: KVNamespace }
 export type Config = {
   name: string
   readOrigin: string
@@ -93,6 +114,9 @@ export type Config = {
   cookieKey: string
   mcpAllowedOrigins: string[]
   allowDcr: boolean
+  maxFilesPerArtefact: number
+  maxBlobWritesPerCall: number
+  maxInlineBytes: number
 }
 export type Runtime = { config: Config; env: Env }
 
@@ -132,6 +156,9 @@ export function configuration(env: Env): Config | null {
         cookieKey: value.FORGE_COOKIE_KEY,
         mcpAllowedOrigins: value.MCP_ALLOWED_ORIGINS,
         allowDcr: value.ALLOW_DCR,
+        maxFilesPerArtefact: value.MAX_FILES_PER_ARTEFACT,
+        maxBlobWritesPerCall: value.MAX_BLOB_WRITES_PER_CALL,
+        maxInlineBytes: value.MAX_INLINE_BYTES,
       }
   }
   cache.set(env, config)
