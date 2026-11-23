@@ -122,9 +122,9 @@ wrangler.jsonc    template without account identifiers
 | `files`                | (`artefact_id`, `revision`, `path`) PK, `sha256`, `size`, `content_type`                                                                                                                       |
 | `share_links`          | `id` PK, `artefact_id`, `label`, `key_hash` UNIQUE, `key_sealed`, `created_by`, `created_at`, `revoked_at`, `last_used_at`                                                                     |
 | `api_tokens`           | `id` PK, `member_id`, `name`, `prefix`, `token_hash` UNIQUE, `created_at`, `last_used_at`, `revoked_at`                                                                                        |
-| `uploads`              | `token_hash` PK, `member_id`, `slug`, `path`, `sha256`, `size`, `content_type`, `state` ∈ pending/stored/consumed, `expires_at`                                                                |
+| `uploads`              | `token_hash` PK, `upload_id` UNIQUE, `member_id`, `member_generation`, `slug`, `path`, `sha256`, `size`, `content_type`, `state`, `expires_at`, `created_at`                                   |
 | `handoffs`             | `code_hash` PK, `session_id_hash`, `state_hash`, `return_path`, `expires_at`                                                                                                                   |
-| `redirects`            | `from_prefix` PK, `to_prefix`, `created_at`                                                                                                                                                    |
+| `redirects`            | `from_prefix` PK, `source_slug`, `target_artefact_id` FK, `target_path` (encoded suffix), `created_at`, `created_by`                                                                           |
 | `audit_log`            | `id`, `at`, `member_id`, `action`, `artefact_id`, `detail_json`                                                                                                                                |
 
 Indexes:
@@ -133,11 +133,15 @@ Indexes:
 - `sessions(member_id)`, `sessions(provider, subject)`, `sessions(provider, sid)`, `identity_revocations(provider, subject)`;
 - `api_tokens(member_id)`, `audit_log(artefact_id, at)`;
 - `expires_at` on `login_flows`, `invites`, `uploads`, `handoffs`.
+- `redirects(from_prefix)` for exact probes of the URL's slash-delimited prefixes, `redirects(source_slug)` for slug reservations, `redirects(target_artefact_id)` for cascading removal;
+- `uploads(sha256, expires_at)` for stored-upload references to blobs.
+
+`artefact_purges` reserves a slug and tracks the purge by stable artefact ID; `purge_candidates` holds its candidate hashes. `blob_purge_claims` holds the exclusive delete claim per hash, and `blob_purge_epoch` advances when claims start or finish.
 
 Rules:
 
 - Blobs live at `blobs/<sha256>` in R2, written with R2's SHA-256 check and never overwritten. A new revision reuses existing blobs for unchanged files: no byte copy.
-- Slug: `^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$`. A slug is unavailable while a live artefact, a soft-deleted artefact or a redirect prefix uses it.
+- Slug: `^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$`. A slug is unavailable while a live artefact, a soft-deleted artefact, a redirect prefix or an unfinished purge uses it.
 - Path: relative POSIX path, ≤ 512 characters, no empty, `.` or `..` segment, no segment starting with `.`, no backslash or control character.
 - Retention: the last 20 revisions per artefact by default (configurable), so `files` stays bounded within D1's size limits.
 - Defaults (configurable): 1,000 files per artefact; 500 distinct new blob writes per publish; 2 MiB of decoded inline content per MCP call; 100 MB per uploaded file. Inline content is capped at 8 MiB; larger files must use uploads. The blob-write limit leaves room within the Workers subrequest budget and does not count hashes already referenced in D1. Split updates with more new blobs into several `merge` publishes.
@@ -171,7 +175,7 @@ Resolution order for a request:
 2. `/a/<slug>/<path>` where `slug` is a live artefact → apply canonical access, then resolve `path`, `path/index.html`, `path.html` in the current revision. A denied reader gets the access response whether or not the file exists. If the directory index wins and the path has no trailing slash, return 301 to the slash form with the query string preserved.
 3. `/s/<slug>/<key>` and `/s/<slug>/<key>/<path>` → check that the key belongs to an active link of a live artefact. After the check, redirect the bare URL to its trailing slash with 301, or apply the same path resolution as `/a/`, including the directory-index redirect. The stable root `/s/<slug>/<key>/` serves the root `index.html` if present; otherwise it temporarily redirects (302) to the current revision's entry file within the share prefix. Redirects preserve the query string. Relative subresources stay under the share prefix without a cookie. Successful file resolutions trigger a best-effort `last_used_at` update at most once per minute per link.
 4. `POST /_forge/session` → end of the login handoff.
-5. Otherwise, the longest matching `redirects.from_prefix` → 302 to the target with the remaining path. Redirects never shadow a live artefact.
+5. Otherwise, for a missing canonical or share slug, the longest matching `redirects.from_prefix` → 302 to the target with the remaining encoded path and query string appended. Redirects never shadow a live or soft-deleted slug. A deleted target returns the standard 404 without trying shorter prefixes. A private canonical target requires the normal canonical access check before the 302; login returns to the original alias. A share alias redirects any syntactically valid key without checking it; the target applies the normal share authorization and returns 404 if the key is not authorized. All alias responses use `private, no-store` and no `ETag`.
 6. `/` → when `PUBLIC_INDEX=true`, list the newest 200 public artefacts by creation time; otherwise show the branded landing page.
 7. Anything else → 404.
 
@@ -193,16 +197,17 @@ Response headers:
 
 ## 8. Publishing semantics
 
-- **Atomic commit.** `publish` builds revision _n+1_ and commits it in one D1 batch: insert the `revisions` row, copy unchanged file rows with `INSERT … SELECT`, insert new file rows, mark uploads consumed, move `current_revision`, append the audit row. The `revisions` primary key is the compare-and-set: if another publish already took _n+1_, the whole batch fails and nothing changes.
+- **Atomic commit.** `publish` commits revision _n+1_ in one D1 batch: compare-and-set the live artefact ID, slug and head; insert the `revisions` row, copy unchanged file rows with `INSERT … SELECT`, insert new file rows, mark uploads consumed, move `current_revision`, append the audit row and prune expired revisions. A failed guard rolls back the whole batch.
 - With `expectedRevision`, a mismatch returns `conflict` and `currentRevision`. Use `0` to require a new slug. Without it, both modes retry on the new head at most three times. Concurrent creation of the same slug always gives one caller a `conflict`.
 - `mode: "merge"` keeps unmentioned files; `mode: "replace"` makes the call the complete file list. `delete` removes listed paths, which must exist at the head. The resulting revision must not be empty.
 - A new artefact starts private at revision 1. Its title defaults to the slug. Content types come from the extension unless supplied. The result returns the entry URL: `/a/<slug>/` when `index.html` exists, otherwise the first file with base media type `text/html` in path order or, if none, the first file in path order. `publish` computes the entry in the revision commit and caches it after the commit. Revisions with a missing cached entry compute it on demand. A cache write failure is logged and never prevents delivery or publishing.
-- **Restore** creates a new revision from a retained one.
-- **Rename** moves the slug and creates redirects from `/a/<old>/` and `/s/<old>/` to the new prefixes; existing redirects that pointed at the old slug are retargeted, so chains never form. Share links keep working through the redirect.
-- **Delete** is soft for 30 days (admins can restore); a daily cron then purges the D1 rows.
-- **Blobs are append-only.** Nothing deletes them automatically: storage is cheap at team scale, and deleting while another publish reuses the same bytes would corrupt it. An admin **purge** hard-deletes an artefact, then deletes each blob no other file references, rechecked just before deletion. This is for content that must disappear, such as a leaked secret, and is documented as racing with a concurrent publish of identical bytes.
+- **Restore** uses the same compare-and-set and entry selection to create a new revision from the files in a retained revision, without copying or rewriting R2 bytes. The currently attached artefact title, visibility and share links are unchanged.
+- **Rename** compares and sets the slug and creates redirects from `/a/<old>/` and `/s/<old>/` in the same transaction. Redirects point to artefact IDs, so prior aliases resolve straight to the current slug. Share keys remain unchanged. Rename replaces redirects at the old roots; a manually configured longer canonical prefix can still take precedence.
+- **Delete** hides the artefact and all aliases immediately. An admin can restore the artefact for 30 days unless explicit purge has started. The slug remains reserved; the daily D1-only cleanup is wired in issue #11.
+- **Blobs are append-only except for explicit admin purge.** Admin purge requires a soft-deleted artefact and stages candidate hashes while removing D1 file rows in chunks. After hard-deleting the artefact, it claims each remaining hash only if there are no file rows or unexpired `stored` uploads referencing it. D1 rejects new references while a claim is active, and stale inline storage or upload verification cannot commit across a claim boundary. The core call takes a stable artefact ID and is repeated until `done`. Purge cannot identify blobs whose last artefact association was previously removed by retention.
+- Verification copies under `upload-verification/` are not artefact blobs and are outside admin purge. The Worker normally deletes them immediately; an interrupted verification can leave a copy that expires after one day under the required R2 bucket lifecycle rule. Physical deletion is asynchronous and typically occurs within a further 24 hours.
 - Republishing identical bytes does not restore a referenced R2 object deleted out of band: D1-based deduplication skips that write, and the missing blob is an operator incident.
-- The cron also expires login flows, sessions, uploads, handoffs, invites, old identity revocations and revisions beyond retention.
+- Live writes prune up to two expired revisions per commit; revision reads, listing and restore enforce the retention cutoff immediately. Issue #11's cron expires login flows, sessions, uploads, handoffs, invites, old identity revocations and any remaining revisions beyond retention.
 - A reader who loads a page during a publish may get assets from two revisions. Accepted.
 
 ## 9. MCP server
@@ -237,17 +242,17 @@ Gate 0 reserves the code's `grant_id` and `redeemed_at` in D1's `oauth_code_rede
 | `read_file`         | `slug`, `path`, `revision?`, `offset?`, `limit?`                                                                                     | revision read, total length, a text slice (default 40,000, max 100,000 characters); binary files return metadata only |
 | `publish`           | `slug`, `title?`, `files[]` (`{path, content, encoding?}` or `{path, uploadId}`), `mode`, `delete?`, `expectedRevision?`, `message?` | entry URL, revision                                                                                                   |
 | `edit_file`         | `slug`, `path`, `oldText`, `newText`, `expectedRevision` (required), `replaceAll?`                                                   | new revision; fails unless exactly one match (or `replaceAll`)                                                        |
-| `create_uploads`    | `slug`, `files[]` (`path`, `size`, `sha256`, `contentType?`)                                                                         | per file: `uploadId` and a single-use `PUT` URL valid 15 min, or "already stored" when the blob exists                |
+| `create_uploads`    | `slug`, `files[]` (`path`, `size`, `sha256`, `contentType?`)                                                                         | `{files: [{path, uploadId, url}]}`; a file with a referenced hash has `alreadyStored: true` instead of `url`          |
 | `set_visibility`    | `slug`, `visibility`                                                                                                                 | `{visibility}`                                                                                                        |
 | `create_share_link` | `slug`, `label?` (up to 200 characters), `key?` (admin only)                                                                         | `{id, url}` with the full share URL                                                                                   |
 | `list_share_links`  | `slug`                                                                                                                               | `{shareLinks}` with active links' `id`, `label`, `createdAt`, `lastUsedAt`, no keys                                   |
 | `get_share_link`    | `id`                                                                                                                                 | `{url}` with the full active share URL, to copy it again                                                              |
 | `revoke_share_link` | `id`                                                                                                                                 | —                                                                                                                     |
-| `list_revisions`    | `slug`                                                                                                                               | number, author, date, message                                                                                         |
+| `list_revisions`    | `slug`, `cursor?`                                                                                                                    | `{revisions, nextCursor?}`, newest first (number, author member ID, `createdAt`, message)                             |
 | `restore_revision`  | `slug`, `revision`                                                                                                                   | new revision                                                                                                          |
 | `rename_artefact`   | `slug`, `newSlug`                                                                                                                    | new URL                                                                                                               |
 | `delete_artefact`   | `slug`                                                                                                                               | —                                                                                                                     |
-| `set_redirects`     | `add[]`, `remove[]` (admin only)                                                                                                     | —                                                                                                                     |
+| `set_redirects`     | `add[]` (`{fromPrefix, toPrefix}`), `remove[]` (source prefixes); admin only                                                         | —                                                                                                                     |
 
 - Tool descriptions are written for agents: when to use the tool, what it changes, what to tell the user.
 - Results are compact JSON text. Errors use stable codes: `not_found`, `forbidden`, `conflict`, `invalid_input`, `too_large`.
@@ -255,17 +260,20 @@ Gate 0 reserves the code's `grant_id` and `redeemed_at` in D1's `oauth_code_rede
 - The JSON request envelope is limited to `MAX_REQUEST_BYTES = ceil(MAX_INLINE_BYTES × 4/3) + 512 KiB` (derived, not a separate setting), 64,000 JSON values and 32 levels of object/array nesting. Exceeding any envelope limit returns HTTP 413 with JSON-RPC `data.error: "too_large"`. `publish` must fit both this envelope and the decoded inline byte limit; use uploads for large binaries or heavily escaped text that will not fit. `edit_file` shares the envelope, including its combined `oldText` and `newText` plus JSON overhead.
 - `publish` limits `title` to 200 characters and `message` to 1,000; `list_artefacts` limits `query` to 200. Oversized metadata and lone surrogates in inline UTF-8 or `edit_file` text return `invalid_input`.
 - `list_artefacts` returns up to 50 results per page ordered by most recently updated. `get_artefact` returns up to 200 files per page ordered by path. If the head changes between file pages, restart the listing at the new head.
-- `read_file` counts Unicode code points for slicing. Non-UTF-8 content and text files above 8 MiB return metadata only, with a reason. `edit_file` uses the same text decoding cap and refuses files above `MAX_INLINE_BYTES`. More than 10,000 matches returns `invalid_input` with `matches: 10001`, a lower bound; use `publish` for that change.
+- `read_file` counts Unicode code points for slicing. Non-UTF-8 content and text files above 8 MiB return metadata only, with a reason. `edit_file` uses the same text decoding cap and refuses files above `MAX_INLINE_BYTES`. It writes UTF-8 and sets `charset=utf-8` on every edited file while retaining other media type parameters. More than 10,000 matches returns `invalid_input` with `matches: 10001`, a lower bound; use `publish` for that change.
 - Publishers and admins may manage share links on any live artefact. `get_artefact` exposes the same keyless metadata as `list_share_links`. Create and get are the only tools that disclose the bearer URL. Revoked links no longer appear in lists, cannot be revealed, and return `not_found` for repeated revocation.
 - An artefact may have up to 100 active share links; creating another returns `too_large`. Revocation frees a slot.
-- Members, bots and invites are managed in the admin UI, not over MCP.
+- `list_revisions` returns up to 20 retained revisions per page. `set_redirects` accepts up to 50 entries in each array and atomically upserts additions and removes the requested prefixes; targets must be live artefacts. Both prefixes must be slash-terminated, same-namespace read-host paths with different slugs. Canonical prefixes may include URL-encoded directories; share prefixes may contain only `/s/<slug>/`, never a key.
+- Members, bots, invites, restoration of deleted artefacts and hard purge are admin UI operations, not MCP tools.
 
 **Uploads.** `create_uploads` returns capability URLs on the manage host, `PUT /upload/<token>`. They serve shells that cannot hold the OAuth token.
 
-- The token is 256 random bits, stored hashed, bound to member, slug, path, size and SHA-256, valid 15 minutes.
-- The first `PUT` atomically moves the upload from `pending` to receiving; the Worker streams the body to R2 with the declared SHA-256 and marks it `stored`. Any other `PUT` is refused.
-- `publish` accepts only `stored` uploads of the same member, slug and path, and marks them `consumed` in its commit batch.
-- A local folder is published in three steps: `create_uploads` → a shell loop of `curl -T` → `publish`. `docs/mcp.md` gives the recipe.
+- An active publisher or admin submits one slug and up to `MAX_BLOB_WRITES_PER_CALL` distinct paths. Sizes are byte counts (zero is allowed), bounded by `MAX_UPLOAD_BYTES`; SHA-256 is 64 lowercase hex digits. An explicit `contentType` overrides the inferred type and must be a media type with optional parameters, at most 255 ASCII characters. Bad declarations return `invalid_input`, exceeding the limits returns `too_large`, and viewers receive `forbidden`.
+- The URL is a 15-minute capability: a 256-bit random token stored only as a hash, bound to the issuer's membership generation, slug, path, size and SHA-256. `uploadId` is a separate, non-secret identifier. A hash already referenced in D1 returns a stored upload ID with `alreadyStored: true`; skip the PUT.
+- PUT requires a decimal `Content-Length` equal to the declared size and uses neither cookies nor OAuth. The read origin is refused and no CORS allowances are sent. The first PUT atomically claims the capability only while the issuer is an active publisher or admin at the original generation. A successful PUT returns empty `204` after streaming and verifying the byte count and SHA-256. Unknown, expired, revoked and already-claimed URLs return `404`; missing length returns `411`, a wrong length `400`, and a checksum mismatch `422`. Concurrent blob creation after the existence check or a conflicting R2 object returns `409`; request a fresh capability. A failed attempt is terminal.
+- `publish` accepts `{path, uploadId}` only for the same member, slug and path, within one hour of storage (or of issuance for `alreadyStored`). Other IDs return `not_found`. The revision and upload consumption commit together, so a failed publish does not consume the upload. Uploaded files count toward the revision file limit but not the inline-byte or blob-write limits.
+- An audit event records each issuance and each successful PUT, with member, slug, path, size and SHA-256 but never the capability token or URL.
+- To publish from a shell: call `create_uploads`, use `curl -T` for each `url`, then pass the returned paths and IDs to `publish`.
 
 ## 10. Sign-in and accounts
 
@@ -337,6 +345,10 @@ On **Members**, admins choose a role and create an invite link, valid for seven 
 | Bindings | `DB` (D1), `BLOBS` (R2), `OAUTH_KV` (KV), optional rate-limit binding                                                                                                                                                                                     |
 
 The publish limits are positive integers: `MAX_FILES_PER_ARTEFACT` (default `1000`, up to `10000`, applied to the resulting revision), `MAX_BLOB_WRITES_PER_CALL` (default `500`, up to `900` to stay within the Workers subrequest budget), and `MAX_INLINE_BYTES` (default `2097152`, up to `8388608`, summed decoded bytes per call). Each of the `files` and `delete` arrays is independently capped at 10,000 entries.
+
+`MAX_UPLOAD_BYTES` is a positive integer with a default and hard ceiling of `100000000` (100 MB), the Workers Free request-size limit. Set a smaller value to reduce the maximum per-file upload size.
+
+`REVISION_RETENTION` defaults to `20` and accepts positive integers up to `100`.
 
 - Configuration is parsed once. Any invalid value makes every request answer 503 and logs the list of errors.
 - **Branding** is data: name, logo, favicon, colours and landing text, from configuration and `brand/`. Page structure, sign-in and consent markup belong to Forge, so forks merge upstream without touching security-relevant templates.
@@ -421,10 +433,20 @@ Known limits, stated in `docs/security.md`:
 5. **Pending readers:** a pending session can complete handoff to display the read-host pending page. Access is checked against live membership on every private request.
 6. **OIDC freshness:** stale private navigations use manage's silent revalidation; stale subresources return an empty, non-cacheable 401, and stale handoff redemptions do not restart the flow.
 7. **HTTP ranges:** single byte ranges are supported; unsupported units, malformed and multipart ranges fall back to the whole response.
-8. **Share-link management:** publishers may create, list, reveal and revoke links for any live artefact; only admins may import keys.
-9. **Share-link revocation:** revoked links are excluded from metadata and reveal; their hashes stay reserved to prevent reactivating the URL by reusing its key.
-10. **Share-link use tracking:** resolve a file before recording use, then throttle with a conditional D1 update once per minute. A failed tracking update never fails file delivery.
-11. **Share entry URLs:** create and reveal always return the stable share root. When a revision has no root index, a temporary redirect opens its current entry file without changing the share URL.
-12. **Directory URLs:** after access is checked, redirect directory-index fallback to the trailing-slash path so browsers load relative assets beside the index.
-13. **Share-link limit:** allow at most 100 active links per artefact; revoked links do not count toward the limit.
-14. **Revision entries:** cache the chosen entry path on the immutable revision to avoid rescanning its files on reads. Persist the cache best-effort; a failed write does not discard the computed entry or roll back a publish.
+8. **Upload validity:** capability URLs expire after 15 minutes; a stored upload has one hour to be published. The Worker samples its clock before the relevant D1 call. A PUT interrupted before finalization stays in `receiving`; the URL cannot be retried.
+9. **Upload deduplication:** under the trusted-member model, a known hash can reuse bytes of a soft-deleted artefact or retained revision still referenced in D1. An existing R2 object with matching checksum and size can also be reused, but the Worker still verifies the current PUT with an isolated temporary R2 write before acknowledging it; it deletes the temporary key without touching the incumbent.
+10. **Upload cleanup:** issue #11 expires upload rows; it does not garbage-collect blobs.
+11. **Verification copy retention:** fresh and upgraded deployments must configure one-day expiry on `upload-verification/`. An interrupted verification can leave a copy until that expiry and subsequent asynchronous R2 deletion; admin purge does not remove it.
+12. **Share-link management:** publishers may create, list, reveal and revoke links for any live artefact; only admins may import keys.
+13. **Share-link revocation:** revoked links are excluded from metadata and reveal; their hashes stay reserved to prevent reactivating the URL by reusing its key.
+14. **Share-link use tracking:** resolve a file before recording use, then throttle with a conditional D1 update once per minute. A failed tracking update never fails file delivery.
+15. **Share entry URLs:** create and reveal always return the stable share root. When a revision has no root index, a temporary redirect opens its current entry file without changing the share URL.
+16. **Directory URLs:** after access is checked, redirect directory-index fallback to the trailing-slash path so browsers load relative assets beside the index.
+17. **Share-link limit:** allow at most 100 active links per artefact; revoked links do not count toward the limit.
+18. **Revision entries:** cache the chosen entry path on the immutable revision to avoid rescanning its files on reads. Persist the cache best-effort; a failed write does not discard the computed entry or roll back a publish.
+19. **Rename and alias identity:** redirect targets use stable artefact IDs, not another redirect URL; slug checks reserve aliases and incomplete purges, and live slugs always win.
+20. **Alias privacy:** canonical aliases use the target's access policy without disclosing its slug before access; share aliases forward syntactically valid keys without distinguishing valid from invalid or revoked keys. Alias redirects are uncacheable.
+21. **Revision pruning:** keep the configured tail visible immediately and prune up to two outdated revisions per commit; leave catch-up and time-based D1 cleanup to issue #11.
+22. **Bounded admin purge:** process at most 256 D1 file rows and 64 candidate hashes per call; resume by artefact ID. Automatic expiry in issue #11 removes only D1 metadata, never R2 blobs.
+23. **Blob purge fence:** atomically claim unreferenced hashes before R2 deletion; the reference check includes unexpired stored uploads. Claim acquisition and release advance a D1 epoch; overlapping inline writes and verifying uploads, even unrelated ones, may return a retryable conflict. The `alreadyStored` shortcut rechecks the source reference in its insert transaction.
+24. **Unknown purge outcome:** if deletion or claim release fails without confirmation, the affected hashes stay fenced. Once the operator has established that the original R2 delete is no longer in flight, clear only its claims and advance the epoch in the same D1 transaction; keep the candidates so the next call retries deletion. Do not purge during mixed-version rollout or roll back to an unfenced Worker.

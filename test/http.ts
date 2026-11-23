@@ -36,8 +36,8 @@ export const jsonHeaders = { 'content-type': 'application/json' }
 const bindings = env as typeof env & { TEST_MIGRATIONS: D1Migration[]; DB: D1Database }
 
 export type Handle = (path: string | URL, init?: RequestInit) => Promise<Response>
-export function runtime(overrides: Partial<Env> = {}): Handle {
-  const configured = {
+export function configuredEnv(overrides: Partial<Env> = {}): Env {
+  return {
     ...env,
     FORGE_NAME: 'Gate 0 Test Forge',
     READ_ORIGIN: read,
@@ -51,6 +51,10 @@ export function runtime(overrides: Partial<Env> = {}): Handle {
     FORGE_SEAL_KEY: base64url.encode(new Uint8Array(32).fill(29)),
     ...overrides,
   } as Env
+}
+
+export function runtime(overrides: Partial<Env> = {}): Handle {
+  const configured = configuredEnv(overrides)
   return async (path, init) => {
     const ctx = createExecutionContext()
     const response = await worker.fetch(new Request(new URL(path, manage), init), configured, ctx)

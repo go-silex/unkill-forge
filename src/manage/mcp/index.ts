@@ -19,17 +19,25 @@ import {
   ArtefactError,
   checkPublishArrayLengths,
   createShareLink,
+  deleteArtefact,
   editFile,
   getArtefact,
   getShareLink,
   listArtefacts,
+  listRevisions,
   listShareLinks,
   publish,
   readFile,
+  redirectBatchLimit,
+  renameArtefact,
+  restoreRevision,
   revokeShareLink,
+  setRedirects,
   setVisibility,
 } from '../../core/artefacts'
+import { maxRedirectPrefix } from '../../core/read-path'
 import { shareKeyMax, shareKeyMin } from '../../core/share-keys'
+import { checkUploadCount, createUploads } from '../../core/uploads'
 
 function result(value: Record<string, unknown>, isError = false) {
   return {
@@ -81,6 +89,26 @@ const inlineFile = z.strictObject({
   path,
   content: z.string(),
   encoding: z.enum(['utf8', 'base64']).optional().describe('Defaults to utf8'),
+})
+const uploadFile = z.strictObject({ path, uploadId: z.uuid() })
+const uploadRequest = z.strictObject({
+  path: path.max(1024),
+  size: z.int().nonnegative(),
+  sha256: z
+    .string()
+    .length(64)
+    .regex(/^[a-f0-9]+$/),
+  contentType: z
+    .string()
+    .max(255)
+    .pipe(
+      z
+        .string()
+        .regex(
+          /^[!#$%&'*+.^_`|~\w-]+\/[!#$%&'*+.^_`|~\w-]+(?:[ \t]*;[ \t]*[!#$%&'*+.^_`|~\w-]+=(?:[!#$%&'*+.^_`|~\w-]+|"(?:[\t !#-[\]-~]|\\[\t -~])*"))*$/,
+        ),
+    )
+    .optional(),
 })
 
 function requestError(status: number, code: ErrorCode, message: string, error: string) {
@@ -137,7 +165,7 @@ function exceedsJsonBudget(text: string) {
 export async function handleMcp(
   request: Request,
   runtime: Runtime,
-  member: Member,
+  member: Member & { generation: number },
   ctx: ExecutionContext,
 ): Promise<Response> {
   const { config } = runtime
@@ -226,11 +254,11 @@ export async function handleMcp(
     ),
     tool(
       'publish',
-      'Create or publish a revision with inline files. New artefacts are private. Merge keeps unmentioned paths; replace drops them. Use expectedRevision to avoid overwriting a newer head. Tell the user the entry URL and revision.',
+      'Create or publish a revision with inline content or stored upload IDs. New artefacts are private. Merge keeps unmentioned paths; replace drops them. Use expectedRevision to avoid overwriting a newer head. Tell the user the entry URL and revision.',
       z.strictObject({
         slug,
         title: z.string().max(200).optional(),
-        files: z.array(inlineFile).max(MAX_ARTEFACT_FILES),
+        files: z.array(z.union([inlineFile, uploadFile])).max(MAX_ARTEFACT_FILES),
         mode: z.enum(['merge', 'replace']),
         delete: z.array(path).max(MAX_ARTEFACT_FILES).optional(),
         expectedRevision: z.int().nonnegative().optional().describe('Use 0 to require a new slug'),
@@ -240,6 +268,19 @@ export async function handleMcp(
       false,
       (args) => {
         if (typeof args === 'object' && args !== null) checkPublishArrayLengths(args)
+      },
+    ),
+    tool(
+      'create_uploads',
+      'Prepare binary or large files for a publish. PUT each file to its single-use URL with its exact Content-Length, unless alreadyStored is true. Use the returned uploadId and path in publish. Do not share the capability URLs.',
+      z.strictObject({
+        slug: slug.max(64),
+        files: z.array(uploadRequest).min(1).max(config.maxBlobWritesPerCall),
+      }),
+      (input) => createUploads(runtime, member, input),
+      false,
+      (args) => {
+        if (typeof args === 'object' && args !== null) checkUploadCount(args, config.maxBlobWritesPerCall)
       },
     ),
     tool(
@@ -296,6 +337,47 @@ export async function handleMcp(
       'Disable a share link by ID without changing access at the canonical artefact URL.',
       z.strictObject({ id: z.uuid() }),
       (input) => revokeShareLink(runtime, member, input.id),
+    ),
+    tool(
+      'list_revisions',
+      'List retained revisions newest first, with author, date and message. Use nextCursor for more and the revision number to restore.',
+      z.strictObject({ slug: slug.max(64), cursor: cursor.unwrap().max(4096).optional() }),
+      (input) => listRevisions(runtime, member, input.slug, input.cursor),
+      true,
+    ),
+    tool(
+      'restore_revision',
+      'Publish the files from a retained revision as a new revision, keeping the artefact slug and visibility. Tell the user the new revision number.',
+      z.strictObject({ slug: slug.max(64), revision }),
+      (input) => restoreRevision(runtime, member, input.slug, input.revision, ctx),
+    ),
+    tool(
+      'rename_artefact',
+      'Move an artefact to an available slug. Old canonical and share links redirect to the new slug. Tell the user the new URL.',
+      z.strictObject({ slug: slug.max(64), newSlug: slug.max(64) }),
+      (input) => renameArtefact(runtime, member, input.slug, input.newSlug),
+    ),
+    tool(
+      'delete_artefact',
+      'Hide an artefact immediately from canonical and share URLs. Its slug stays reserved and an administrator can restore it for 30 days.',
+      z.strictObject({ slug: slug.max(64) }),
+      (input) => deleteArtefact(runtime, member, input.slug),
+    ),
+    tool(
+      'set_redirects',
+      'Add or remove path-prefix redirects as an administrator. Targets must be live artefacts in the same namespace. Use URL-encoded canonical paths. Share prefixes only move slugs, never keys.',
+      z.strictObject({
+        add: z
+          .array(
+            z.strictObject({
+              fromPrefix: z.string().max(maxRedirectPrefix),
+              toPrefix: z.string().max(maxRedirectPrefix),
+            }),
+          )
+          .max(redirectBatchLimit),
+        remove: z.array(z.string().max(maxRedirectPrefix)).max(redirectBatchLimit),
+      }),
+      (input) => setRedirects(runtime, member, input),
     ),
   ]
   server.setRequestHandler(ListToolsRequestSchema, () => ({ tools: tools.map((tool) => tool.definition) }))

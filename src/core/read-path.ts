@@ -19,6 +19,18 @@ export function sharePath(pathname: string) {
   return path === null ? null : { slug, key, path }
 }
 
+export const maxRedirectPrefix = 6_212 // 512 four-byte code points, plus the namespace and slug.
+
+export function redirectPrefix(value: string) {
+  if (value.length > maxRedirectPrefix || !value.endsWith('/') || /[?#\\\p{Cc}]/u.test(value)) return null
+  if (URL.parse(value, 'https://forge.invalid')?.pathname !== value) return null
+  const canonical = artefactPath(value)
+  if (canonical && canonical.path !== undefined) return { ...canonical, kind: 'a' } as const
+  // Share redirects move the slug, never match or replace bearer keys.
+  const share = value.startsWith('/s/') ? artefactPath(`/a/${value.slice(3)}`) : null
+  return share?.path === '' ? ({ ...share, kind: 's' } as const) : null
+}
+
 function decodeArtefactPath(encoded: string | undefined) {
   if (encoded === undefined || encoded === '') return encoded
 

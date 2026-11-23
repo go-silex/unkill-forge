@@ -4,6 +4,7 @@ import { loginRoute } from './manage/login'
 import { localClientDocument, localClientPath, oauthFetch } from './manage/oauth'
 import { checkManageOrigin, manageHeaders } from './manage/origin'
 import { manageUi } from './manage/ui'
+import { manageUpload } from './manage/upload'
 import { read } from './read'
 
 export default {
@@ -22,6 +23,7 @@ export default {
     if (blocked) return manageHeaders(blocked)
     try {
       if (request.method === 'GET' && path === localClientPath) return localClientDocument(config)
+      if (path.startsWith('/upload/')) return manageHeaders(await manageUpload(request, path, runtime))
       if (path === '/auth/handoff') return manageHeaders(await manageHandoff(request, url, runtime))
       if (
         path === '/mcp' ||

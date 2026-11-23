@@ -3,6 +3,7 @@ import { z } from 'zod'
 import { MAX_ARTEFACT_FILES, type Runtime } from '../config'
 import { blobText, contentType, MAX_TEXT_BYTES, storeBlobs, textSlice } from './blobs'
 import { hashSecret, type Member } from './index'
+import { redirectPrefix } from './read-path'
 import { generateShareKey, sealShareKey, unsealShareKey, validShareKey } from './share-keys'
 
 type ErrorCode = 'not_found' | 'forbidden' | 'conflict' | 'invalid_input' | 'too_large'
@@ -29,11 +30,11 @@ type Artefact = {
   deletedAt: number | null
 }
 type File = { path: string; size: number; type: string; sha256: string }
-type InlineFile = { path: string; content: string; encoding?: 'utf8' | 'base64' }
+type InlineFile = { path: string; content: string; encoding?: 'utf8' | 'base64'; type?: string }
 type Publish = {
   slug: string
   title?: string
-  files: InlineFile[]
+  files: (InlineFile | { path: string; uploadId: string })[]
   mode: 'merge' | 'replace'
   delete?: string[]
   expectedRevision?: number
@@ -42,6 +43,7 @@ type Publish = {
 
 const listCursor = z.tuple([z.int().nonnegative(), z.uuid(), z.string()])
 const fileCursor = z.tuple([z.uuid(), z.int().positive(), z.string()])
+const revisionCursor = z.tuple([z.uuid(), z.int().positive()])
 
 function decodeCursor<S extends z.ZodType>(cursor: string, schema: S): z.output<S> {
   try {
@@ -53,7 +55,7 @@ function decodeCursor<S extends z.ZodType>(cursor: string, schema: S): z.output<
   }
 }
 
-function checkMember(member: Member, write = false) {
+export function checkMember(member: Member, write = false) {
   if (member.status !== 'active' || (write && member.role === 'viewer')) {
     throw new ArtefactError(
       'forbidden',
@@ -62,7 +64,12 @@ function checkMember(member: Member, write = false) {
   }
 }
 
-function checkSlug(slug: string) {
+export function requireAdmin(member: Member) {
+  checkMember(member)
+  if (member.role !== 'admin') throw new ArtefactError('forbidden', 'An active admin is required')
+}
+
+export function checkSlug(slug: string) {
   if (!/^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$/.test(slug)) {
     throw new ArtefactError(
       'invalid_input',
@@ -71,7 +78,7 @@ function checkSlug(slug: string) {
   }
 }
 
-function checkPath(path: string) {
+export function checkPath(path: string) {
   if (
     !/^.{1,512}$/su.test(path) ||
     !path.isWellFormed() ||
@@ -116,14 +123,17 @@ function selectRevisionEntry(db: D1Database, id: string, revision: number) {
     .bind(id, revision)
 }
 
-function computeRevisionEntry(db: D1Database, id: string, revision: number) {
+function computeRevisionEntry(db: D1Database, id: string, revision: number | null) {
   return db
-    .prepare(`SELECT COALESCE(
-      (SELECT path FROM files WHERE artefact_id = ?1 AND revision = ?2 AND path = 'index.html'),
-      (SELECT path FROM files WHERE artefact_id = ?1 AND revision = ?2
+    .prepare(`WITH target(number) AS (
+      SELECT COALESCE(?2, (SELECT current_revision FROM artefacts WHERE id = ?1))
+    )
+    SELECT COALESCE(
+      (SELECT path FROM files WHERE artefact_id = ?1 AND revision = target.number AND path = 'index.html'),
+      (SELECT path FROM files WHERE artefact_id = ?1 AND revision = target.number
        ORDER BY (lower(trim(substr(content_type, 1, instr(content_type || ';', ';') - 1), char(9) || ' '))
          = 'text/html') DESC, path LIMIT 1)
-    ) AS path`)
+    ) AS path FROM target`)
     .bind(id, revision)
 }
 
@@ -274,25 +284,66 @@ async function findFile(db: D1Database, id: string, revision: number, path: stri
   return file
 }
 
-type CanonicalRead =
-  | { kind: 'serve'; file: File; public: boolean }
-  | { kind: 'not-found' | 'sign-in' | 'pending' | 'revalidate' | 'slash' }
+type ReadSession = () => Promise<{ member: Member; fresh: boolean } | null>
+type CanonicalDecision = { kind: 'sign-in' | 'pending' | 'revalidate' }
+
+async function deniedCanonical(isPublic: boolean, session: ReadSession): Promise<CanonicalDecision | null> {
+  if (isPublic) return null
+  const current = await session()
+  if (!current) return { kind: 'sign-in' }
+  if (!current.fresh) return { kind: 'revalidate' }
+  if (current.member.status !== 'active') return { kind: 'pending' }
+  return null
+}
+
+async function findRedirect(db: D1Database, kind: 'a' | 's', slug: string, pathname: string) {
+  const root = `/${kind}/${slug}/`
+  const prefixes = [root]
+  if (kind === 'a') {
+    for (let end = pathname.indexOf('/', root.length); end !== -1; end = pathname.indexOf('/', end + 1))
+      prefixes.push(pathname.slice(0, end + 1))
+  }
+  const target = await db
+    .prepare(`SELECT r.from_prefix AS prefix, r.target_path AS path, a.slug, a.visibility, a.deleted_at
+      FROM json_each(?) p JOIN redirects r ON r.from_prefix = p.value
+      JOIN artefacts a ON a.id = r.target_artefact_id
+      WHERE NOT EXISTS (SELECT 1 FROM artefacts WHERE slug = ?)
+      ORDER BY length(r.from_prefix) DESC LIMIT 1`)
+    .bind(JSON.stringify(prefixes), slug)
+    .first<{
+      prefix: string
+      path: string
+      slug: string
+      visibility: Visibility
+      deleted_at: number | null
+    }>()
+  if (!target || target.deleted_at !== null) return null
+  return {
+    location: `/${kind}/${target.slug}/${target.path}${pathname.slice(target.prefix.length)}`,
+    public: target.visibility === 'public',
+  }
+}
 
 export async function canonicalRead(
   { env: { DB: db } }: Runtime,
   slug: string,
   path: string,
-  session: () => Promise<{ member: Member; fresh: boolean } | null>,
-): Promise<CanonicalRead> {
+  pathname: string,
+  session: ReadSession,
+) {
   const artefact = await head(db, slug)
-  if (!artefact || artefact.deletedAt !== null) return { kind: 'not-found' }
-  const isPublic = artefact.visibility === 'public'
-  if (!isPublic) {
-    const current = await session()
-    if (!current) return { kind: 'sign-in' }
-    if (!current.fresh) return { kind: 'revalidate' }
-    if (current.member.status !== 'active') return { kind: 'pending' }
+  if (!artefact) {
+    const target = await findRedirect(db, 'a', slug, pathname)
+    if (!target) return { kind: 'not-found' } as const
+    return (
+      (await deniedCanonical(target.public, session)) ??
+      ({ kind: 'redirect', location: target.location } as const)
+    )
   }
+  if (artefact.deletedAt !== null) return { kind: 'not-found' } as const
+  const isPublic = artefact.visibility === 'public'
+  const denied = await deniedCanonical(isPublic, session)
+  if (denied) return denied
   const resolved = await resolveReadFile(db, artefact.id, artefact.revision, path)
   return resolved.kind === 'serve' ? { ...resolved, public: isPublic } : resolved
 }
@@ -318,15 +369,21 @@ export async function shareRead(
   slug: string,
   key: string,
   path: string | undefined,
+  pathname: string,
   ctx: ExecutionContext,
 ) {
   const link = await db
-    .prepare(`SELECT s.id, s.artefact_id AS artefactId, s.last_used_at AS lastUsedAt,
-      a.current_revision AS revision FROM share_links s JOIN artefacts a ON a.id = s.artefact_id
-      WHERE s.key_hash = ? AND a.slug = ? AND s.revoked_at IS NULL AND a.deleted_at IS NULL`)
+    .prepare(`SELECT s.id, a.id AS artefactId, s.last_used_at AS lastUsedAt,
+      a.current_revision AS revision FROM artefacts a LEFT JOIN share_links s
+      ON s.key_hash = ? AND s.artefact_id = a.id AND s.revoked_at IS NULL AND a.deleted_at IS NULL
+      WHERE a.slug = ?`)
     .bind(await hashSecret(key), slug)
-    .first<{ id: string; artefactId: string; lastUsedAt: number | null; revision: number }>()
-  if (!link) return { kind: 'not-found' } as const
+    .first<{ id: string | null; artefactId: string; lastUsedAt: number | null; revision: number }>()
+  if (!link) {
+    const target = await findRedirect(db, 's', slug, pathname)
+    if (target) return { kind: 'redirect', location: target.location } as const
+  }
+  if (!link?.id) return { kind: 'not-found' } as const
   if (path === undefined) return { kind: 'slash' } as const
   const resolved = await resolveReadFile(db, link.artefactId, link.revision, path)
   if (resolved.kind === 'not-found' && path === '') {
@@ -369,6 +426,8 @@ export async function readFile(
   const { DB: db, BLOBS: blobs } = runtime.env
   const artefact = await liveHead(db, slug)
   const number = revision ?? artefact.revision
+  if (number <= artefact.revision - runtime.config.revisionRetention)
+    throw new ArtefactError('not_found', 'Revision not found')
   const file = await findFile(db, artefact.id, number, path)
   const result = await blobText(blobs, file)
   const { sha256: _hash, ...metadata } = file
@@ -416,6 +475,197 @@ function inlineBytes(file: InlineFile, remaining: number, limit: number): Uint8A
   return bytes
 }
 
+function diagnostic(error: unknown) {
+  return error instanceof Error ? `${error.message} ${error.cause}` : ''
+}
+
+type Commit = {
+  id: string
+  slug: string
+  current: number
+  title?: string
+  message?: string
+  action: 'artefact.publish' | 'artefact.restore_revision'
+  detail: Record<string, unknown>
+  source?: number
+  carry?: string[]
+  newFiles?: File[]
+  uploaded?: { path: string; uploadId: string }[]
+  epoch?: number
+}
+
+async function commitRevision(
+  { env: { DB: db }, config }: Runtime,
+  member: Member,
+  { id, slug, current, title, message, action, detail, source, carry, newFiles, uploaded, epoch }: Commit,
+  ctx?: ExecutionContext,
+) {
+  const revision = current + 1
+  const now = Date.now()
+  const statements = []
+  if (current === 0) {
+    statements.push(
+      db
+        .prepare(`INSERT INTO artefacts
+          (id, slug, title, visibility, current_revision, created_by, created_at, updated_at)
+          VALUES (?1, CASE WHEN NOT EXISTS (
+            SELECT 1 FROM reserved_lifecycle_slugs WHERE slug = ?2
+          ) THEN ?2 END, ?3, 'private', 0, ?4, ?5, ?5)`)
+        .bind(id, slug, title ?? slug, member.id, now),
+    )
+  }
+  // A failed guard aborts the entire batch via the NOT NULL constraint, before any files are inserted.
+  statements.push(
+    db
+      .prepare(`INSERT INTO revisions (artefact_id, number, created_by, created_at, message)
+        VALUES (CASE WHEN EXISTS (
+          SELECT 1 FROM artefacts WHERE id = ?1 AND slug = ?2 AND current_revision = ?3 AND deleted_at IS NULL
+        ) AND (?4 IS NULL OR ?4 = (SELECT epoch FROM blob_purge_epoch WHERE singleton = 1))
+        AND (?9 IS NULL OR EXISTS (SELECT 1 FROM revisions WHERE artefact_id = ?1 AND number = ?9))
+        THEN ?1 END, ?5, ?6, ?7, ?8)`)
+      .bind(id, slug, current, epoch ?? null, revision, member.id, now, message ?? null, source ?? null),
+  )
+  if (source !== undefined) {
+    statements.push(
+      db
+        .prepare(`INSERT INTO files (artefact_id, revision, path, sha256, size, content_type)
+          SELECT artefact_id, ?, path, sha256, size, content_type FROM files
+          WHERE artefact_id = ? AND revision = ?`)
+        .bind(revision, id, source),
+    )
+  }
+  // Keep the number of statements and size of each bound JSON value bounded.
+  for (let start = 0; carry && start < carry.length; start += 512) {
+    statements.push(
+      db
+        .prepare(`INSERT INTO files (artefact_id, revision, path, sha256, size, content_type)
+          SELECT artefact_id, ?, path, sha256, size, content_type FROM files WHERE artefact_id = ? AND revision = ?
+          AND path IN (SELECT value FROM json_each(?))`)
+        .bind(revision, id, current, JSON.stringify(carry.slice(start, start + 512))),
+    )
+  }
+  for (let start = 0; newFiles && start < newFiles.length; start += 256) {
+    statements.push(
+      db
+        .prepare(`INSERT INTO files (artefact_id, revision, path, sha256, size, content_type)
+          SELECT ?, ?, json_extract(value, '$.path'), json_extract(value, '$.sha256'),
+            json_extract(value, '$.size'), json_extract(value, '$.type') FROM json_each(?)`)
+        .bind(id, revision, JSON.stringify(newFiles.slice(start, start + 256))),
+    )
+  }
+  for (let start = 0; uploaded && start < uploaded.length; start += 256) {
+    const chunk = JSON.stringify(uploaded.slice(start, start + 256))
+    // Missing, expired or consumed IDs abort the entire revision, including earlier chunks.
+    statements.push(
+      db
+        .prepare(`INSERT INTO files (artefact_id, revision, path, sha256, size, content_type)
+          SELECT ?, ?, json_extract(entry.value, '$.path'), u.sha256, u.size, u.content_type
+          FROM json_each(?) AS entry LEFT JOIN uploads AS u
+          ON u.upload_id = json_extract(entry.value, '$.uploadId')
+          AND u.path = json_extract(entry.value, '$.path')
+          AND u.slug = ? AND u.member_id = ? AND u.state = 'stored'
+          AND u.expires_at > unixepoch('subsec') * 1000`)
+        .bind(id, revision, chunk, slug, member.id),
+      db
+        .prepare(`UPDATE uploads SET state = 'consumed'
+          WHERE upload_id IN (SELECT json_extract(value, '$.uploadId') FROM json_each(?))`)
+        .bind(chunk),
+    )
+  }
+  statements.push(
+    db
+      .prepare(`UPDATE artefacts SET current_revision = ?, title = COALESCE(?, title),
+        updated_at = MAX(?, updated_at) WHERE id = ?`)
+      .bind(revision, title ?? null, now, id),
+    audit(db, now, member, id, action, { revision, ...detail }),
+    db
+      .prepare(`DELETE FROM revisions WHERE artefact_id = ?1 AND number IN (
+        SELECT number FROM revisions WHERE artefact_id = ?1 AND number <= ?2 ORDER BY number LIMIT 2
+      )`)
+      .bind(id, revision - config.revisionRetention),
+    computeRevisionEntry(db, id, revision),
+  )
+  const entry = (await db.batch<RevisionEntry>(statements)).at(-1)
+  const path = entry?.results[0]?.path
+  if (!path) throw new Error('Committed revision has no entry file')
+  await cacheRevisionEntries(db, [{ id, revision, path }], ctx)
+  return { url: entryUrl(config.readOrigin, slug, path), revision }
+}
+
+function revisionCommitConflict(error: unknown) {
+  return /(?:NOT NULL constraint failed: revisions\.artefact_id|forge blob purge in progress)\b/.test(
+    diagnostic(error),
+  )
+}
+
+export async function listRevisions(
+  { env: { DB: db }, config }: Runtime,
+  member: Member,
+  slug: string,
+  cursor?: string,
+) {
+  checkMember(member)
+  const artefact = await liveHead(db, slug)
+  const after = cursor === undefined ? null : decodeCursor(cursor, revisionCursor)
+  if (after && after[0] !== artefact.id)
+    throw new ArtefactError('invalid_input', 'Cursor belongs to a different artefact')
+  const { results } = await db
+    .prepare(`SELECT number, created_by AS author, created_at AS createdAt, message
+      FROM revisions WHERE artefact_id = ?1 AND number > ?2 AND (?3 IS NULL OR number < ?3)
+      ORDER BY number DESC LIMIT 21`)
+    .bind(artefact.id, artefact.revision - config.revisionRetention, after?.[1] ?? null)
+    .all<{ number: number; author: string; createdAt: number; message: string | null }>()
+  const more = results.length > 20
+  if (more) results.pop()
+  return {
+    revisions: results,
+    nextCursor: more ? base64url.encode(JSON.stringify([artefact.id, results[19].number])) : undefined,
+  }
+}
+
+export async function restoreRevision(
+  runtime: Runtime,
+  member: Member,
+  slug: string,
+  source: number,
+  ctx?: ExecutionContext,
+) {
+  checkMember(member, true)
+  const {
+    env: { DB: db },
+    config,
+  } = runtime
+  const { id, revision: current } = await liveHead(db, slug)
+  if (
+    source <= current - config.revisionRetention ||
+    source > current ||
+    !(await db
+      .prepare('SELECT 1 FROM revisions WHERE artefact_id = ? AND number = ?')
+      .bind(id, source)
+      .first())
+  )
+    throw new ArtefactError('not_found', 'Revision not found')
+  try {
+    const { revision } = await commitRevision(
+      runtime,
+      member,
+      {
+        id,
+        slug,
+        current,
+        source,
+        action: 'artefact.restore_revision',
+        detail: { source },
+      },
+      ctx,
+    )
+    return { revision }
+  } catch (error) {
+    if (!revisionCommitConflict(error)) throw error
+    throw conflict((await head(db, slug))?.revision ?? 0)
+  }
+}
+
 export async function publish(runtime: Runtime, member: Member, input: Publish, ctx?: ExecutionContext) {
   checkMember(member, true)
   const {
@@ -431,6 +681,7 @@ export async function publish(runtime: Runtime, member: Member, input: Publish, 
   for (const path of deletes) checkPath(path)
   const changedPaths = new Set<string>()
   const pending: { path: string; type: string; bytes: Uint8Array }[] = []
+  const uploaded: { path: string; uploadId: string }[] = []
   let remaining = maxBytes
   for (const file of input.files) {
     checkPath(file.path)
@@ -440,12 +691,17 @@ export async function publish(runtime: Runtime, member: Member, input: Publish, 
         'A path cannot be published twice or published and deleted together',
       )
     }
+    changedPaths.add(file.path)
+    if ('uploadId' in file) {
+      uploaded.push(file)
+      continue
+    }
     const bytes = inlineBytes(file, remaining, maxBytes)
     remaining -= bytes.length
-    changedPaths.add(file.path)
-    pending.push({ path: file.path, type: contentType(file.path), bytes })
+    pending.push({ path: file.path, type: file.type ?? contentType(file.path), bytes })
   }
   const newFiles: File[] = []
+  let epoch: number | undefined
   let artefact = await head(db, input.slug)
   for (let attempt = 0; ; attempt++) {
     const current = artefact?.revision ?? 0
@@ -455,6 +711,14 @@ export async function publish(runtime: Runtime, member: Member, input: Publish, 
       })
     }
     checkRevision(input.expectedRevision, current)
+    if (
+      !artefact &&
+      (await db
+        .prepare('SELECT 1 FROM reserved_lifecycle_slugs WHERE slug = ? LIMIT 1')
+        .bind(input.slug)
+        .first())
+    )
+      throw new ArtefactError('conflict', 'Slug is unavailable', { currentRevision: 0 })
     const id = artefact?.id ?? crypto.randomUUID()
     const merge = artefact !== null && input.mode === 'merge'
     const carry: string[] = []
@@ -476,6 +740,11 @@ export async function publish(runtime: Runtime, member: Member, input: Publish, 
     if (count > maxFiles) throw tooLarge('File count', maxFiles)
 
     if (pending.length > 0) {
+      // Snapshot before storage: a claim that came and went since dedup still invalidates this write.
+      epoch =
+        (await db.prepare('SELECT epoch FROM blob_purge_epoch WHERE singleton = 1').first<number>('epoch')) ??
+        undefined
+      if (epoch === undefined) throw new Error('Missing blob purge epoch')
       const limit = config.maxBlobWritesPerCall
       const hashes = await storeBlobs(db, blobs, pending, limit)
       if (!hashes) {
@@ -489,75 +758,46 @@ export async function publish(runtime: Runtime, member: Member, input: Publish, 
       }
       pending.length = 0
     }
-    const revision = current + 1
-    const now = Date.now()
-    const statements = []
-    if (!artefact) {
-      statements.push(
-        db
-          .prepare(`INSERT INTO artefacts
-        (id, slug, title, visibility, current_revision, created_by, created_at, updated_at)
-        VALUES (?, ?, ?, 'private', 1, ?, ?, ?)`)
-          .bind(id, input.slug, input.title ?? input.slug, member.id, now, now),
-      )
-    }
-    statements.push(
-      db
-        .prepare(
-          'INSERT INTO revisions (artefact_id, number, created_by, created_at, message) VALUES (?, ?, ?, ?, ?)',
-        )
-        .bind(id, revision, member.id, now, input.message ?? null),
-    )
-    // A chunk of up to 512 paths stays below D1's 2 MB bound string limit.
-    for (let start = 0; start < carry.length; start += 512) {
-      statements.push(
-        db
-          .prepare(`INSERT INTO files (artefact_id, revision, path, sha256, size, content_type)
-        SELECT artefact_id, ?, path, sha256, size, content_type FROM files WHERE artefact_id = ? AND revision = ?
-        AND path IN (SELECT value FROM json_each(?))`)
-          .bind(revision, id, current, JSON.stringify(carry.slice(start, start + 512))),
-      )
-    }
-    // Chunk bound JSON to keep individual statements small at the configured file limit.
-    for (let start = 0; start < newFiles.length; start += 24) {
-      statements.push(
-        db
-          .prepare(`INSERT INTO files (artefact_id, revision, path, sha256, size, content_type)
-        SELECT ?, ?, json_extract(value, '$.path'), json_extract(value, '$.sha256'),
-          json_extract(value, '$.size'), json_extract(value, '$.type') FROM json_each(?)`)
-          .bind(id, revision, JSON.stringify(newFiles.slice(start, start + 24))),
-      )
-    }
-    statements.push(
-      db
-        .prepare(`UPDATE artefacts SET current_revision = ?, title = COALESCE(?, title),
-        updated_at = MAX(?, updated_at) WHERE id = ?`)
-        .bind(revision, input.title ?? null, now, id),
-      audit(db, now, member, id, 'artefact.publish', { revision, mode: input.mode }),
-      computeRevisionEntry(db, id, revision),
-    )
-    let entry: D1Result<RevisionEntry> | undefined
     try {
-      entry = (await db.batch<RevisionEntry>(statements)).at(-1)
-    } catch (error) {
-      const diagnostic = error instanceof Error ? `${error.message} ${error.cause}` : ''
-      if (
-        !/UNIQUE constraint failed: (?:artefacts\.slug|revisions\.artefact_id, revisions\.number)\b/.test(
-          diagnostic,
-        )
+      return await commitRevision(
+        runtime,
+        member,
+        {
+          id,
+          slug: input.slug,
+          current,
+          title: input.title,
+          message: input.message,
+          action: 'artefact.publish',
+          detail: { mode: input.mode },
+          carry,
+          newFiles,
+          uploaded,
+          epoch,
+        },
+        ctx,
       )
-        throw error
+    } catch (error) {
+      if (uploaded.length > 0 && /NOT NULL constraint failed: files\.sha256\b/.test(diagnostic(error))) {
+        throw new ArtefactError('not_found', 'Stored upload not found for this file')
+      }
+      if (/(?:UNIQUE|NOT NULL) constraint failed: artefacts\.slug\b/.test(diagnostic(error))) {
+        throw conflict((await head(db, input.slug))?.revision ?? 0)
+      }
+      if (!revisionCommitConflict(error)) throw error
       const latest = await head(db, input.slug)
-      if (!artefact || input.expectedRevision !== undefined || attempt === 3 || !latest || latest.id !== id) {
+      if (
+        !artefact ||
+        input.expectedRevision !== undefined ||
+        attempt === 3 ||
+        latest?.id !== id ||
+        latest.deletedAt !== null ||
+        latest.revision === current
+      ) {
         throw conflict(latest?.revision ?? 0)
       }
       artefact = latest
-      continue
     }
-    const path = entry?.results[0]?.path
-    if (!path) throw new Error('Published revision has no entry file')
-    await cacheRevisionEntries(db, [{ id, revision, path }], ctx)
-    return { url: entryUrl(config.readOrigin, input.slug, path), revision }
   }
 }
 
@@ -627,12 +867,21 @@ export async function editFile(
     previous = at + input.oldText.length
   }
   if (previous < text.length) parts.push(text.slice(previous))
+  let hasCharset = false
+  // Consume whole parameter values, including quoted semicolons.
+  let type = file.type.replace(/;[ \t]*([^=;]+)=(?:"(?:[^"\\]|\\.)*"|[^;]*)/g, (param, name: string) => {
+    if (name.toLowerCase() !== 'charset') return param
+    if (hasCharset) return ''
+    hasCharset = true
+    return '; charset=utf-8'
+  })
+  if (!hasCharset) type += '; charset=utf-8'
   return publish(
     runtime,
     member,
     {
       slug: input.slug,
-      files: [{ path: input.path, content: parts.join('') }],
+      files: [{ path: input.path, content: parts.join(''), type }],
       mode: 'merge',
       expectedRevision: input.expectedRevision,
     },
@@ -659,6 +908,133 @@ export async function setVisibility(
   ])
   if (result.meta.changes !== 1) throw new ArtefactError('not_found', 'Artefact not found')
   return { visibility }
+}
+
+export async function renameArtefact(
+  { env: { DB: db }, config }: Runtime,
+  member: Member,
+  slug: string,
+  newSlug: string,
+) {
+  checkMember(member, true)
+  checkSlug(newSlug)
+  const { id, revision } = await liveHead(db, slug)
+  if (slug === newSlug) throw new ArtefactError('invalid_input', 'Choose a different slug')
+  const now = Date.now()
+  try {
+    const [rename, , , entry] = await db.batch<RevisionEntry>([
+      db
+        .prepare(`UPDATE artefacts SET slug = ?1, updated_at = MAX(?2, updated_at)
+          WHERE id = ?3 AND slug = ?4 AND deleted_at IS NULL
+          AND NOT EXISTS (SELECT 1 FROM reserved_lifecycle_slugs WHERE slug = ?1)`)
+        .bind(newSlug, now, id, slug),
+      audit(db, now, member, id, 'artefact.rename', { from: slug, to: newSlug }),
+      db
+        .prepare(`INSERT INTO redirects (from_prefix, source_slug, target_artefact_id, target_path, created_at, created_by)
+          SELECT value, ?2, ?3, '', ?4, ?5 FROM json_each(?1) WHERE changes() = 1
+          ON CONFLICT(from_prefix) DO UPDATE SET target_artefact_id = excluded.target_artefact_id,
+            target_path = excluded.target_path, created_at = excluded.created_at, created_by = excluded.created_by`)
+        .bind(JSON.stringify([`/a/${slug}/`, `/s/${slug}/`]), slug, id, now, member.id),
+      computeRevisionEntry(db, id, null),
+    ])
+    if (rename.meta.changes !== 1)
+      throw new ArtefactError('conflict', 'Source slug changed or target slug is unavailable')
+    const path = entry.results[0]?.path
+    if (!path) throw new Error('Renamed artefact has no entry file')
+    return { url: entryUrl(config.readOrigin, newSlug, path) }
+  } catch (error) {
+    if (/UNIQUE constraint failed: artefacts\.slug\b/.test(diagnostic(error)))
+      throw new ArtefactError('conflict', 'Target slug is unavailable', { currentRevision: revision })
+    throw error
+  }
+}
+
+export async function deleteArtefact({ env: { DB: db } }: Runtime, member: Member, slug: string) {
+  checkMember(member, true)
+  const { id } = await liveHead(db, slug)
+  const now = Date.now()
+  const [deleted] = await db.batch([
+    db
+      .prepare(`UPDATE artefacts SET deleted_at = ?1, updated_at = MAX(?1, updated_at)
+        WHERE id = ?2 AND slug = ?3 AND deleted_at IS NULL`)
+      .bind(now, id, slug),
+    audit(db, now, member, id, 'artefact.delete', {}),
+  ])
+  if (deleted.meta.changes !== 1) throw new ArtefactError('conflict', 'Artefact changed')
+  return {}
+}
+
+const deletedRetentionMs = 30 * 24 * 60 * 60 * 1_000
+
+export async function restoreDeletedArtefact({ env: { DB: db } }: Runtime, member: Member, slug: string) {
+  requireAdmin(member)
+  checkSlug(slug)
+  const artefact = await head(db, slug)
+  if (!artefact || artefact.deletedAt === null)
+    throw new ArtefactError('not_found', 'Deleted artefact not found')
+  const now = Date.now()
+  const [restored] = await db.batch([
+    db
+      .prepare(`UPDATE artefacts SET deleted_at = NULL, updated_at = MAX(?1, updated_at)
+        WHERE id = ?2 AND deleted_at = ?3 AND deleted_at > ?4
+        AND NOT EXISTS (SELECT 1 FROM artefact_purges WHERE artefact_id = ?2)`)
+      .bind(now, artefact.id, artefact.deletedAt, now - deletedRetentionMs),
+    audit(db, now, member, artefact.id, 'artefact.restore_deleted', {}),
+  ])
+  if (restored.meta.changes !== 1) throw new ArtefactError('conflict', 'The artefact is no longer restorable')
+  return {}
+}
+
+export const redirectBatchLimit = 50
+
+export async function setRedirects(
+  { env: { DB: db } }: Runtime,
+  member: Member,
+  { add, remove }: { add: { fromPrefix: string; toPrefix: string }[]; remove: string[] },
+) {
+  requireAdmin(member)
+  if (add.length > redirectBatchLimit || remove.length > redirectBatchLimit)
+    throw tooLarge('Redirect batch', redirectBatchLimit)
+  if (add.length === 0 && remove.length === 0) return {}
+  const seen = new Set<string>()
+  const additions = add.map(({ fromPrefix, toPrefix }) => {
+    const from = redirectPrefix(fromPrefix)
+    const to = redirectPrefix(toPrefix)
+    if (!from || !to || from.kind !== to.kind || from.slug === to.slug || seen.has(fromPrefix))
+      throw new ArtefactError(
+        'invalid_input',
+        'Supply unique prefixes within one namespace and different slugs',
+      )
+    seen.add(fromPrefix)
+    return [fromPrefix, from.slug, to.slug, toPrefix.slice(to.slug.length + 4)]
+  })
+  if (remove.some((prefix) => !redirectPrefix(prefix)))
+    throw new ArtefactError('invalid_input', 'Invalid redirect prefix')
+  const now = Date.now()
+  try {
+    await db.batch([
+      db
+        .prepare('DELETE FROM redirects WHERE from_prefix IN (SELECT value FROM json_each(?))')
+        .bind(JSON.stringify(remove)),
+      db
+        .prepare(`INSERT INTO redirects (from_prefix, source_slug, target_artefact_id, target_path, created_at, created_by)
+          SELECT json_extract(p.value, '$[0]'), json_extract(p.value, '$[1]'),
+            (SELECT id FROM artefacts WHERE slug = json_extract(p.value, '$[2]') AND deleted_at IS NULL),
+            json_extract(p.value, '$[3]'), ?, ? FROM json_each(?) p WHERE 1
+          ON CONFLICT(from_prefix) DO UPDATE SET target_artefact_id = excluded.target_artefact_id,
+            target_path = excluded.target_path, created_at = excluded.created_at, created_by = excluded.created_by`)
+        .bind(now, member.id, JSON.stringify(additions)),
+      db
+        .prepare(`INSERT INTO audit_log (id, at, member_id, action, detail_json)
+          VALUES (?, ?, ?, 'redirects.set', ?)`)
+        .bind(crypto.randomUUID(), now, member.id, JSON.stringify({ add, remove })),
+    ])
+  } catch (error) {
+    if (/NOT NULL constraint failed: redirects\.target_artefact_id\b/.test(diagnostic(error)))
+      throw new ArtefactError('not_found', 'Redirect target must be a live artefact')
+    throw error
+  }
+  return {}
 }
 
 const maxActiveShareLinks = 100
