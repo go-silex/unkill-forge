@@ -4,7 +4,7 @@ Forge is a self-hosted service for publishing HTML artefacts at stable URLs, con
 
 This build implements sign-in, member administration (including invites and reinstatement), bot administration, and the MCP `whoami` tool. No artefact storage or publishing yet. Live identity-provider and MCP-client compatibility still needs to be validated on a test zone. See [the specification](docs/spec.md).
 
-Runtime: 2,436 lines under `src/`.
+Runtime: 2,467 lines under `src/`.
 
 ## Configure sign-in
 
@@ -56,6 +56,12 @@ Only an admin can reinstate a removed member. Reinstatement restores the role, n
 
 Existing Gate 0 databases apply `0002_oauth_code_redemption.sql` to add replay tracking. It also works if the redemption table was already created manually.
 
+After deploying with `0004_invites.sql`:
+
+1. Anyone whose membership was ever removed must sign in again after reinstatement. Sessions created by the previous Worker between migration and rollout also require signing in again.
+2. Reissue API tokens for any bot that was ever removed, including tokens issued after a Gate 0 reinstatement. Tokens for other bots are unaffected.
+3. Reauthorize all OAuth clients. Gate 0 grants cannot be exchanged, refreshed, or used on MCP.
+
 ## Connect an agent
 
 - **Claude and Codex:** Use their native CIMD support with the Streamable HTTP URL `https://<manage>/mcp`, then sign in and approve the request.
@@ -70,7 +76,7 @@ Existing Gate 0 databases apply `0002_oauth_code_redemption.sql` to add replay t
 - **Hermes:** Create a bot and token under **Bots and API tokens**, copy the token when shown, and send `Authorization: Bearer fgt_<token>` to the same `/mcp` URL.
 - For browser-based MCP clients, add their exact HTTPS origins to the optional comma-separated `MCP_ALLOWED_ORIGINS`. Leave it unset for clients that do not send an `Origin` header.
 
-OAuth access tokens last up to one hour and are shortened near the grant's seven-day cap. Codes are single-use: overlapping exchanges revoke the grant, and only a confirmed KV rate limit before the code is consumed permits retrying it. Access tokens without `grantId` are refused. After upgrading from Gate 0, authorize clients again: older grants do not carry a membership generation and cannot be exchanged, refreshed or used on MCP.
+OAuth access tokens last up to one hour and are shortened near the grant's seven-day cap. Codes are single-use: overlapping exchanges revoke the grant, and only a confirmed KV rate limit before the code is consumed permits retrying it. Access tokens without `grantId` are refused.
 
 ## License
 

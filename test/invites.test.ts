@@ -45,30 +45,66 @@ async function createInvite(owner: Browser, role: string) {
   return link
 }
 
-async function beginInvite(browser: Browser, link: string) {
+async function openInvite(browser: Browser, link: string) {
   const redirect = await browser.request(link)
   expect(redirect.status).toBe(303)
   expect(redirect.headers.get('Referrer-Policy')).toBe('no-referrer')
+  const landing = location(redirect)
+  const context = landing.searchParams.get('invite')
+  const token = link.split('/').at(-1)
+  expect(landing.origin + landing.pathname).toBe(`${manage}/login`)
+  expect(landing.href).not.toContain(token)
+  expect(context).toMatch(/^[\w-]{43}$/)
+  const cookie = `__Host-forge-invite-${context}`
   expect(redirect.headers.getSetCookie()).toEqual([
     expect.stringMatching(
-      /^__Host-forge-invite=[\w-]{43}; Path=\/; Max-Age=600; Secure; HttpOnly; SameSite=Lax$/,
+      /^__Host-forge-invite-[\w-]{43}=[\w-]{43}; Path=\/; Max-Age=600; Secure; HttpOnly; SameSite=Lax$/,
     ),
   ])
-  const landing = location(redirect)
-  expect(landing.href).toBe(`${manage}/login`)
+  expect(redirect.headers.get('Set-Cookie')).not.toContain(token)
   const page = await browser.request(landing)
   expect(page.status).toBe(200)
   const html = await page.text()
-  expect(html).not.toContain(link.split('/').at(-1))
-  const href = /href="(\/login\/team\?return=%2F)"/.exec(html)?.[1]
+  expect(html).not.toContain(token)
+  const href = /href="(\/login\/team\?invite=[\w-]{43})"/.exec(html)?.[1]
   if (!href) throw new Error('No token-free provider link was shown')
+  expect(href).toBe(`/login/team?invite=${context}`)
+  return { href, cookie, token }
+}
+
+async function beginInvite(browser: Browser, link: string) {
+  const { href, cookie, token } = await openInvite(browser, link)
   const response = await browser.request(href)
   expect(response.status).toBe(302)
   expect(response.headers.get('Referrer-Policy')).toBe('no-referrer')
-  expect(response.headers.get('Location')).not.toContain(link.split('/').at(-1))
-  expect(browser.cookie('__Host-forge-invite')).toBeUndefined()
+  expect(response.headers.get('Location')).not.toContain(token)
+  expect(browser.cookie(cookie)).toBeUndefined()
   return location(response)
 }
+
+it('keeps invite contexts separate across tabs and ignores them in ordinary or other-browser sign-ins', async () => {
+  const send = runtime(noAutoJoin)
+  const idp = mockProvider()
+  const owner = await idp.signedIn(send, admin)
+  const browser = new Browser(send)
+  const viewerTab = await openInvite(browser, await createInvite(owner, 'viewer'))
+  const adminTab = await openInvite(browser, await createInvite(owner, 'admin'))
+  expect(viewerTab.href).not.toBe(adminTab.href)
+
+  expect((await idp.login(browser, 'ordinary-tab')).status).toBe(302)
+  expect(await (await browser.request('/')).text()).toContain('Pending access')
+  const otherBrowser = new Browser(send)
+  const copied = location(await otherBrowser.request(adminTab.href))
+  expect((await otherBrowser.request(await idp.issue(copied, 'copied-context'))).status).toBe(302)
+  expect(await (await otherBrowser.request('/')).text()).toContain('Pending access')
+
+  const viewerStart = location(await browser.request(viewerTab.href))
+  const adminStart = location(await browser.request(adminTab.href))
+  expect((await browser.request(await idp.issue(viewerStart, 'viewer-tab'))).status).toBe(302)
+  expect(await (await browser.request('/')).text()).toContain('viewer-tab (viewer)')
+  expect((await browser.request(await idp.issue(adminStart, 'admin-tab'))).status).toBe(302)
+  expect(await (await browser.request('/')).text()).toContain('admin-tab (admin)')
+})
 
 it('admits only one of two concurrent invite callbacks and shows the URL only at creation', async () => {
   const send = runtime(noAutoJoin)
@@ -141,11 +177,12 @@ it('admits a pending member, ignores active accounts, and ignores invite query p
   expect((await pending.request(link)).status).toBe(404)
 })
 
-it('rechecks expiry using D1 time even when the callback Worker clock is behind', async () => {
+it('lists and claims invites using D1 time and can revoke an expired unused invite', async () => {
   const send = runtime()
   const idp = mockProvider()
   const owner = await idp.signedIn(send, admin)
   const link = await createInvite(owner, 'publisher')
+  const id = await listedId(owner, members, 'revoke-invite')
   const browser = new Browser(send)
   const callback = await idp.issue(await beginInvite(browser, link), 'expired-invitee')
   await DB.prepare("UPDATE invites SET expires_at = unixepoch('subsec') * 1000 - 1").run()
@@ -154,15 +191,18 @@ it('rechecks expiry using D1 time even when the callback Worker clock is behind'
   const unknown = await send(`/invite/${'a'.repeat(43)}`)
   expect(expired.status).toBe(404)
   expect(await expired.text()).toBe(await unknown.text())
-  expect(await (await owner.request(members)).text()).not.toContain('revoke-invite')
+  // List and callback must ignore a Worker clock that still considers this invite valid.
   const workerTime = Date.now() - 5_000
   const clock = vi.spyOn(Date, 'now').mockReturnValue(workerTime)
   try {
+    expect(await (await owner.request(members)).text()).not.toContain('revoke-invite')
     expect((await browser.request(callback)).status).toBe(302)
   } finally {
     clock.mockRestore()
   }
   expect(await (await browser.request('/')).text()).toContain('expired-invitee (viewer)')
+  expect((await owner.post(members, { action: 'revoke-invite', id })).status).toBe(303)
+  expect((await owner.post(members, { action: 'revoke-invite', id })).status).toBe(409)
 })
 
 it('does not re-admit a removed identity by invite, auto-join or a listed bootstrap email', async () => {

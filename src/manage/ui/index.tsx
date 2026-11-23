@@ -108,9 +108,12 @@ function SignIn({ config, query }: { config: Config; query: URLSearchParams }) {
 
 app.get('/login', (c) => {
   const { config } = c.env
-  const query = new URLSearchParams({
-    return: returnPath(c.req.query('return') ?? null, config.manageOrigin),
-  })
+  const context = c.req.query('invite')
+  const query = new URLSearchParams(
+    context && inviteKey.test(context)
+      ? { invite: context }
+      : { return: returnPath(c.req.query('return') ?? null, config.manageOrigin) },
+  )
   return c.html(<SignIn config={config} query={query} />)
 })
 
@@ -167,10 +170,7 @@ app.get('/admin/members', async (c) => {
   if (session instanceof Response) return session
   if (!isAdmin(session.member)) return c.text('Forbidden', 403)
   const db = c.env.env.DB
-  const [members, invites] = await Promise.all([
-    listMembers(db),
-    listInvites(db, session.member.id, Date.now()),
-  ])
+  const [members, invites] = await Promise.all([listMembers(db), listInvites(db, session.member.id)])
   return c.html(
     <Page config={c.env.config} title="Members">
       <table>

@@ -10,7 +10,17 @@ CREATE TABLE invites (
 );
 CREATE INDEX invites_expiry ON invites(expires_at);
 
+CREATE TABLE invite_contexts (
+  id TEXT PRIMARY KEY,
+  browser_hash TEXT NOT NULL,
+  invite_hash TEXT NOT NULL REFERENCES invites(token_hash) ON DELETE CASCADE,
+  expires_at INTEGER NOT NULL
+);
+CREATE INDEX invite_contexts_expiry ON invite_contexts(expires_at);
+CREATE INDEX invite_contexts_invite ON invite_contexts(invite_hash);
+
 ALTER TABLE members ADD COLUMN generation INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE sessions ADD COLUMN generation INTEGER;
 
 -- Gate 0 cleared removed_at on reinstatement. Revoke legacy credentials for anyone previously removed.
 UPDATE members SET generation = 1 WHERE removed_at IS NOT NULL OR id IN (
@@ -19,6 +29,8 @@ UPDATE members SET generation = 1 WHERE removed_at IS NOT NULL OR id IN (
 CREATE INDEX members_generation ON members(generation);
 UPDATE sessions SET revoked_at = unixepoch('subsec') * 1000
 WHERE revoked_at IS NULL AND member_id IN (SELECT id FROM members WHERE generation > 0);
+UPDATE sessions SET generation = (SELECT generation FROM members WHERE id = sessions.member_id)
+WHERE revoked_at IS NULL;
 UPDATE api_tokens SET revoked_at = unixepoch('subsec') * 1000
 WHERE revoked_at IS NULL AND member_id IN (SELECT id FROM members WHERE generation > 0);
 

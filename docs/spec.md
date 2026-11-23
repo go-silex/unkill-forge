@@ -112,7 +112,8 @@ wrangler.jsonc    template without account identifiers
 | `identities`           | (`provider`, `subject`) PK, `member_id` UNIQUE, `email`, `email_verified`, `last_login_at`                                                                 |
 | `login_flows`          | `state_hash` PK, `browser_hash`, `provider`, `return_path`, `session_hash` for silent revalidation, `created_at`, `expires_at`                                 |
 | `login_flow_metadata`  | `state_hash` PK and FK, `generation` (removal watermark), `invite_hash`                                                                                       |
-| `sessions`             | `id_hash` PK, `member_id`, `provider`, `subject`, `sid`, `auth_time`, `created_at`, `validated_at`, `expires_at`, `revoked_at`                             |
+| `invite_contexts`      | `id` PK, `browser_hash`, `invite_hash` FK, `expires_at`                                                                                                     |
+| `sessions`             | `id_hash` PK, `member_id`, `provider`, `subject`, `sid`, `auth_time`, `created_at`, `validated_at`, `expires_at`, `revoked_at`, `generation`                 |
 | `identity_revocations` | (`provider`, `jti`) PK, `subject` NULL for sid-only events, `sid` NULL for subject-wide events, `received_at`                                              |
 | `oauth_consents`       | `token_hash` PK, `session_hash`, validated authorization request URL, `expires_at`                                                                         |
 | `invites`              | `token_hash` PK, `role`, `created_by`, `created_at`, `expires_at`, `used_by`, `used_at`                                                                      |
@@ -285,13 +286,13 @@ Each `oidc` provider declares:
 **Admission** at first sign-in, first match wins:
 
 1. **Bootstrap**: while the instance has no active admin, a verified email listed in `ADMIN_EMAILS` becomes admin. This happens at most once per instance, even if the original admin is later removed or demoted.
-2. **Invite link**: `https://<manage>/invite/<token>` sets a ten-minute `__Host-forge-invite` cookie (HttpOnly, Secure, SameSite=Lax) and redirects to a token-free sign-in page. Starting provider sign-in clears the cookie and binds only the SHA-256 hash of the 256-bit token to the login flow. Forge checks expiry against D1's clock in the same transaction that consumes the invite and admits a new or pending member with its role. Active and removed identities do not consume an invite. An expired, used or revoked invite cannot grant a role; an already-started sign-in falls back to normal admission.
+2. **Invite link**: `https://<manage>/invite/<token>` starts a context valid for up to ten minutes and redirects to a page with no invite token. Provider links carry only an opaque context ID, bound to a matching HttpOnly, Secure, SameSite=Lax browser cookie. Separate tabs can open different contexts; a sign-in without a context never claims an invite. Forge stores only the SHA-256 hash of the 256-bit invite token. It checks expiry against D1's clock in the same transaction that consumes the invite and admits a new or pending member with its role. Active and removed identities do not consume an invite. An expired, used or revoked invite cannot grant a role; an already-started sign-in falls back to normal admission.
 3. **Provider auto-join**: `autoJoinRole` of the provider, once its claims (and `hostedDomains` for Google) hold.
 4. Otherwise: create a member with `status = pending`. An administrator can admit them with a role.
 
 A removed member keeps `status = removed` and is never admitted again automatically; only an admin can reinstate them. Each identity is its own member: a matching email never hands an account to another provider's identity. Bots are created by admins in the UI; they have no sign-in, only API tokens.
 
-Removal revokes the member's sessions and API tokens and advances their D1-ordered generation in the same transaction. OAuth approvals must match the current generation; unfinished sign-ins cannot create a session if membership was removed since the flow started. Reinstatement restores the member's role, not their credentials: they need a fresh sign-in and new OAuth approvals or API tokens.
+Removal revokes the member's sessions and API tokens and advances their D1-ordered generation in the same transaction. Sessions and OAuth approvals must match the current generation; unfinished sign-ins cannot create a session if membership was removed since the flow started. Reinstatement restores the member's role, not their credentials: they need a fresh sign-in and new OAuth approvals or API tokens.
 
 **Keeping sessions true to the identity manager.**
 

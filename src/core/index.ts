@@ -199,16 +199,16 @@ export async function createSession(
     flowCreatedAt,
     flowGeneration,
   } = session
+  // The flow records a global watermark, but the session stores its member's exact generation.
   const [result] = await db.batch([
     db
-      .prepare(`INSERT INTO sessions (id_hash, member_id, provider, subject, sid, auth_time, created_at, validated_at, expires_at)
-      SELECT ?, ?, ?, ?, ?, ?, ?, ?, ? WHERE NOT EXISTS (
+      .prepare(`INSERT INTO sessions (id_hash, member_id, provider, subject, sid, auth_time, created_at, validated_at, expires_at, generation)
+      SELECT ?, m.id, ?, ?, ?, ?, ?, ?, ?, m.generation FROM members m
+      WHERE m.id = ? AND m.status <> 'removed' AND m.generation <= ? AND NOT EXISTS (
         SELECT 1 FROM identity_revocations r WHERE r.provider = ? AND r.received_at >= ?
-        AND ((r.sid IS NULL AND r.subject = ?) OR (r.sid = ? AND (r.subject IS NULL OR r.subject = ?))))
-      AND EXISTS (SELECT 1 FROM members WHERE id = ? AND status <> 'removed' AND generation <= ?)`)
+        AND ((r.sid IS NULL AND r.subject = ?) OR (r.sid = ? AND (r.subject IS NULL OR r.subject = ?))))`)
       .bind(
         idHash,
-        memberId,
         provider,
         subject,
         sid,
@@ -216,13 +216,13 @@ export async function createSession(
         createdAt,
         validatedAt,
         expiresAt,
+        memberId,
+        flowGeneration,
         provider,
         flowCreatedAt,
         subject,
         sid,
         subject,
-        memberId,
-        flowGeneration,
       ),
     auditChange(db, createdAt, memberId, 'session.start', { provider }),
   ])
@@ -237,9 +237,10 @@ export async function readSession(
   const row = await db
     .prepare(`SELECT s.id_hash AS idHash, provider, subject, sid, auth_time AS authTime,
     s.created_at AS createdAt, validated_at AS validatedAt, expires_at AS expiresAt,
-    m.id, kind, name, email, role, status, generation
+    m.id, kind, name, email, role, status, m.generation
     FROM sessions s JOIN members m ON s.member_id = m.id
-    WHERE s.id_hash = ? AND s.expires_at > ? AND s.revoked_at IS NULL AND m.status <> 'removed'`)
+    WHERE s.id_hash = ? AND s.expires_at > ? AND s.revoked_at IS NULL AND m.status <> 'removed'
+    AND s.generation = m.generation`)
     .bind(idHash, now)
     .first<Omit<BrowserSession, 'member'> & Member>()
   if (!row) return null

@@ -2,21 +2,35 @@ import { auditChange, hashSecret, type Role, randomSecret } from './index'
 
 export const inviteKey = /^[A-Za-z0-9_-]{43}$/
 
-export async function activeInviteHash(db: D1Database, token: string, now: number): Promise<string | null> {
-  if (!inviteKey.test(token)) return null
-  return db
-    .prepare('SELECT token_hash FROM invites WHERE token_hash = ? AND used_at IS NULL AND expires_at > ?')
-    .bind(await hashSecret(token), now)
-    .first<string>('token_hash')
+export async function createInviteContext(db: D1Database, token: string, id: string, browser: string) {
+  if (!inviteKey.test(token)) return false
+  const [inviteHash, browserHash] = await Promise.all([hashSecret(token), hashSecret(browser)])
+  const [, result] = await db.batch([
+    db.prepare("DELETE FROM invite_contexts WHERE expires_at <= unixepoch('subsec') * 1000"),
+    db
+      .prepare(`INSERT INTO invite_contexts (id, browser_hash, invite_hash, expires_at)
+        SELECT ?, ?, token_hash, MIN(expires_at, unixepoch('subsec') * 1000 + 600000) FROM invites
+        WHERE token_hash = ? AND used_at IS NULL AND expires_at > unixepoch('subsec') * 1000`)
+      .bind(id, browserHash, inviteHash),
+  ])
+  return result.meta.changes === 1
 }
 
-export async function listInvites(db: D1Database, actor: string, now: number) {
+export async function consumeInviteContext(db: D1Database, id: string, browser: string) {
+  return db
+    .prepare(`DELETE FROM invite_contexts WHERE id = ? AND browser_hash = ?
+      AND expires_at > unixepoch('subsec') * 1000 RETURNING invite_hash`)
+    .bind(id, await hashSecret(browser))
+    .first<string>('invite_hash')
+}
+
+export async function listInvites(db: D1Database, actor: string) {
   const { results } = await db
     .prepare(`SELECT token_hash AS id, role, expires_at AS expiresAt FROM invites
-      WHERE used_at IS NULL AND expires_at > ?
+      WHERE used_at IS NULL AND expires_at > unixepoch('subsec') * 1000
       AND EXISTS (SELECT 1 FROM members WHERE id = ? AND status = 'active' AND role = 'admin')
       ORDER BY created_at DESC, token_hash`)
-    .bind(now, actor)
+    .bind(actor)
     .all<{ id: string; role: Role; expiresAt: number }>()
   return results
 }
@@ -42,10 +56,11 @@ export async function createInvite(
 export async function revokeInvite(db: D1Database, actor: string, id: string, now: number): Promise<boolean> {
   const [result] = await db.batch([
     db
-      .prepare(`DELETE FROM invites WHERE token_hash = ? AND used_at IS NULL AND expires_at > ?
-        AND EXISTS (SELECT 1 FROM members WHERE id = ? AND status = 'active' AND role = 'admin')`)
-      .bind(id, now, actor),
+      .prepare(`DELETE FROM invites WHERE token_hash = ? AND used_at IS NULL
+        AND EXISTS (SELECT 1 FROM members WHERE id = ? AND status = 'active' AND role = 'admin')
+        RETURNING token_hash`)
+      .bind(id, actor),
     auditChange(db, now, actor, 'invite.revoke', { id }),
   ])
-  return result.meta.changes === 1
+  return result.results.length === 1
 }
