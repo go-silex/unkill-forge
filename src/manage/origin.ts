@@ -20,7 +20,7 @@ export function manageHeaders(response: Response, formTarget?: string): Response
   headers.set('Cache-Control', 'no-store')
   headers.set('X-Content-Type-Options', 'nosniff')
   // `no-referrer` would make browsers send `Origin: null` on same-origin form POSTs.
-  headers.set('Referrer-Policy', 'same-origin')
+  if (!headers.has('Referrer-Policy')) headers.set('Referrer-Policy', 'same-origin')
   // Chrome checks the POST redirect against form-action as well as the form target.
   if (!headers.has('Content-Security-Policy')) {
     const formAction = formTarget ? `; form-action 'self' ${formTarget}` : "; form-action 'self'"

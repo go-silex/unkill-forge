@@ -11,7 +11,8 @@ import {
   listTokens,
   revokeApiToken,
 } from '../../core/admin'
-import { requireBrowserSession, returnPath } from '../login'
+import { createInvite, inviteKey, listInvites, revokeInvite } from '../../core/invites'
+import { openInvite, requireBrowserSession, returnPath } from '../login'
 
 export function Page({ config, title, children }: { config: Config; title: string; children: Child }) {
   return (
@@ -49,6 +50,8 @@ const labelSchema = z.string().trim().min(1).max(120)
 const memberAction = z.discriminatedUnion('action', [
   z.object({ action: z.enum(['admit', 'role']), id: idSchema, role: roleSchema }),
   z.object({ action: z.enum(['remove', 'reinstate']), id: idSchema }),
+  z.object({ action: z.literal('create-invite'), role: roleSchema }),
+  z.object({ action: z.literal('revoke-invite'), id: z.string().regex(inviteKey) }),
 ])
 const botAction = z.discriminatedUnion('action', [
   z.object({ action: z.literal('create'), name: labelSchema, role: z.enum(['viewer', 'publisher']) }),
@@ -89,12 +92,8 @@ app.get(
     ),
 )
 
-app.get('/login', (c) => {
-  const { config } = c.env
-  const query = new URLSearchParams({
-    return: returnPath(c.req.query('return') ?? null, config.manageOrigin),
-  })
-  return c.html(
+function SignIn({ config, query }: { config: Config; query: URLSearchParams }) {
+  return (
     <Page config={config} title="Sign in">
       <ul>
         {config.providers.map((provider) => (
@@ -103,7 +102,30 @@ app.get('/login', (c) => {
           </li>
         ))}
       </ul>
+    </Page>
+  )
+}
+
+app.get('/login', (c) => {
+  const { config } = c.env
+  const context = c.req.query('invite')
+  const query = new URLSearchParams(
+    context && inviteKey.test(context)
+      ? { invite: context }
+      : { return: returnPath(c.req.query('return') ?? null, config.manageOrigin) },
+  )
+  return c.html(<SignIn config={config} query={query} />)
+})
+
+app.get('/invite/:token', async (c) => {
+  const redirect = await openInvite(c.env, c.req.param('token'))
+  if (redirect) return redirect
+  c.header('Referrer-Policy', 'no-referrer')
+  return c.html(
+    <Page config={c.env.config} title="Invite invalid or expired">
+      <a href="/login">Sign in</a>
     </Page>,
+    404,
   )
 })
 
@@ -147,7 +169,8 @@ app.get('/admin/members', async (c) => {
   const session = await requireBrowserSession(c.req.raw, c.env)
   if (session instanceof Response) return session
   if (!isAdmin(session.member)) return c.text('Forbidden', 403)
-  const members = await listMembers(c.env.env.DB)
+  const db = c.env.env.DB
+  const [members, invites] = await Promise.all([listMembers(db), listInvites(db, session.member.id)])
   return c.html(
     <Page config={c.env.config} title="Members">
       <table>
@@ -202,6 +225,38 @@ app.get('/admin/members', async (c) => {
           ))}
         </tbody>
       </table>
+      <h2>Invite links</h2>
+      <form action="/admin/members" method="post">
+        <RoleSelect human />
+        <button type="submit" name="action" value="create-invite">
+          Create invite link
+        </button>
+      </form>
+      <table>
+        <thead>
+          <tr>
+            <th>Role</th>
+            <th>Expires (UTC)</th>
+            <th>Actions</th>
+          </tr>
+        </thead>
+        <tbody>
+          {invites.map((invite) => (
+            <tr>
+              <td>{invite.role}</td>
+              <td>{new Date(invite.expiresAt).toISOString()}</td>
+              <td>
+                <form action="/admin/members" method="post">
+                  <input type="hidden" name="id" value={invite.id} />
+                  <button type="submit" name="action" value="revoke-invite">
+                    Revoke
+                  </button>
+                </form>
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
     </Page>,
   )
 })
@@ -212,9 +267,32 @@ app.post('/admin/members', async (c) => {
   if (!isAdmin(session.member)) return c.text('Forbidden', 403)
   const form = memberAction.safeParse(await c.req.parseBody())
   if (!form.success) return c.text('Invalid member action', 400)
-  const { id, action } = form.data
-  const role = 'role' in form.data ? form.data.role : undefined
-  const changed = await changeMember(c.env.env.DB, session.member.id, id, action, role, Date.now())
+  const { data } = form
+  const {
+    config,
+    env: { DB },
+  } = c.env
+  const actor = session.member.id
+  const now = Date.now()
+  if (data.action === 'create-invite') {
+    const token = await createInvite(DB, actor, data.role, now)
+    if (!token) return c.text('Invite action not allowed', 409)
+    return c.html(
+      <Page config={config} title="Invite link created">
+        <p>Copy this link now. It will not be shown again. It expires in seven days and can be used once.</p>
+        <p>
+          <code>
+            {config.manageOrigin}/invite/{token}
+          </code>
+        </p>
+        <a href="/admin/members">Back to members</a>
+      </Page>,
+    )
+  }
+  const changed =
+    data.action === 'revoke-invite'
+      ? await revokeInvite(DB, actor, data.id, now)
+      : await changeMember(DB, actor, data.id, data.action, 'role' in data ? data.role : undefined, now)
   return changed ? c.redirect('/admin/members', 303) : c.text('Member action not allowed', 409)
 })
 

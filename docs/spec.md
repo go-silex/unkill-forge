@@ -106,31 +106,33 @@ wrangler.jsonc    template without account identifiers
 
 ## 5. Data model
 
-| Table                  | Columns (essentials)                                                                                                                                       |
-| ---------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `members`              | `id` PK, `kind` ∈ human/bot, `name`, `email`, `role` ∈ viewer/publisher/admin, `status` ∈ pending/active/removed, `created_at`, `created_by`, `removed_at` |
-| `identities`           | (`provider`, `subject`) PK, `member_id` UNIQUE, `email`, `email_verified`, `last_login_at`                                                                 |
-| `login_flows`          | `state_hash` PK, `browser_hash`, `provider`, `return_path`, `session_hash` for silent revalidation, `created_at`, `expires_at`; `invite_hash` in Phase 1   |
-| `sessions`             | `id_hash` PK, `member_id`, `provider`, `subject`, `sid`, `auth_time`, `created_at`, `validated_at`, `expires_at`, `revoked_at`                             |
-| `identity_revocations` | (`provider`, `jti`) PK, `subject` NULL for sid-only events, `sid` NULL for subject-wide events, `received_at`                                              |
-| `oauth_consents`       | `token_hash` PK, `session_hash`, validated authorization request URL, `expires_at`                                                                         |
-| `invites`              | `token_hash` PK, `role`, `created_by`, `expires_at`, `used_by`, `used_at`                                                                                  |
-| `artefacts`            | `id` PK, `slug` UNIQUE, `title`, `visibility` ∈ private/public, `current_revision`, `created_by`, `created_at`, `updated_at`, `deleted_at`                 |
-| `revisions`            | (`artefact_id`, `number`) PK, `created_by`, `created_at`, `message`                                                                                        |
-| `files`                | (`artefact_id`, `revision`, `path`) PK, `sha256`, `size`, `content_type`                                                                                   |
-| `share_links`          | `id` PK, `artefact_id`, `label`, `key_hash` UNIQUE, `key_sealed`, `created_by`, `created_at`, `revoked_at`, `last_used_at`                                 |
-| `api_tokens`           | `id` PK, `member_id`, `name`, `prefix`, `token_hash` UNIQUE, `created_at`, `last_used_at`, `revoked_at`                                                    |
-| `uploads`              | `token_hash` PK, `member_id`, `slug`, `path`, `sha256`, `size`, `content_type`, `state` ∈ pending/stored/consumed, `expires_at`                            |
-| `handoffs`             | `code_hash` PK, `session_id_hash`, `state_hash`, `return_path`, `expires_at`                                                                               |
-| `redirects`            | `from_prefix` PK, `to_prefix`, `created_at`                                                                                                                |
-| `audit_log`            | `id`, `at`, `member_id`, `action`, `artefact_id`, `detail_json`                                                                                            |
+| Table                  | Columns (essentials)                                                                                                                                                                           |
+| ---------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `members`              | `id` PK, `kind` ∈ human/bot, `name`, `email`, `role` ∈ viewer/publisher/admin, `status` ∈ pending/active/removed, `created_at`, `created_by`, `removed_at`, `generation` (advanced on removal) |
+| `identities`           | (`provider`, `subject`) PK, `member_id` UNIQUE, `email`, `email_verified`, `last_login_at`                                                                                                     |
+| `login_flows`          | `state_hash` PK, `browser_hash`, `provider`, `return_path`, `session_hash` for silent revalidation, `created_at`, `expires_at`                                                                 |
+| `login_flow_metadata`  | `state_hash` PK and FK, `generation` (removal watermark), `invite_hash`                                                                                                                        |
+| `invite_contexts`      | `id` PK, `browser_hash`, `invite_hash` FK, `expires_at`                                                                                                                                        |
+| `sessions`             | `id_hash` PK, `member_id`, `provider`, `subject`, `sid`, `auth_time`, `created_at`, `validated_at`, `expires_at`, `revoked_at`, `generation`                                                   |
+| `identity_revocations` | (`provider`, `jti`) PK, `subject` NULL for sid-only events, `sid` NULL for subject-wide events, `received_at`                                                                                  |
+| `oauth_consents`       | `token_hash` PK, `session_hash`, validated authorization request URL, `expires_at`                                                                                                             |
+| `invites`              | `token_hash` PK, `role`, `created_by`, `created_at`, `expires_at`, `used_by`, `used_at`                                                                                                        |
+| `artefacts`            | `id` PK, `slug` UNIQUE, `title`, `visibility` ∈ private/public, `current_revision`, `created_by`, `created_at`, `updated_at`, `deleted_at`                                                     |
+| `revisions`            | (`artefact_id`, `number`) PK, `created_by`, `created_at`, `message`                                                                                                                            |
+| `files`                | (`artefact_id`, `revision`, `path`) PK, `sha256`, `size`, `content_type`                                                                                                                       |
+| `share_links`          | `id` PK, `artefact_id`, `label`, `key_hash` UNIQUE, `key_sealed`, `created_by`, `created_at`, `revoked_at`, `last_used_at`                                                                     |
+| `api_tokens`           | `id` PK, `member_id`, `name`, `prefix`, `token_hash` UNIQUE, `created_at`, `last_used_at`, `revoked_at`                                                                                        |
+| `uploads`              | `token_hash` PK, `member_id`, `slug`, `path`, `sha256`, `size`, `content_type`, `state` ∈ pending/stored/consumed, `expires_at`                                                                |
+| `handoffs`             | `code_hash` PK, `session_id_hash`, `state_hash`, `return_path`, `expires_at`                                                                                                                   |
+| `redirects`            | `from_prefix` PK, `to_prefix`, `created_at`                                                                                                                                                    |
+| `audit_log`            | `id`, `at`, `member_id`, `action`, `artefact_id`, `detail_json`                                                                                                                                |
 
 Indexes:
 
 - `artefacts(deleted_at, updated_at)`, `share_links(artefact_id)`, `files(sha256)`;
 - `sessions(member_id)`, `sessions(provider, subject)`, `sessions(provider, sid)`, `identity_revocations(provider, subject)`;
 - `api_tokens(member_id)`, `audit_log(artefact_id, at)`;
-- `expires_at` on `login_flows`, `uploads`, `handoffs`.
+- `expires_at` on `login_flows`, `invites`, `uploads`, `handoffs`.
 
 Rules:
 
@@ -215,9 +217,9 @@ Endpoint `https://<manage>/mcp`: Streamable HTTP, stateless, JSON responses. Two
 - Authorization runs on the manage host: the person signs in (§10) and approves the consent page. Consent is always shown, with the verified client identity (the CIMD URL host, or "unverified client" otherwise) and the redirect host. Loopback redirects get an explicit warning. Approval consumes a single-use form token bound to the login session and authorization request.
 - The Forge-hosted local CIMD describes a generic local application, not a verified identity. Consent labels it unverified and displays the redirect's loopback port.
 - Access tokens are bound to `/mcp` and last up to one hour, shortened near the seven-day absolute grant end. Refresh tokens rotate; the cap starts at the code exchange.
-- Authorization codes are single-use. Every exchange, refresh and MCP request rechecks active membership and subject or session revocations at or after the grant was approved (§10).
+- Authorization codes are single-use. Every exchange, refresh and MCP request rechecks active membership, the member's generation at approval, and subject or session revocations at or after the grant was approved (§10).
 
-Gate 0 reserves the code's `grant_id` and `redeemed_at` in D1's `oauth_code_redemptions`. A validated replay records a durable `oauth_code_replays` marker, retried up to three times, that denies exchange, refresh and MCP access even if KV revocation races issuance. Both refresh and MCP also require the KV grant to exist. A confirmed rate limit at the grant write releases an unreplayed reservation; when issuance is partial or uncertain the client must restart authorization. `/token` rejects bodies over 16 KiB and requests with more than one `code`, and reads the code with the provider's form parser. Access tokens without `grantId` are refused; grants that carry `sid` can refresh to acquire it, while original Gate 0 grants without `sid` require fresh authorization.
+Gate 0 reserves the code's `grant_id` and `redeemed_at` in D1's `oauth_code_redemptions`. A validated replay records a durable `oauth_code_replays` marker, retried up to three times, that denies exchange, refresh and MCP access even if KV revocation races issuance. Both refresh and MCP also require the KV grant to exist. A confirmed rate limit at the grant write releases an unreplayed reservation; when issuance is partial or uncertain the client must restart authorization. `/token` rejects bodies over 16 KiB and requests with more than one `code`, and reads the code with the provider's form parser. Access tokens without `grantId` are refused. Gate 0 grants lack a membership generation and require fresh authorization.
 
 **API tokens, for bots and autonomous agents** (Hermes, CI, scheduled jobs).
 
@@ -276,7 +278,7 @@ Each `oidc` provider declares:
 
 - `tokenAuthMethod`: `client_secret_basic` (default) or `client_secret_post` (required for Google). Set the method accepted by the registration regardless of which methods discovery lists.
 - `requireClaims`: claims that must hold, in both ID token and UserInfo, or sign-in is refused. For example `{"email_verified": true, "active_member": true}`, where `active_member` is whatever claim the identity manager uses to say a person belongs to the team.
-- `autoJoinRole`: the role granted at first sign-in when the claims hold. Omit it for pending access in Gate 0 (or an invite in Phase 1).
+- `autoJoinRole`: the role granted at first sign-in when the claims hold and neither bootstrap nor an invite applies. Omit it to require an invite or manual admission.
 - For Google: `hostedDomains`, a list of accepted `hd` values (Workspace domains).
 - `sessionMaxHours` (default 8) and `revalidateAfterMinutes` (default 15, `0` disables).
 - `backchannelLogout` (default `true`; enable delivery separately at a provider that supports it).
@@ -284,17 +286,19 @@ Each `oidc` provider declares:
 **Login flow.**
 
 - `/login/<provider>` stores a single-use flow (5 minutes) bound to the hash of the `__Host-forge-flow` browser cookie. State is hashed in D1; nonce and PKCE verifier are derived from state rather than stored. The verifier is derived using `FORGE_COOKIE_KEY`.
-- The callback consumes the flow atomically (`DELETE … RETURNING`), validates as above, then admits (below) and creates a session.
+- The callback reads and deletes the flow in one D1 transaction, validates the identity, then admits (below) and creates a session.
 - The session cookie `__Host-forge-session` (HttpOnly, Secure, SameSite=Lax) is opaque; D1 stores only its hash. It records provider, subject, `sid` and `auth_time`.
 
 **Admission** at first sign-in, first match wins:
 
 1. **Bootstrap**: while the instance has no active admin, a verified email listed in `ADMIN_EMAILS` becomes admin. This happens at most once per instance, even if the original admin is later removed or demoted.
-2. **Invite link** (Phase 1) opened before signing in: its role. Single use, 7 days.
+2. **Invite link**: `https://<manage>/invite/<token>` starts a context valid for up to ten minutes and redirects to a page with no invite token. Provider links carry only an opaque context ID, bound to a matching HttpOnly, Secure, SameSite=Lax browser cookie. Separate tabs can open different contexts; a sign-in without a context never claims an invite. Forge stores only the SHA-256 hash of the 256-bit invite token. It checks expiry against D1's clock in the same transaction that consumes the invite and admits a new or pending member with its role. Active and removed identities do not consume an invite. An expired, used or revoked invite cannot grant a role; an already-started sign-in falls back to normal admission.
 3. **Provider auto-join**: `autoJoinRole` of the provider, once its claims (and `hostedDomains` for Google) hold.
 4. Otherwise: create a member with `status = pending`. An administrator can admit them with a role.
 
 A removed member keeps `status = removed` and is never admitted again automatically; only an admin can reinstate them. Each identity is its own member: a matching email never hands an account to another provider's identity. Bots are created by admins in the UI; they have no sign-in, only API tokens.
+
+Removal revokes the member's sessions and API tokens and advances their D1-ordered generation in the same transaction. Sessions and OAuth approvals must match the current generation; unfinished sign-ins cannot create a session if membership was removed since the flow started. Reinstatement restores the member's role, not their credentials: they need a fresh sign-in and new OAuth approvals or API tokens.
 
 **Keeping sessions true to the identity manager.**
 
@@ -320,6 +324,8 @@ Pages:
 - "Connect an agent": MCP URL and per-client steps;
 - OAuth consent.
 
+On **Members**, admins choose a role and create an invite link, valid for seven days and one admission. The URL is shown only at creation. The page lists unused, unexpired invites and lets admins revoke them. Invite creation, consumption and revocation are audited; create, revoke and reinstate forms require the manage origin.
+
 ## 12. Configuration, branding, deployment
 
 | Kind     | Names                                                                                                                                                                                                                                  |
@@ -341,6 +347,8 @@ Deployment needs a Cloudflare zone for the two hostnames, plus at least one iden
 3. Attach the two custom domains.
 4. Sign in with an `ADMIN_EMAILS` address.
 
+Database migrations are additive and must keep the previous Worker working; `INSERT` statements always name their columns.
+
 Operators who keep their configuration private run `npm run deploy -- --config <path>` with a file outside the repository. Workers Free is enough for light use; Workers Paid is recommended for large publishes (CPU time).
 
 ## 13. Security
@@ -357,6 +365,7 @@ Known limits, stated in `docs/security.md`:
 
 - Artefact JavaScript runs on the read origin with the viewer's cookie and can fetch any artefact that viewer can read. Publishers are trusted; never publish untrusted third-party HTML. Per-artefact origins are the upgrade path.
 - A share key travels in the URL. `Referrer-Policy` keeps it from third parties by default, but artefact HTML can override the policy, artefact JavaScript can read its own URL, and Cloudflare request logs may record paths. Anyone holding a link can forward it until revocation.
+- An invite URL can appear in platform request logs. Treat it as a bearer secret until it is used, revoked or expires.
 - Back-channel logout is best effort. A missing notification can leave the Forge session alive until revalidation or the cap. If the IdP session ends without a logout notification, the grant is only caught by subject-wide revocation, member removal or the 7-day grant end.
 - The OAuth provider accepts the previous refresh token until the next one is used, without reuse detection. The 7-day absolute grant end bounds a stolen refresh token.
 - If all replay-marker writes fail, replay revocation relies on the provider deleting the KV grant. Other Cloudflare locations can keep seeing that grant for 60 seconds or more (KV `cacheTtl`). During that window the first exchange's access token is accepted there, and a refresh there writes the grant back to KV, which restores it everywhere until another revocation or the 7-day grant end. The same outcome follows if the KV grant deletion fails. Exploiting it requires redeeming a code first, which needs its PKCE verifier, plus the D1 write failure.

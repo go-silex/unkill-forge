@@ -2,9 +2,9 @@
 
 Forge is a self-hosted service for publishing HTML artefacts at stable URLs, controlling who can read them, and working with them through remote MCP. It runs on Cloudflare.
 
-**Phase 1:** this build supports publishing, editing and reading artefacts over MCP, as well as sign-in and member and bot administration. Read-host delivery is not part of this build. See [the specification](docs/spec.md).
+**Phase 1:** this build supports publishing, editing and reading artefacts over MCP, as well as sign-in, member administration (including invites and reinstatement) and bot administration. Read-host delivery is not part of this build. See [the specification](docs/spec.md).
 
-The runtime is 3,107 lines under `src/`.
+The runtime is 3,338 lines under `src/`.
 
 ## Configure sign-in
 
@@ -40,7 +40,11 @@ Store each client's secret in Wrangler, not in the file: `AUTH_GITHUB_CLIENT_SEC
 
 For OIDC, `tokenAuthMethod` defaults to `client_secret_basic`. Set `client_secret_post` for Google or any client registered for POST. A registration accepts its configured method even when discovery lists both.
 
-The first eligible verified address in `ADMIN_EMAILS` can bootstrap an administrator. This is a one-time action. Later sign-ins create pending members unless an OIDC provider grants `autoJoinRole` after its claim checks. Keep an active administrator to manage access.
+The first eligible verified address in `ADMIN_EMAILS` can bootstrap an administrator, once per instance. Afterwards, a valid invite takes precedence over OIDC `autoJoinRole`. Without either, new members are pending until an administrator admits them.
+
+In **Members**, choose a role and create an invite link. Copy it when it appears: it is shown once, expires after seven days, and admits one new or pending member when they open it and sign in. Admins can revoke unused links from the same page.
+
+Only an admin can reinstate a removed member. Reinstatement restores the role, not access for old sessions, OAuth grants, or API tokens. Sign in again, authorize MCP clients again, or issue new API tokens as appropriate. Keep an active administrator to manage access.
 
 ## Deploy
 
@@ -51,6 +55,12 @@ The first eligible verified address in `ADMIN_EMAILS` can bootstrap an administr
 5. Open the manage origin and sign in as the bootstrap administrator.
 
 Existing Gate 0 databases apply `0002_oauth_code_redemption.sql` to add replay tracking. It also works if the redemption table was already created manually.
+
+After deploying with `0004_invites.sql`:
+
+1. Anyone whose membership was ever removed must sign in again after reinstatement. Sessions created by the previous Worker between migration and rollout also require signing in again.
+2. Reissue API tokens for any bot that was ever removed, including tokens issued after a Gate 0 reinstatement. Tokens for other bots are unaffected.
+3. Reauthorize all OAuth clients. Gate 0 grants cannot be exchanged, refreshed, or used on MCP.
 
 ## Connect an agent
 
@@ -66,7 +76,7 @@ Existing Gate 0 databases apply `0002_oauth_code_redemption.sql` to add replay t
 - **Hermes:** Create a bot and token under **Bots and API tokens**, copy the token when shown, and send `Authorization: Bearer fgt_<token>` to the same `/mcp` URL.
 - For browser-based MCP clients, add their exact HTTPS origins to the optional comma-separated `MCP_ALLOWED_ORIGINS`. Leave it unset for clients that do not send an `Origin` header.
 
-OAuth access tokens last up to one hour and are shortened near the grant's seven-day cap. Codes are single-use: overlapping exchanges revoke the grant, and only a confirmed KV rate limit before the code is consumed permits retrying it. Access tokens without `grantId` are refused. If the grant already carries `sid`, refresh to acquire `grantId`; original Gate 0 grants without `sid` require fresh authorization.
+OAuth access tokens last up to one hour and are shortened near the grant's seven-day cap. Codes are single-use: overlapping exchanges revoke the grant, and only a confirmed KV rate limit before the code is consumed permits retrying it. Access tokens without `grantId` are refused.
 
 MCP tools:
 
