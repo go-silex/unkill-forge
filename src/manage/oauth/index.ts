@@ -120,7 +120,7 @@ export async function oauthFetch(
           }
           if (req.method === 'GET')
             return new Response(null, { status: 405, headers: { Allow: 'POST, DELETE' } })
-          return handleMcp(req, config, member)
+          return handleMcp(req, { config, env: bindings }, member)
         },
       },
       defaultHandler: {
