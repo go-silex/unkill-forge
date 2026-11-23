@@ -1,4 +1,4 @@
-import { brandAsset } from './brand'
+import { brandAsset, themeAsset, themePrefix } from './brand'
 import { configuration, type Env } from './config'
 import { maintain } from './core/maintenance'
 import { messages } from './i18n'
@@ -17,6 +17,15 @@ export default {
     const url = new URL(request.url)
     const host = request.headers.get('Host')
     if (host !== null && host.toLowerCase() !== url.host) return new Response('Not found', { status: 404 })
+    // Theme assets are public, read-only, and available only on the two configured origins.
+    if (
+      (url.origin === config.readOrigin || url.origin === config.manageOrigin) &&
+      (url.pathname.startsWith(themePrefix) ||
+        url.pathname === '/_theme' ||
+        request.url.startsWith(themePrefix, url.origin.length))
+    ) {
+      return themeAsset(request, url, config.theme)
+    }
     const runtime = { config, env }
     if (url.origin === config.readOrigin)
       return brandAsset(request.method, url.pathname, config) ?? read(request, url, runtime, ctx)

@@ -1,5 +1,6 @@
 import type { Child } from 'hono/jsx'
 import { base64url } from 'jose'
+import { brandMark, forgePageSources } from '../brand'
 import type { Config, Runtime } from '../config'
 import { canonicalRead, publicArtefacts, shareRead } from '../core/artefacts'
 import { handoffChallenge, readBoundSession, redeemHandoff, validHandoffState } from '../core/handoffs'
@@ -29,20 +30,33 @@ function notFound(config: Config, head = false) {
 }
 
 function statusPage(config: Config, title: string, status: number, head: boolean) {
-  return page(config, title, <h1>{title}</h1>, head, status)
+  return page(config, title, 'error', <h1 class="forge-title">{title}</h1>, head, status)
 }
 
-function page(config: Config, title: string, children: Child, head: boolean, status = 200) {
+function page(
+  config: Config,
+  title: string,
+  panel: 'landing' | 'pending' | 'error',
+  children: Child,
+  head: boolean,
+  status = 200,
+) {
   const html = (
     <html lang={config.locale}>
-      <DocumentHead title={title} />
+      <DocumentHead config={config} title={title} />
       <body>
-        <main>{children}</main>
+        <main class={`forge-panel forge-panel--${panel}`}>
+          <div class="forge-panel__body">{children}</div>
+        </main>
       </body>
     </html>
   )
   const headers = readHeaders()
   headers.set('Content-Type', 'text/html; charset=utf-8')
+  headers.set(
+    'Content-Security-Policy',
+    `default-src 'none'; ${forgePageSources}; base-uri 'none'; frame-ancestors 'none'`,
+  )
   return new Response(head ? null : `<!doctype html>${html}`, { status, headers })
 }
 
@@ -83,8 +97,9 @@ async function completeHandoff(request: Request, runtime: Runtime) {
     return page(
       config,
       text.incomplete,
+      'error',
       <>
-        <h1>{text.incomplete}</h1>
+        <h1 class="forge-title">{text.incomplete}</h1>
         {path && (
           <p>
             <a href={path}>{text.retry}</a>
@@ -144,8 +159,9 @@ export async function read(
         return page(
           config,
           `${common.pending} — ${config.name}`,
+          'pending',
           <>
-            <h1>{common.pending}</h1>
+            <h1 class="forge-title">{common.pending}</h1>
             <p>{text.askAdmin}</p>
           </>,
           head,
@@ -159,16 +175,17 @@ export async function read(
       return page(
         config,
         name,
+        'landing',
         <>
-          <header>
-            <h1 class="brand">
-              <img src="/logo.svg" alt="" width="32" height="32" />
+          <header class="forge-panel__header">
+            <h1 class="forge-brand forge-title">
+              <img class="forge-brand__logo" src={brandMark(config, 'logo')} alt="" />
               {name}
             </h1>
           </header>
           {!publicIndex && brand.landingText && <p>{brand.landingText}</p>}
           {entries && (
-            <ul aria-label={text.artefacts}>
+            <ul class="forge-link-list" aria-label={text.artefacts}>
               {entries.map(({ url, title }) => (
                 <li key={url}>
                   <a href={url}>{title}</a>

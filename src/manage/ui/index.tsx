@@ -16,7 +16,7 @@ import { readForm } from '../../http'
 import { messages } from '../../i18n'
 import { openInvite, requireBrowserSession, returnPath } from '../login'
 import { adminPages } from './admin-pages'
-import { Action, flash, Page, page, pageLink, time, type UiContext } from './page'
+import { Action, flash, Page, page, pageLink, Table, time, type UiContext } from './page'
 
 const pageSize = 50
 
@@ -91,11 +91,13 @@ function RoleSelect({
 
 function SignIn({ config, query }: { config: Config; query: URLSearchParams }) {
   return (
-    <Page config={config} title={messages(config).signIn}>
-      <ul>
+    <Page config={config} title={messages(config).signIn} panel={query.has('invite') ? 'invite' : 'sign-in'}>
+      <ul class="forge-link-list">
         {config.providers.map((provider) => (
           <li>
-            <a href={`/login/${provider.id}?${query}`}>{provider.label}</a>
+            <a class="forge-button" href={`/login/${provider.id}?${query}`}>
+              {provider.label}
+            </a>
           </li>
         ))}
       </ul>
@@ -121,8 +123,10 @@ app.get('/invite/:token', async (c) => {
   const text = messages(config).legacy
   c.header('Referrer-Policy', 'no-referrer')
   return c.html(
-    <Page config={config} title={text.invalidInvite}>
-      <a href="/login">{messages(config).signIn}</a>
+    <Page config={config} title={text.invalidInvite} panel="invite">
+      <a class="forge-button" href="/login">
+        {messages(config).signIn}
+      </a>
     </Page>,
     404,
   )
@@ -186,7 +190,7 @@ app.get('/admin/members', async (c) => {
     session,
     common.members,
     <>
-      <table>
+      <Table>
         {tableHead([text.member, text.provider, text.email, text.status, text.role, common.admin.actions])}
         <tbody>
           {members.map((member) => (
@@ -217,14 +221,14 @@ app.get('/admin/members', async (c) => {
             </tr>
           ))}
         </tbody>
-      </table>
+      </Table>
       {members.length === pageSize &&
         pageLink(withQuery('/admin/members', { after: members.at(-1)?.id, inviteAfter }), text.nextMembers)}
       <h2>{text.inviteLinks}</h2>
-      <Action path="/admin/members" action="create-invite" label={text.createInvite}>
+      <Action path="/admin/members" action="create-invite" variant="primary" label={text.createInvite}>
         <RoleSelect config={config} human />
       </Action>
-      <table>
+      <Table>
         {tableHead([text.role, text.expires, common.admin.actions])}
         <tbody>
           {invites.map((invite) => (
@@ -242,7 +246,7 @@ app.get('/admin/members', async (c) => {
             </tr>
           ))}
         </tbody>
-      </table>
+      </Table>
       {invites.length === pageSize &&
         pageLink(withQuery('/admin/members', { after, inviteAfter: invites.at(-1)?.id }), text.nextInvites)}
     </>,
@@ -296,7 +300,7 @@ app.get('/admin/bots', async (c) => {
     session,
     common.bots,
     <>
-      <Action path="/admin/bots" action="create" label={text.createBot}>
+      <Action path="/admin/bots" action="create" variant="primary" label={text.createBot}>
         <label>
           {text.botName} <input name="name" required maxlength={120} />
         </label>
@@ -329,7 +333,7 @@ app.get('/admin/bots', async (c) => {
             {common.tokens}
             {selectedBot && ` · ${selectedBot.name}`}
           </h2>
-          {tokens.length === 0 && <p>{text.emptyCredentials}</p>}
+          {tokens.length === 0 && <p class="forge-empty">{text.emptyCredentials}</p>}
           <ul>
             {tokens.map((token) => (
               <li key={token.id}>

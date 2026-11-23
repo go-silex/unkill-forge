@@ -346,7 +346,7 @@ Management mutations use a 303 redirect and a one-use flash notice. Consent redi
 | -------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | Vars     | `FORGE_NAME`, `READ_ORIGIN`, `MANAGE_ORIGIN`, `ADMIN_EMAILS`, `AUTH_PROVIDERS` (§10), optional `LOCALE`, `BRAND`, `MCP_ALLOWED_ORIGINS` and limits below; `ALLOW_DCR`, `PUBLIC_INDEX` and `ALLOW_INDEXING` default to `false`. |
 | Secrets  | `FORGE_SEAL_KEY`, `FORGE_COOKIE_KEY`, one `AUTH_<ID>_CLIENT_SECRET` per provider                                                                                                                                               |
-| Bindings | `DB` (D1), `BLOBS` (R2), `OAUTH_KV` (KV), optional rate-limit binding                                                                                                                                                          |
+| Bindings | `DB` (D1), `BLOBS` (R2), `OAUTH_KV` (KV), optional `THEME` (Workers Static Assets) and optional rate-limit binding |
 
 The publish limits are positive integers: `MAX_FILES_PER_ARTEFACT` (default `1000`, up to `10000`, applied to the resulting revision), `MAX_BLOB_WRITES_PER_CALL` (default `500`, up to `900` to stay within the Workers subrequest budget), and `MAX_INLINE_BYTES` (default `2097152`, up to `8388608`, summed decoded bytes per call). Each of the `files` and `delete` arrays is independently capped at 10,000 entries.
 
@@ -356,15 +356,15 @@ The publish limits are positive integers: `MAX_FILES_PER_ARTEFACT` (default `100
 
 - Configuration is parsed once. Any invalid value makes every request answer 503 and logs the list of errors.
 - **Locale:** `LOCALE` accepts `en` (default) or `fr`.
-- **Branding:** `FORGE_NAME` supplies the display name. Optional `BRAND` is a JSON object with `accent` (six hexadecimal digits prefixed with `#`) and `landingText` (plain text, up to 500 characters, for the non-index read landing). Defaults for the accent and SVG logo/favicon live in `brand/defaults.ts`, are bundled at build time and are served from same-origin routes on both hosts. Page structure, sign-in and consent markup belong to Forge.
+- **Branding:** `FORGE_NAME` supplies the display name. Optional `BRAND` is a JSON-encoded object with `accent` (six hexadecimal digits prefixed with `#`), `landingText` (plain text, up to 500 characters, for the non-index read landing), and `logo` and `favicon` (root filenames matching `^[a-z0-9-]+\.(svg|png)$`; require `THEME`). The accent and marks fall back independently to the bundled defaults. Optional Workers Static Assets binding `THEME` with `run_worker_first: true` serves allowlisted CSS, images and WOFF2 fonts under `/_theme/` on both hosts. Forge-authored pages load the theme after the built-in light/dark stylesheet and expose the supported CSS properties and classes in the [theme contract](self-hosting.md#theme). Page structure, content and behaviour belong to Forge; artefact files and redirects are unaffected.
 
-See the [self-hosting guide](self-hosting.md) for the Deploy to Cloudflare button, manual creation of bindings, provider callbacks, secrets, Custom Domains, lifecycle configuration, bootstrap and backups. `npm run deploy -- --config <path>` applies migrations and deploys; it does not provision resources. Keep the operator configuration outside this repository.
+See the [self-hosting guide](self-hosting.md) for the Deploy to Cloudflare button, manual creation of bindings, provider callbacks, secrets, Custom Domains, lifecycle configuration, bootstrap and backups. `npm run deploy -- --config <path>` applies migrations and deploys; it does not provision resources. A relative `assets.directory` resolves from the external config file, not from the checkout. Keep the operator configuration outside this repository.
 
 Database migrations are additive and must keep the previous Worker working; `INSERT` statements always name their columns. Any degraded behaviour during a mixed-version rollout is listed in the [upgrade guide](self-hosting.md#upgrades-maintenance-and-backups).
 
 ## 13. Security
 
-- **Origins.** Dispatch on the configured origins before anything else; host-only cookies. Only the built-in branding assets are served on both hosts.
+- **Origins.** Dispatch on the configured origins before anything else; host-only cookies. Only bundled branding and allowlisted operator theme assets are served on both hosts.
 - **Cross-origin writes.** The two hosts are same-site, so SameSite cookies do not stop a read-origin page from sending requests to the manage host. Every state-changing request authenticated by cookie (UI forms, consent, logout) requires `Origin` to equal the manage origin exactly. MCP rejects any browser `Origin` other than an allowlisted client origin.
 - **Manage host.** Strict CSP, `frame-ancestors 'none'`. Uploaded content is never served from it.
 - **Sign-in.** Flow bound to the browser and consumed once; PKCE S256; nonce; strict issuer and audience checks; no implicit or hybrid flows; refusal on any missing required claim; a provider or D1 failure denies access.
@@ -445,7 +445,7 @@ See [security and known limits](security.md) for the trust model, browser isolat
 27. **Personal tokens:** publishers and admins can manage their own tokens; admins manage bot credentials separately. Downgrading a human to viewer disables both use and management of their tokens while downgraded.
 28. **One-use UI flashes:** D1 consumes each continuation atomically; seal secrets with a key derived from `FORGE_COOKIE_KEY`. Separate destination-bound continuation IDs let concurrent tabs complete independently.
 29. **Purge progress:** surface jobs by stable ID even after the artefact row has been removed; a user POST drives at most one core step.
-30. **Brand and locale:** locale is a validated instance setting; bundle SVG assets and allow only plain landing text and a hex CSS accent override to keep both hosts' templates and policy fixed.
+30. **Brand and locale:** keep G4 (branding through configuration and assets, not code edits). Validate the locale, bundle defaults and allow an operator to restyle Forge-authored pages through the documented CSS contract and a deployment-time, same-origin `THEME` binding, without changing page behaviour or artefact delivery.
 31. **Stale management forms:** bind the displayed artefact ID to the slug. Restoring its previous revision or deleting it must not affect a replacement at that slug.
 32. **Management history:** display member names and minute-precision dates in the configured locale and UTC; keep the MCP revision author field as an ID.
 33. **Daily maintenance:** at 03:00 UTC clean up at most 128 rows per expiry table per run; defer session and session-owned rows until one day after expiry without extending validity. Keep identity revocations for eight days. Attempt all independent tasks before reporting sanitized failure.

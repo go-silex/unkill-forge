@@ -516,8 +516,14 @@ it.each(['en', 'fr'] as const)(
       expect(document, path).toContain(`lang="${locale}"`)
       expect(document, path).toContain('Ember Studio')
     }
+    const catalogue = await html(owner, '/artefacts')
+    expect(catalogue).toContain('class="forge-shell"')
+    expect(catalogue).toContain('class="forge-nav__link" href="/artefacts" aria-current="page"')
+    expect(catalogue.match(/aria-current="page"/g)).toHaveLength(1)
+    expect(catalogue).toContain('class="forge-table"')
     const invalidInvite = await html(anonymous, '/invite/invalid', 404)
     expect(invalidInvite).toContain(french ? 'Invitation invalide ou expirée' : 'Invite invalid or expired')
+    expect(invalidInvite).toContain('forge-panel--invite')
     const connect = await html(owner, '/connect')
     expect(connect).toContain(
       french ? 'Point d’accès MCP (Streamable HTTP) :' : 'MCP endpoint (Streamable HTTP):',
@@ -552,7 +558,7 @@ it.each(['en', 'fr'] as const)(
     expect(publicIndex).toContain(french ? 'Artefacts publics' : 'Public artefacts')
     expect(publicIndex).toContain('Quarterly report')
     const css = await send('/style.css')
-    expect(await css.text()).toContain('--brand-accent:#123a6f')
+    expect(await css.text()).toContain('--forge-accent:#123a6f')
     for (const origin of [read, manage]) {
       const icon = await send(`${origin}/favicon.svg`)
       expect(icon.headers.get('Content-Type')).toContain('image/svg+xml')
@@ -595,6 +601,7 @@ it.each(['en', 'fr'] as const)(
     expect(handoff.status).toBe(200)
     const handoffHtml = await handoff.text()
     expect(handoffHtml).toContain(french ? 'Continuer vers Forge' : 'Continue to Forge')
+    expect(handoff.headers.get('Content-Security-Policy')).toContain("font-src 'self'")
     const handoffFields = (document: string) =>
       new URLSearchParams(
         Object.fromEntries(
@@ -609,6 +616,7 @@ it.each(['en', 'fr'] as const)(
     })
     expect(complete.status).toBe(303)
     expect(await html(reader, privateUrl)).toContain(french ? 'Accès en attente' : 'Pending access')
+    expect((await reader.request(privateUrl)).headers.get('Content-Security-Policy')).toContain("font-src 'self'")
     const next = await new Browser(send).request(privateUrl, { headers: navigation })
     const nextHandoff = await pending.request(location(next), { headers: navigation })
     const retry = await anonymous.request(`${read}/_forge/session`, {
@@ -644,6 +652,7 @@ it.each(['en', 'fr'] as const)(
     const consent = await html(owner, authorize)
     expect(consent).toContain(french ? 'Autoriser' : 'Allow')
     expect(consent).toContain('Locale test client')
+    expect(consent).toContain('forge-panel--consent')
     const local = new URL(authorize, manage)
     const localClientId = `${manage}/oauth/clients/local.json`
     const fetchIdp = fetch

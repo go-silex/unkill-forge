@@ -29,7 +29,7 @@ import { readForm } from '../../http'
 import { type AdminMessage, type AdminTranslate, adminMessages } from '../../i18n'
 import { requireBrowserSession } from '../login'
 import { localClientPath } from '../oauth'
-import { Action, flash, page, pageLink, time, type UiContext } from './page'
+import { Action, flash, page, pageLink, Table, time, type UiContext } from './page'
 
 export const adminPages = new Hono<{ Bindings: Runtime }>({
   getPath: (request) => new URL(request.url).pathname,
@@ -158,9 +158,9 @@ function VisibilityOptions({
 }
 
 function table(headers: string[], rows: Child[], t: AdminTranslate, empty: AdminMessage = 'noResults') {
-  if (rows.length === 0) return <p>{t(empty)}</p>
+  if (rows.length === 0) return <p class="forge-empty">{t(empty)}</p>
   return (
-    <table>
+    <Table>
       <thead>
         <tr>
           {headers.map((label) => (
@@ -169,7 +169,7 @@ function table(headers: string[], rows: Child[], t: AdminTranslate, empty: Admin
         </tr>
       </thead>
       <tbody>{rows}</tbody>
-    </table>
+    </Table>
   )
 }
 
@@ -204,7 +204,7 @@ adminPages.get(
       session,
       t('artefacts'),
       <>
-        <form method="get">
+        <form class="forge-action" method="get">
           <label>
             {t('searchQuery')} <input type="search" name="q" value={q} />
           </label>
@@ -214,7 +214,9 @@ adminPages.get(
               <VisibilityOptions t={t} value={selected} includeAll />
             </select>
           </label>
-          <button type="submit">{t('search')}</button>
+          <button class="forge-button forge-button--primary" type="submit">
+            {t('search')}
+          </button>
         </form>
         {table(
           [t('title'), t('slug'), t('visibility'), t('revision'), t('updated')],
@@ -373,7 +375,7 @@ adminPages.get(
             </Action>
             <h2>{t('delete')}</h2>
             <p>{t('deleteHelp')}</p>
-            <Action action="delete" label={t('delete')} fields={{ artefactId: artefact.id }} />
+            <Action action="delete" variant="danger" label={t('delete')} fields={{ artefactId: artefact.id }} />
           </>
         )}
       </>,
@@ -460,6 +462,7 @@ adminPages.get(
                 )}
                 <Action
                   action="purge"
+                  variant="danger"
                   label={t(entry.purging ? 'resumePurge' : 'purge')}
                   fields={{ id: entry.id, slug: entry.slug }}
                 />
@@ -500,7 +503,7 @@ adminPages.get(
       t('tokens'),
       <>
         <p>{t('ownCredentialHelp')}</p>
-        <Action action="create" label={t('createCredential')}>
+        <Action action="create" variant="primary" label={t('createCredential')}>
           <label>
             {t('ownCredentialName')} <input name="name" required maxlength={maxNameLength} />
           </label>

@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- Restyle Forge-authored pages with built-in light and dark defaults and an optional same-origin instance theme; Forge-authored read pages now have a restrictive CSP, and the sign-in handoff permits same-origin styles and fonts without changing artefact delivery.
+
 ## v2.0.1 — 2026-11-23
 
 - Use a verified email or the account subject as the OIDC revalidation hint, and retry once interactively when the provider requires it.

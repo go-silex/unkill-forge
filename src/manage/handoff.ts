@@ -1,7 +1,9 @@
-import { html } from 'hono/html'
+import { html, raw } from 'hono/html'
+import { forgePageSources } from '../brand'
 import type { Runtime } from '../config'
 import { issueHandoff, validHandoffState } from '../core/handoffs'
 import { decodeReadReturnPath } from '../core/read-path'
+import { DocumentHead } from '../head'
 import { messages } from '../i18n'
 import { requireBrowserSession } from './login'
 
@@ -10,7 +12,8 @@ const submitForm = 'document.getElementById("handoff").submit()'
 const scriptSource = "'sha256-URepbhA+DqUVhzv7aMzRNbbiOS8Gagc0jMUfE593kVY='"
 
 export async function manageHandoff(request: Request, url: URL, runtime: Runtime): Promise<Response> {
-  const { locale, readOrigin } = runtime.config
+  const { config } = runtime
+  const { locale, readOrigin } = config
   const { continueToForge: title, notFound } = messages(runtime.config)
   const mode = request.headers.get('Sec-Fetch-Mode')
   const dest = request.headers.get('Sec-Fetch-Dest')
@@ -32,18 +35,19 @@ export async function manageHandoff(request: Request, url: URL, runtime: Runtime
   // Pending identities can complete the handoff, but cannot read private content.
   const code = await issueHandoff(runtime.env.DB, session, state, path)
   return new Response(
-    `<!doctype html><html lang="${locale}"><meta charset="utf-8"><title>${title}</title><link rel="icon" href="/favicon.svg">
-<form id="handoff" method="post" action="${readOrigin}/_forge/session">
+    html`<!doctype html><html lang="${locale}">${DocumentHead({ config, title })}<body>
+<main class="forge-panel forge-panel--handoff"><div class="forge-panel__body">
+<form class="forge-action" id="handoff" method="post" action="${readOrigin}/_forge/session">
 <input type="hidden" name="code" value="${code}">
 <input type="hidden" name="state" value="${state}">
 <input type="hidden" name="nonce" value="${nonce}">
-${html`<input type="hidden" name="return" value="${path}">`}
-<button type="submit">${title}</button>
-</form><script>${submitForm}</script></html>`,
+<input type="hidden" name="return" value="${path}">
+<button class="forge-button forge-button--primary" type="submit">${title}</button>
+</form></div></main><script>${raw(submitForm)}</script></body></html>`.toString(),
     {
       headers: {
         'Content-Type': 'text/html; charset=utf-8',
-        'Content-Security-Policy': `default-src 'none'; img-src 'self'; base-uri 'none'; frame-ancestors 'none'; script-src ${scriptSource}; form-action ${readOrigin}`,
+        'Content-Security-Policy': `default-src 'none'; ${forgePageSources}; base-uri 'none'; frame-ancestors 'none'; script-src ${scriptSource}; form-action ${readOrigin}`,
         'Referrer-Policy': 'no-referrer',
         'Cross-Origin-Opener-Policy': 'same-origin',
       },

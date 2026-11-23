@@ -1,6 +1,6 @@
 import { spawnSync } from 'node:child_process'
 import { readFileSync, unlinkSync, writeFileSync } from 'node:fs'
-import { join } from 'node:path'
+import { dirname, isAbsolute, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 const args = process.argv.slice(2)
@@ -12,7 +12,20 @@ if (args.length !== 0 && (args.length !== 2 || args[0] !== '--config' || !args[1
 const root = fileURLToPath(new URL('..', import.meta.url))
 const wrangler = join(root, 'node_modules/wrangler/bin/wrangler.js')
 const copy = args[1] && join(root, `.wrangler-deploy-${process.pid}.jsonc`)
-if (copy) writeFileSync(copy, readFileSync(args[1]), { mode: 0o600, flag: 'wx' })
+if (copy) {
+  const external = resolve(args[1])
+  const { experimental_readRawConfig } = await import('wrangler')
+  const { rawConfig } = experimental_readRawConfig({ config: external }, { useRedirectIfAvailable: false })
+  const directory = rawConfig.assets?.directory
+  const contents =
+    typeof directory === 'string' && directory && !isAbsolute(directory)
+      ? JSON.stringify({
+          ...rawConfig,
+          assets: { ...rawConfig.assets, directory: resolve(dirname(external), directory) },
+        })
+      : readFileSync(external)
+  writeFileSync(copy, contents, { mode: 0o600, flag: 'wx' })
+}
 
 try {
   for (const command of [

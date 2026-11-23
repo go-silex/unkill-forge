@@ -1,6 +1,7 @@
 import type { Context } from 'hono'
 import { raw } from 'hono/html'
 import type { Child } from 'hono/jsx'
+import { brandMark } from '../../brand'
 import type { Config, Runtime } from '../../config'
 import type { BrowserSession, Member } from '../../core'
 import { putUiFlash, takeUiFlash } from '../../core/ui-flash'
@@ -13,21 +14,28 @@ export function Action({
   action,
   label,
   fields,
+  variant,
   path,
   children,
 }: {
   action: string
   label: string
   fields?: Record<string, string | number>
+  variant?: 'primary' | 'danger'
   path?: string
   children?: Child
 }) {
   return (
-    <form action={path} method="post">
+    <form class="forge-action" action={path} method="post">
       {fields &&
         Object.entries(fields).map(([name, value]) => <input type="hidden" name={name} value={value} />)}
       {children}
-      <button type="submit" name="action" value={action}>
+      <button
+        class={variant ? `forge-button forge-button--${variant}` : 'forge-button'}
+        type="submit"
+        name="action"
+        value={action}
+      >
         {label}
       </button>
     </form>
@@ -56,15 +64,27 @@ const nav = [
   ['/admin/redirects', 'redirects'],
 ] as const
 
+export function Table({ children }: { children: Child }) {
+  return (
+    <div class="forge-table-scroll" tabindex={0}>
+      <table class="forge-table">{children}</table>
+    </div>
+  )
+}
+
 export function Page({
   config,
   title,
   member,
+  path,
+  panel,
   children,
 }: {
   config: Config
   title: string
   member?: Member
+  path?: string
+  panel?: 'sign-in' | 'invite' | 'consent'
   children: Child
 }) {
   const t = messages(config)
@@ -72,32 +92,54 @@ export function Page({
     member?.status !== 'active'
       ? []
       : nav.slice(0, member.role === 'admin' ? nav.length : member.role === 'publisher' ? 3 : 2)
+  const brand = (
+    <a class="forge-brand" href="/">
+      <img class="forge-brand__logo" src={brandMark(config, 'logo')} alt="" />
+      {config.name}
+    </a>
+  )
+  const heading = <h1 class="forge-title">{title}</h1>
   return (
     <html lang={config.locale}>
-      <DocumentHead title={`${title} · ${config.name}`} />
+      <DocumentHead config={config} title={`${title} · ${config.name}`} />
       <body>
-        <header>
-          <a class="brand" href="/">
-            <img src="/logo.svg" alt="" width="32" height="32" />
-            {config.name}
-          </a>
-          {links.length > 0 && (
-            <nav aria-label={t.navigation}>
-              {links.map(([href, label]) => (
-                <a href={href}>{t[label]}</a>
-              ))}
-            </nav>
-          )}
-          {member && (
-            <form action="/logout" method="post">
-              <button type="submit">{t.signOut}</button>
-            </form>
-          )}
-        </header>
-        <main>
-          <h1>{title}</h1>
-          {children}
-        </main>
+        {member ? (
+          <div class="forge-shell">
+            <header class="forge-tray">
+              {brand}
+              {links.length > 0 && (
+                <nav class="forge-nav" aria-label={t.navigation}>
+                  {links.map(([href, label]) => (
+                    <a
+                      class="forge-nav__link"
+                      href={href}
+                      aria-current={path === href || path?.startsWith(`${href}/`) ? 'page' : undefined}
+                    >
+                      {t[label]}
+                    </a>
+                  ))}
+                </nav>
+              )}
+              <form class="forge-action" action="/logout" method="post">
+                <button class="forge-button" type="submit">
+                  {t.signOut}
+                </button>
+              </form>
+            </header>
+            <main class="forge-content">
+              {heading}
+              {children}
+            </main>
+          </div>
+        ) : (
+          <div class={`forge-panel${panel ? ` forge-panel--${panel}` : ''}`}>
+            <header class="forge-panel__header">{brand}</header>
+            <main class="forge-panel__body">
+              {heading}
+              {children}
+            </main>
+          </div>
+        )}
       </body>
     </html>
   )
@@ -152,14 +194,25 @@ export async function page(c: UiContext, session: BrowserSession, title: string,
   const notice = await navigationFlash(c, session)
   const secret = notice?.secret
   return c.html(
-    <Page config={config} title={title} member={session.member}>
+    <Page config={config} title={title} member={session.member} path={c.req.path}>
       {notice && (
-        <aside role="status" aria-label={t.notice} data-secret-flash={secret === undefined ? undefined : ''}>
+        <aside
+          class="forge-notice"
+          role="status"
+          aria-label={t.notice}
+          data-secret-flash={secret === undefined ? undefined : ''}
+        >
           <p>{notice.message}</p>
           {secret !== undefined && (
-            <p>
+            <p class="forge-secret">
               <code>{secret}</code>
-              <button type="button" data-copy="" data-copied={t.copied} data-failed={t.copyFailed}>
+              <button
+                class="forge-button"
+                type="button"
+                data-copy=""
+                data-copied={t.copied}
+                data-failed={t.copyFailed}
+              >
                 {t.copy}
               </button>
             </p>
