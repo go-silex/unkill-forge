@@ -1,6 +1,8 @@
 import { env } from 'cloudflare:test'
+import { base64url } from 'jose'
 import { expect, it, vi } from 'vitest'
 import type { Env } from '../src/config'
+import { sealShareKey, unsealShareKey } from '../src/core/share-keys'
 import { admin, type Handle, listedId, read, runtime, setupStorage } from './http'
 import { mockProvider, setupOidc } from './oidc'
 
@@ -745,4 +747,151 @@ it('pages 50 artefacts and 200 files without gaps, with literal search and revis
     error: 'conflict',
     currentRevision: 2,
   })
+})
+
+it('serves private share links anonymously with relative subresources and throttles last-used updates', async () => {
+  const send = runtime({ ALLOW_INDEXING: 'true' })
+  const { call } = await bot(send)
+  const slug = 'share-preview'
+  const html =
+    '<link rel="stylesheet" href="site.css"><script src="site.js"></script><img src="assets/photo.svg">'
+  const resources = {
+    'site.css': 'body { color: red }',
+    'site.js': 'document.title = "Loaded"',
+    'assets/photo.svg': '<svg xmlns="http://www.w3.org/2000/svg"/>',
+  }
+  await call('publish', {
+    slug,
+    mode: 'replace',
+    files: [file('index.html', html), ...Object.entries(resources).map(([path, body]) => file(path, body))],
+  })
+  const { id, url } = await call('create_share_link', { slug, label: 'Preview' })
+  expect(url).toMatch(new RegExp(`^${read}/s/${slug}/[A-Za-z0-9_-]{22}/$`))
+  const list = async () => (await call('list_share_links', { slug })).shareLinks
+  expect(await list()).toEqual([{ id, label: 'Preview', createdAt: expect.any(Number), lastUsedAt: null }])
+  const slash = await send(`${url.slice(0, -1)}?x=1`)
+  expect(slash.status).toBe(301)
+  expect(slash.headers.get('location')).toBe(`${new URL(url).pathname}?x=1`)
+  expect(slash.headers.get('cache-control')).toBe('private, no-store')
+
+  const clock = vi.spyOn(Date, 'now')
+  const now = Date.now()
+  clock.mockReturnValue(now)
+  try {
+    const root = await send(url, { headers: { 'if-none-match': '*' } })
+    expect(root.status).toBe(200)
+    expect(root.headers.get('cache-control')).toBe('private, no-store')
+    expect(root.headers.get('x-robots-tag')).toBe('noindex')
+    expect(root.headers.get('referrer-policy')).toBe('same-origin')
+    expect(root.headers.has('etag')).toBe(false)
+    expect(root.headers.has('set-cookie')).toBe(false)
+    const page = await root.text()
+    expect(page).toBe(html)
+    expect((await list())[0].lastUsedAt).toBe(now)
+    clock.mockReturnValue(now + 59_999)
+    for (const [, path] of page.matchAll(/(?:href|src)="([^"]+)"/g)) {
+      const relative = new URL(path, url)
+      expect(relative.href.startsWith(url)).toBe(true)
+      const asset = await send(relative)
+      expect(asset.status).toBe(200)
+      expect(await asset.text()).toBe(resources[path as keyof typeof resources])
+    }
+    expect((await list())[0].lastUsedAt).toBe(now)
+
+    clock.mockReturnValue(now + 60_000)
+    const range = await send(new URL('site.css', url), { headers: { range: 'bytes=0-3' } })
+    expect(range.status).toBe(206)
+    expect(await range.text()).toBe('body')
+    expect((await list())[0].lastUsedAt).toBe(now + 60_000)
+  } finally {
+    clock.mockRestore()
+  }
+})
+
+it('returns the same 404 for invalid, cross-artefact, deleted and revoked share URLs on a public artefact', async () => {
+  const send = runtime({ ALLOW_INDEXING: 'true' })
+  const { call } = await bot(send)
+  const slug = 'share-public'
+  for (const target of [slug, 'share-other']) {
+    await call('publish', { slug: target, mode: 'replace', files: [file('index.html')] })
+  }
+  expect(await call('set_visibility', { slug, visibility: 'public' })).toEqual({ visibility: 'public' })
+  const { id, url } = await call('create_share_link', { slug })
+  expect((await send(url)).status).toBe(200)
+  const other = await call('create_share_link', { slug: 'share-other' })
+  const crossArtefact = await send(other.url.replace('/share-other/', `/${slug}/`))
+  expect(crossArtefact.status).toBe(404)
+  await db.prepare('UPDATE artefacts SET deleted_at = ? WHERE slug = ?').bind(Date.now(), 'share-other').run()
+  const canonical = await send(`${read}/a/${slug}/`)
+  expect(canonical.status).toBe(200)
+  const headers = { 'if-none-match': canonical.headers.get('etag') ?? '*' }
+  expect(await call('revoke_share_link', { id })).toEqual({})
+  expect(await call('get_share_link', { id })).toMatchObject({ error: 'not_found' })
+  expect(await call('list_share_links', { slug })).toEqual({ shareLinks: [] })
+  const unavailable = [
+    url,
+    url.slice(0, -1),
+    other.url,
+    other.url.replace('/share-other/', `/${slug}/`),
+    url.replace(`/${slug}/`, '/unknown/'),
+    `${read}/s/${slug}/not-a-valid-key/`,
+    `${read}/s/${slug}/wrong-but-well-formed-key/`,
+  ]
+  const missing = await send(`${read}/missing`)
+  const body = await missing.text()
+  for (const path of unavailable) {
+    const denied = await send(path, { headers })
+    expect(denied.status).toBe(404)
+    expect([...denied.headers]).toEqual([...missing.headers])
+    expect(await denied.text()).toBe(body)
+  }
+  expect((await send(`${read}/a/${slug}/`, { headers })).status).toBe(304)
+})
+
+it('restricts share management to publishers, reveals keys only on create or get, and audits without keys', async () => {
+  const send = runtime()
+  const publisher = await bot(send)
+  const viewer = await bot(send, 'viewer')
+  const slug = 'share-manage'
+  await publisher.call('publish', { slug, mode: 'replace', files: [file('index.html')] })
+  const requested = 'publisher-imported-key'
+  expect(await publisher.call('create_share_link', { slug, key: requested })).toMatchObject({
+    error: 'forbidden',
+  })
+  expect(await viewer.call('create_share_link', { slug })).toMatchObject({ error: 'forbidden' })
+  const { id, url } = await publisher.call('create_share_link', { slug, label: 'Demo' })
+  expect(await publisher.call('get_share_link', { id })).toEqual({ url })
+  expect(await viewer.call('get_share_link', { id })).toMatchObject({ error: 'forbidden' })
+  expect(await viewer.call('list_share_links', { slug })).toMatchObject({ error: 'forbidden' })
+  expect(await viewer.call('revoke_share_link', { id })).toMatchObject({ error: 'forbidden' })
+
+  const metadata = [{ id, label: 'Demo', createdAt: expect.any(Number), lastUsedAt: null }]
+  expect(await publisher.call('list_share_links', { slug })).toEqual({ shareLinks: metadata })
+  expect((await publisher.call('get_artefact', { slug })).shareLinks).toEqual(metadata)
+  expect(await publisher.call('revoke_share_link', { id })).toEqual({})
+  const { results } = await db
+    .prepare(
+      "SELECT action, detail_json AS detail FROM audit_log WHERE action IN ('share.create', 'share.revoke')",
+    )
+    .all()
+  expect(results).toEqual(
+    expect.arrayContaining([
+      { action: 'share.create', detail: JSON.stringify({ id }) },
+      { action: 'share.revoke', detail: JSON.stringify({ id }) },
+    ]),
+  )
+  expect(results).toHaveLength(2)
+})
+
+it('unseals only an intact share key bound to its original link and artefact', async () => {
+  const secret = base64url.encode(crypto.getRandomValues(new Uint8Array(32)))
+  const key = 'Some-share_key-123'
+  const sealed = await sealShareKey(secret, 'link', 'artefact', key)
+  expect(sealed).not.toBe(await sealShareKey(secret, 'link', 'artefact', key))
+  expect(await unsealShareKey(secret, 'link', 'artefact', sealed)).toBe(key)
+  const tampered = base64url.decode(sealed)
+  tampered[tampered.length - 1] ^= 1
+  await expect(unsealShareKey(secret, 'link', 'artefact', base64url.encode(tampered))).rejects.toThrow()
+  await expect(unsealShareKey(secret, 'other', 'artefact', sealed)).rejects.toThrow()
+  await expect(unsealShareKey(secret, 'link', 'other', sealed)).rejects.toThrow()
 })

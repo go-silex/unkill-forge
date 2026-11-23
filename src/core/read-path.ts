@@ -1,11 +1,26 @@
 import { base64url } from 'jose'
+import { validShareKey } from './share-keys'
 
 // The URL path encodes each published POSIX segment independently.
 export function artefactPath(pathname: string) {
   const match = /^\/a\/([a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?)(?:\/(.*))?$/.exec(pathname)
   if (!match) return null
   const [, slug, encoded] = match
-  if (encoded === undefined || encoded === '') return { slug, path: encoded }
+  const path = decodeArtefactPath(encoded)
+  return path === null ? null : { slug, path }
+}
+
+export function sharePath(pathname: string) {
+  const match = /^\/s\/([a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?)\/([^/]+)(?:\/(.*))?$/.exec(pathname)
+  if (!match) return null
+  const [, slug, key, encoded] = match
+  if (!validShareKey(key)) return null
+  const path = decodeArtefactPath(encoded)
+  return path === null ? null : { slug, key, path }
+}
+
+function decodeArtefactPath(encoded: string | undefined) {
+  if (encoded === undefined || encoded === '') return encoded
 
   const directory = encoded.endsWith('/')
   const parts = (directory ? encoded.slice(0, -1) : encoded).split('/')
@@ -15,7 +30,7 @@ export function artefactPath(pathname: string) {
       return null
     }
     const path = decoded.join('/')
-    return /^.{1,512}$/su.test(path) ? { slug, path: directory ? `${path}/` : path } : null
+    return /^.{1,512}$/su.test(path) ? (directory ? `${path}/` : path) : null
   } catch {
     return null
   }

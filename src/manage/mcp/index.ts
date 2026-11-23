@@ -18,13 +18,18 @@ import type { Member } from '../../core'
 import {
   ArtefactError,
   checkPublishArrayLengths,
+  createShareLink,
   editFile,
   getArtefact,
+  getShareLink,
   listArtefacts,
+  listShareLinks,
   publish,
   readFile,
+  revokeShareLink,
   setVisibility,
 } from '../../core/artefacts'
+import { shareKeyMax, shareKeyMin } from '../../core/share-keys'
 
 function result(value: Record<string, unknown>, isError = false) {
   return {
@@ -250,6 +255,52 @@ export async function handleMcp(request: Request, runtime: Runtime, member: Memb
       'Change who can read the canonical artefact URL without publishing a new revision. Public means anyone; private means members. Tell the user the resulting visibility.',
       z.strictObject({ slug, visibility: z.enum(['private', 'public']) }),
       (input) => setVisibility(runtime, member, input.slug, input.visibility),
+    ),
+    tool(
+      'create_share_link',
+      'Create a bearer URL that anyone can use until revoked, even for a private artefact. Share the URL only with its intended recipients. Only admins may supply their own key.',
+      z.strictObject({
+        slug: slug.max(64),
+        label: z.string().max(200).optional(),
+        key: z
+          .string()
+          .min(shareKeyMin)
+          .max(shareKeyMax)
+          .regex(/^[A-Za-z0-9_-]+$/)
+          .optional(),
+      }),
+      (input) => createShareLink(runtime, member, input),
+      false,
+      (args) => {
+        if (
+          member.role !== 'admin' &&
+          typeof args === 'object' &&
+          args !== null &&
+          Object.hasOwn(args, 'key')
+        ) {
+          throw new ArtefactError('forbidden', 'Only an admin can supply a share key')
+        }
+      },
+    ),
+    tool(
+      'list_share_links',
+      'List active share link IDs, labels and timestamps without revealing bearer keys. Use an ID to copy or revoke a link.',
+      z.strictObject({ slug: slug.max(64) }),
+      (input) => listShareLinks(runtime, member, input.slug),
+      true,
+    ),
+    tool(
+      'get_share_link',
+      'Reveal the full bearer URL of an active share link by ID so an intended recipient can use it.',
+      z.strictObject({ id: z.uuid() }),
+      (input) => getShareLink(runtime, member, input.id),
+      true,
+    ),
+    tool(
+      'revoke_share_link',
+      'Disable a share link by ID without changing access at the canonical artefact URL.',
+      z.strictObject({ id: z.uuid() }),
+      (input) => revokeShareLink(runtime, member, input.id),
     ),
   ]
   server.setRequestHandler(ListToolsRequestSchema, () => ({ tools: tools.map((tool) => tool.definition) }))

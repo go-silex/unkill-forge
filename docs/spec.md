@@ -169,7 +169,7 @@ Resolution order for a request:
 
 1. `/a/<slug>` → 301 to `/a/<slug>/`.
 2. `/a/<slug>/<path>` where `slug` is a live artefact → apply canonical access, then resolve `path`, `path/index.html`, `path.html` in the current revision. A denied reader gets the access response whether or not the file exists.
-3. `/s/<slug>/<key>/<path>` where `slug` is a live artefact → same resolution under share-link access. Relative links stay under the share prefix, so no cookie is involved.
+3. `/s/<slug>/<key>` and `/s/<slug>/<key>/<path>` → check that the key belongs to an active link of a live artefact. After the check, redirect the bare URL to its trailing slash with 301, or resolve `path`, `path/index.html`, `path.html` in the current revision. Relative subresources stay under the share prefix without a cookie. Successful file resolutions update `last_used_at` at most once per minute per link.
 4. `POST /_forge/session` → end of the login handoff.
 5. Otherwise, the longest matching `redirects.from_prefix` → 302 to the target with the remaining path. Redirects never shadow a live artefact.
 6. `/` → when `PUBLIC_INDEX=true`, list the newest 200 public artefacts by creation time; otherwise show the branded landing page.
@@ -180,8 +180,8 @@ Unknown artefacts, unauthorized share requests and missing files return the same
 Response headers:
 
 - All responses: `X-Content-Type-Options: nosniff`; `Referrer-Policy: same-origin`.
-- `X-Robots-Tag: noindex`, unless the artefact is public and indexing is enabled.
-- Caching: `/s/` and non-public content send `Cache-Control: private, no-store`. Public content sends `no-cache` and a strong `ETag` combining the blob SHA-256 and the first eight hex digits of the served content type's SHA-256. Every request, including a `304`, goes through the access check. A type change invalidates the cache even when the bytes are unchanged.
+- `X-Robots-Tag: noindex`, unless canonical content is public and indexing is enabled. Share URLs always send `noindex`.
+- Caching: `/s/` and non-public content send `Cache-Control: private, no-store`, without an `ETag`. Public canonical content sends `no-cache` and a strong `ETag` combining the blob SHA-256 and the first eight hex digits of the served content type's SHA-256. Every request, including a `304`, goes through the access check. A type change invalidates the cache even when the bytes are unchanged.
 - Range requests are served from R2.
 
 **Login handoff.** Sessions live on the manage host; the read host keeps its own cookie, bound to that session.
@@ -239,9 +239,9 @@ Gate 0 reserves the code's `grant_id` and `redeemed_at` in D1's `oauth_code_rede
 | `edit_file`         | `slug`, `path`, `oldText`, `newText`, `expectedRevision` (required), `replaceAll?`                                                   | new revision; fails unless exactly one match (or `replaceAll`)                                                        |
 | `create_uploads`    | `slug`, `files[]` (`path`, `size`, `sha256`, `contentType?`)                                                                         | per file: `uploadId` and a single-use `PUT` URL valid 15 min, or "already stored" when the blob exists                |
 | `set_visibility`    | `slug`, `visibility`                                                                                                                 | `{visibility}`                                                                                                        |
-| `create_share_link` | `slug`, `label?`, `key?` (admin only)                                                                                                | share URL, in full                                                                                                    |
-| `list_share_links`  | `slug`                                                                                                                               | id, label, created, last used                                                                                         |
-| `get_share_link`    | `id`                                                                                                                                 | share URL, to copy it again                                                                                           |
+| `create_share_link` | `slug`, `label?` (up to 200 characters), `key?` (admin only)                                                                         | `{id, url}` with the full share URL                                                                                   |
+| `list_share_links`  | `slug`                                                                                                                               | `{shareLinks}` with active links' `id`, `label`, `createdAt`, `lastUsedAt`, no keys                                   |
+| `get_share_link`    | `id`                                                                                                                                 | `{url}` with the full active share URL, to copy it again                                                              |
 | `revoke_share_link` | `id`                                                                                                                                 | —                                                                                                                     |
 | `list_revisions`    | `slug`                                                                                                                               | number, author, date, message                                                                                         |
 | `restore_revision`  | `slug`, `revision`                                                                                                                   | new revision                                                                                                          |
@@ -256,6 +256,7 @@ Gate 0 reserves the code's `grant_id` and `redeemed_at` in D1's `oauth_code_rede
 - `publish` limits `title` to 200 characters and `message` to 1,000; `list_artefacts` limits `query` to 200. Oversized metadata and lone surrogates in inline UTF-8 or `edit_file` text return `invalid_input`.
 - `list_artefacts` returns up to 50 results per page ordered by most recently updated. `get_artefact` returns up to 200 files per page ordered by path. If the head changes between file pages, restart the listing at the new head.
 - `read_file` counts Unicode code points for slicing. Non-UTF-8 content and text files above 8 MiB return metadata only, with a reason. `edit_file` uses the same text decoding cap and refuses files above `MAX_INLINE_BYTES`. More than 10,000 matches returns `invalid_input` with `matches: 10001`, a lower bound; use `publish` for that change.
+- Publishers and admins may manage share links on any live artefact. `get_artefact` exposes the same keyless metadata as `list_share_links`. Create and get are the only tools that disclose the bearer URL. Revoked links no longer appear in lists, cannot be revealed, and return `not_found` for repeated revocation.
 - Members, bots and invites are managed in the admin UI, not over MCP.
 
 **Uploads.** `create_uploads` returns capability URLs on the manage host, `PUT /upload/<token>`. They serve shells that cannot hold the OAuth token.
@@ -357,7 +358,7 @@ Operators who keep their configuration private run `npm run deploy -- --config <
 - **Cross-origin writes.** The two hosts are same-site, so SameSite cookies do not stop a read-origin page from sending requests to the manage host. Every state-changing request authenticated by cookie (UI forms, consent, logout) requires `Origin` to equal the manage origin exactly. MCP rejects any browser `Origin` other than an allowlisted client origin.
 - **Manage host.** Strict CSP, `frame-ancestors 'none'`. Uploaded content is never served from it.
 - **Sign-in.** Flow bound to the browser and consumed once; PKCE S256; nonce; strict issuer and audience checks; no implicit or hybrid flows; refusal on any missing required claim; a provider or D1 failure denies access.
-- **Share keys.** 128 random bits, base64url. Imported keys of 16–128 URL-safe characters are accepted. Stored as SHA-256 plus an AES-GCM sealed copy (`FORGE_SEAL_KEY`) so publishers can copy the link again. Never written to application logs.
+- **Share keys.** 128 random bits, base64url, by default. Only admins may import keys of 16–128 characters in `[A-Za-z0-9_-]`. A unique SHA-256 hash is used for indexed lookups; revoked hashes stay reserved while the link record exists. The revealable copy uses AES-256-GCM with a random 96-bit IV and additional authenticated data binding the share link and artefact IDs. HKDF-SHA-256 derives the AES key from the required `FORGE_SEAL_KEY` under a dedicated share-link context. Keys are never written to application logs or audit entries.
 - **API tokens.** 256 random bits, stored as SHA-256, shown once, revocable, `last_used_at` tracked.
 - **Audit.** Every mutation writes `audit_log`. Optional rate limiting on sign-in, OAuth, handoff and share paths.
 
@@ -419,3 +420,7 @@ Known limits, stated in `docs/security.md`:
 5. **Pending readers:** a pending session can complete handoff to display the read-host pending page. Access is checked against live membership on every private request.
 6. **OIDC freshness:** stale private navigations use manage's silent revalidation; stale subresources return an empty, non-cacheable 401, and stale handoff redemptions do not restart the flow.
 7. **HTTP ranges:** single byte ranges are supported; unsupported units, malformed and multipart ranges fall back to the whole response.
+8. **Share-link management:** publishers may create, list, reveal and revoke links for any live artefact; only admins may import keys.
+9. **Share-link revocation:** revoked links are excluded from metadata and reveal; their hashes stay reserved to prevent reactivating the URL by reusing its key.
+10. **Share-link use tracking:** resolve a file before recording use, then throttle with a conditional D1 update once per minute.
+11. **Share entry URLs:** create and reveal use the current revision's entry file, omitting `index.html` when it is at the root.

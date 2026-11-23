@@ -2,7 +2,8 @@ import { base64url } from 'jose'
 import { z } from 'zod'
 import { MAX_ARTEFACT_FILES, type Runtime } from '../config'
 import { blobText, contentType, MAX_TEXT_BYTES, storeBlobs, textSlice } from './blobs'
-import type { Member } from './index'
+import { hashSecret, type Member } from './index'
+import { generateShareKey, sealShareKey, unsealShareKey, validShareKey } from './share-keys'
 
 type ErrorCode = 'not_found' | 'forbidden' | 'conflict' | 'invalid_input' | 'too_large'
 export class ArtefactError extends Error {
@@ -183,12 +184,15 @@ export async function getArtefact(runtime: Runtime, member: Member, slug: string
   if (after && after[0] !== id)
     throw new ArtefactError('invalid_input', 'Cursor belongs to a different artefact')
   if (after) checkRevision(after[1], revision)
-  const [page, entry] = await db.batch<Pick<File, 'path' | 'size' | 'type'>>([
-    db
-      .prepare(`SELECT path, size, content_type AS type FROM files
-      WHERE artefact_id = ? AND revision = ? AND path > ? ORDER BY path LIMIT 201`)
-      .bind(id, revision, after?.[2] ?? ''),
-    selectEntry(db, id, revision),
+  const [[page, entry], shareLinks] = await Promise.all([
+    db.batch<Pick<File, 'path' | 'size' | 'type'>>([
+      db
+        .prepare(`SELECT path, size, content_type AS type FROM files
+        WHERE artefact_id = ? AND revision = ? AND path > ? ORDER BY path LIMIT 201`)
+        .bind(id, revision, after?.[2] ?? ''),
+      selectEntry(db, id, revision),
+    ]),
+    shareLinkMetadata(db, id),
   ])
   const path = entry.results[0]?.path
   if (!path) throw new Error('Artefact head has no entry file')
@@ -198,7 +202,7 @@ export async function getArtefact(runtime: Runtime, member: Member, slug: string
   const nextCursor = more
     ? base64url.encode(JSON.stringify([id, revision, files[files.length - 1].path]))
     : undefined
-  return { ...artefact, files, url: entryUrl(config.readOrigin, slug, path), shareLinks: [], nextCursor }
+  return { ...artefact, files, url: entryUrl(config.readOrigin, slug, path), shareLinks, nextCursor }
 }
 
 async function findFile(db: D1Database, id: string, revision: number, path: string) {
@@ -231,15 +235,50 @@ export async function canonicalRead(
     if (!current.fresh) return { kind: 'revalidate' }
     if (current.member.status !== 'active') return { kind: 'pending' }
   }
+  const file = await resolveReadFile(db, artefact.id, artefact.revision, path)
+  return file ? { kind: 'serve', public: isPublic, file } : { kind: 'not-found' }
+}
+
+function resolveReadFile(db: D1Database, artefactId: string, revision: number, path: string) {
   const directory = path === '' || path.endsWith('/')
   const index = directory ? `${path}index.html` : `${path}/index.html`
-  const file = await db
+  return db
     .prepare(`SELECT path, size, content_type AS type, sha256 FROM files
       WHERE artefact_id = ?1 AND revision = ?2 AND path IN (?3, ?4, ?5)
       ORDER BY CASE path WHEN ?3 THEN 0 WHEN ?4 THEN 1 ELSE 2 END LIMIT 1`)
-    .bind(artefact.id, artefact.revision, directory ? null : path, index, directory ? null : `${path}.html`)
+    .bind(artefactId, revision, directory ? null : path, index, directory ? null : `${path}.html`)
     .first<File>()
-  return file ? { kind: 'serve', public: isPublic, file } : { kind: 'not-found' }
+}
+
+const shareUseInterval = 60_000
+
+export async function shareRead(
+  { env: { DB: db } }: Runtime,
+  slug: string,
+  key: string,
+  path: string | undefined,
+) {
+  const link = await db
+    .prepare(`SELECT s.id, s.artefact_id AS artefactId, s.last_used_at AS lastUsedAt,
+      a.current_revision AS revision FROM share_links s JOIN artefacts a ON a.id = s.artefact_id
+      WHERE s.key_hash = ? AND a.slug = ? AND s.revoked_at IS NULL AND a.deleted_at IS NULL`)
+    .bind(await hashSecret(key), slug)
+    .first<{ id: string; artefactId: string; lastUsedAt: number | null; revision: number }>()
+  if (!link) return { kind: 'not-found' } as const
+  if (path === undefined) return { kind: 'slash' } as const
+  const file = await resolveReadFile(db, link.artefactId, link.revision, path)
+  if (!file) return { kind: 'not-found' } as const
+  const now = Date.now()
+  const cutoff = now - shareUseInterval
+  if (link.lastUsedAt === null || link.lastUsedAt <= cutoff) {
+    // Recheck the cutoff in D1 so parallel subresources cannot each write.
+    await db
+      .prepare(`UPDATE share_links SET last_used_at = ? WHERE id = ? AND revoked_at IS NULL
+        AND (last_used_at IS NULL OR last_used_at <= ?)`)
+      .bind(now, link.id, cutoff)
+      .run()
+  }
+  return { kind: 'serve', file } as const
 }
 
 export async function readFile(
@@ -539,4 +578,96 @@ export async function setVisibility(
   ])
   if (result.meta.changes !== 1) throw new ArtefactError('not_found', 'Artefact not found')
   return { visibility }
+}
+
+async function shareLinkMetadata(db: D1Database, artefactId: string) {
+  const { results } = await db
+    .prepare(`SELECT id, label, created_at AS createdAt, last_used_at AS lastUsedAt FROM share_links
+      WHERE artefact_id = ? AND revoked_at IS NULL ORDER BY created_at DESC, id`)
+    .bind(artefactId)
+    .all<{ id: string; label: string | null; createdAt: number; lastUsedAt: number | null }>()
+  return results
+}
+
+function shareUrl(origin: string, slug: string, key: string, path: string) {
+  const base = `${origin}/s/${slug}/${key}/`
+  return path === 'index.html' ? base : base + path.split('/').map(encodeURIComponent).join('/')
+}
+
+export async function createShareLink(
+  { env: { DB: db }, config }: Runtime,
+  member: Member,
+  { slug, label, key: suppliedKey }: { slug: string; label?: string; key?: string },
+) {
+  checkMember(member, true)
+  if (suppliedKey !== undefined && member.role !== 'admin') {
+    throw new ArtefactError('forbidden', 'Only an admin can supply a share key')
+  }
+  if (suppliedKey !== undefined && !validShareKey(suppliedKey)) {
+    throw new ArtefactError('invalid_input', 'Share keys must contain 16–128 URL-safe characters')
+  }
+  const artefact = await liveHead(db, slug)
+  const entry = await selectEntry(db, artefact.id, artefact.revision).first<string>('path')
+  if (entry === null) throw new Error('Artefact head has no entry file')
+  const key = suppliedKey ?? generateShareKey()
+  const id = crypto.randomUUID()
+  const now = Date.now()
+  const [keyHash, sealed] = await Promise.all([
+    hashSecret(key),
+    sealShareKey(config.sealKey, id, artefact.id, key),
+  ])
+  const [insert] = await db.batch([
+    db
+      .prepare(`INSERT INTO share_links (id, artefact_id, label, key_hash, key_sealed, created_by, created_at)
+        SELECT ?, id, ?, ?, ?, ?, ? FROM artefacts WHERE id = ? AND deleted_at IS NULL
+        ON CONFLICT(key_hash) DO NOTHING`)
+      .bind(id, label ?? null, keyHash, sealed, member.id, now, artefact.id),
+    audit(db, now, member, artefact.id, 'share.create', { id }),
+  ])
+  if (insert.meta.changes !== 1) {
+    const current = await liveHead(db, slug)
+    if (current.id !== artefact.id) throw new ArtefactError('not_found', 'Artefact not found')
+    throw new ArtefactError('conflict', 'Share key is unavailable')
+  }
+  return { id, url: shareUrl(config.readOrigin, slug, key, entry) }
+}
+
+export async function listShareLinks({ env: { DB: db } }: Runtime, member: Member, slug: string) {
+  checkMember(member, true)
+  const { id } = await liveHead(db, slug)
+  return { shareLinks: await shareLinkMetadata(db, id) }
+}
+
+export async function getShareLink({ env: { DB: db }, config }: Runtime, member: Member, id: string) {
+  checkMember(member, true)
+  const link = await db
+    .prepare(`SELECT s.artefact_id AS artefactId, s.key_sealed AS sealed, a.slug,
+        a.current_revision AS revision FROM share_links s JOIN artefacts a ON a.id = s.artefact_id
+      WHERE s.id = ? AND s.revoked_at IS NULL AND a.deleted_at IS NULL`)
+    .bind(id)
+    .first<{ artefactId: string; sealed: string; slug: string; revision: number }>()
+  if (!link) throw new ArtefactError('not_found', 'Share link not found')
+  const entry = await selectEntry(db, link.artefactId, link.revision).first<string>('path')
+  if (entry === null) throw new Error('Artefact head has no entry file')
+  const key = await unsealShareKey(config.sealKey, id, link.artefactId, link.sealed)
+  return { url: shareUrl(config.readOrigin, link.slug, key, entry) }
+}
+
+export async function revokeShareLink({ env: { DB: db } }: Runtime, member: Member, id: string) {
+  checkMember(member, true)
+  const artefactId = await db
+    .prepare('SELECT artefact_id FROM share_links WHERE id = ? AND revoked_at IS NULL')
+    .bind(id)
+    .first<string>('artefact_id')
+  if (artefactId === null) throw new ArtefactError('not_found', 'Share link not found')
+  const now = Date.now()
+  const [update] = await db.batch([
+    db
+      .prepare(`UPDATE share_links SET revoked_at = ? WHERE id = ? AND revoked_at IS NULL
+        AND EXISTS (SELECT 1 FROM artefacts WHERE id = ? AND deleted_at IS NULL)`)
+      .bind(now, id, artefactId),
+    audit(db, now, member, artefactId, 'share.revoke', { id }),
+  ])
+  if (update.meta.changes !== 1) throw new ArtefactError('not_found', 'Share link not found')
+  return {}
 }

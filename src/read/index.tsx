@@ -1,10 +1,10 @@
 import type { Child } from 'hono/jsx'
 import { base64url } from 'jose'
 import type { Runtime } from '../config'
-import { canonicalRead, publicArtefacts } from '../core/artefacts'
+import { canonicalRead, publicArtefacts, shareRead } from '../core/artefacts'
 import { handoffChallenge, readBoundSession, redeemHandoff, validHandoffState } from '../core/handoffs'
 import { randomSecret } from '../core/index'
-import { artefactPath, maxReadReturnLength, readReturnPath } from '../core/read-path'
+import { artefactPath, maxReadReturnLength, readReturnPath, sharePath } from '../core/read-path'
 import { isDocumentNavigation, readBoundedBody } from '../http'
 import { serveFile } from './file'
 import { readHeaders } from './headers'
@@ -114,6 +114,14 @@ export async function read(request: Request, url: URL, runtime: Runtime): Promis
   try {
     if (request.method === 'POST' && url.pathname === callback) return await completeHandoff(request, runtime)
     if (request.method !== 'GET' && !head) return notFound()
+    if (url.pathname.startsWith('/s/')) {
+      const target = sharePath(url.pathname)
+      if (!target) return notFound(head)
+      const decision = await shareRead(runtime, target.slug, target.key, target.path)
+      if (decision.kind === 'not-found') return notFound(head)
+      if (decision.kind === 'slash') return redirect(`${url.pathname}/${url.search}`, 301)
+      return await serveFile(request, runtime.env.BLOBS, decision.file, false, false)
+    }
     const target = artefactPath(url.pathname)
     if (target) {
       if (target.path === undefined) return redirect(`${url.pathname}/${url.search}`, 301)

@@ -237,6 +237,56 @@ describe('MCP discovery and bot credentials', () => {
     expect(await whoami(send, issued.access_token)).toMatchObject({ role: 'admin' })
   })
 
+  it('validates imported share keys from an admin and never reassigns a revoked key', async () => {
+    const send = runtime()
+    const clientId = `${manage}/oauth/clients/local.json`
+    const idp = mockProvider()
+    const fetchIdp = fetch
+    vi.stubGlobal('fetch', (input: RequestInfo | URL, init?: RequestInit) =>
+      input === clientId ? send(clientId) : fetchIdp(input, init),
+    )
+    const owner = await idp.signedIn(send, admin)
+    const grant = await authorize(send, owner, false, clientId, 'http://127.0.0.1:41993/callback')
+    const issued = await tokens(await grant.exchange())
+    const call = async (name: string, args: object) => {
+      const response = await send('/mcp', {
+        method: 'POST',
+        headers: {
+          ...jsonHeaders,
+          accept: 'application/json, text/event-stream',
+          authorization: `Bearer ${issued.access_token}`,
+          'mcp-protocol-version': '2025-03-26',
+        },
+        body: JSON.stringify({
+          jsonrpc: '2.0',
+          id: 1,
+          method: 'tools/call',
+          params: { name, arguments: args },
+        }),
+      })
+      expect(response.status).toBe(200)
+      const { result } = await response.json<{ result: { content: { text: string }[] } }>()
+      return JSON.parse(result.content[0].text)
+    }
+    const slug = 'imported-share'
+    expect(
+      await call('publish', { slug, mode: 'replace', files: [{ path: 'index.html', content: 'Shared' }] }),
+    ).toMatchObject({ revision: 1 })
+    for (const key of ['a'.repeat(15), 'a'.repeat(129), 'abcdefghijklmnop/', 'abcdefghijklmnop\n']) {
+      expect(await call('create_share_link', { slug, key })).toMatchObject({ error: 'invalid_input' })
+    }
+    for (const key of ['A1_b-cdefghijklm', 'Z'.repeat(128)]) {
+      const url = `${read}/s/${slug}/${key}/`
+      const { id, url: createdUrl } = await call('create_share_link', { slug, key })
+      expect(createdUrl).toBe(url)
+      expect(await call('create_share_link', { slug, key })).toMatchObject({ error: 'conflict' })
+      expect(await (await send(url)).text()).toBe('Shared')
+      expect(await call('revoke_share_link', { id })).toEqual({})
+      expect(await call('create_share_link', { slug, key })).toMatchObject({ error: 'conflict' })
+      expect((await send(url)).status).toBe(404)
+    }
+  })
+
   it('authenticates a bot only on MCP and does not restore old API tokens on reinstatement', async () => {
     const send = runtime()
     const owner = await mockProvider().signedIn(send, admin)
