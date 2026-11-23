@@ -160,7 +160,10 @@ it('redirects slashless URLs and reads the current revision in exact, directory,
   ]
   for (const [path, body] of checks) expect(await (await send(publicUrl + path)).text()).toBe(body)
   await call('publish', { slug: 'public', mode: 'merge', files: [], delete: ['section'] })
-  expect(await (await send(`${publicUrl}section`)).text()).toBe('directory')
+  const directory = await send(`${publicUrl}section`)
+  expect(directory.status).toBe(301)
+  expect(directory.headers.get('Location')).toBe('/a/public/section/')
+  expect(await (await send(`${publicUrl}section/`)).text()).toBe('directory')
   await call('publish', { slug: 'public', mode: 'merge', files: [], delete: ['section/index.html'] })
   expect(await (await send(`${publicUrl}section`)).text()).toBe('extension')
   await call('edit_file', {
@@ -572,7 +575,10 @@ it('serves 200 with the new content type when an unchanged blob resolves through
     files: [{ path: 'section/index.html', content: 'exact' }],
     delete: ['section'],
   })
-  const response = await send(url, { headers: { 'If-None-Match': tag } })
+  const redirect = await send(url, { headers: { 'If-None-Match': tag } })
+  expect(redirect.status).toBe(301)
+  expect(redirect.headers.get('Location')).toBe('/a/public/section/')
+  const response = await send(`${url}/`, { headers: { 'If-None-Match': tag } })
   expect(response.status).toBe(200)
   expect(response.headers.get('Content-Type')).toBe('text/html; charset=utf-8')
   expect(response.headers.get('Cache-Control')).toBe('no-cache')

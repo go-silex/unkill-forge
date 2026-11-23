@@ -262,25 +262,15 @@ export async function handleMcp(request: Request, runtime: Runtime, member: Memb
       z.strictObject({
         slug: slug.max(64),
         label: z.string().max(200).optional(),
-        key: z
-          .string()
-          .min(shareKeyMin)
-          .max(shareKeyMax)
-          .regex(/^[A-Za-z0-9_-]+$/)
-          .optional(),
+        // Core checks permission before validating even a malformed supplied key.
+        key: z.unknown().optional().meta({
+          type: 'string',
+          minLength: shareKeyMin,
+          maxLength: shareKeyMax,
+          pattern: '^[A-Za-z0-9_-]+$',
+        }),
       }),
       (input) => createShareLink(runtime, member, input),
-      false,
-      (args) => {
-        if (
-          member.role !== 'admin' &&
-          typeof args === 'object' &&
-          args !== null &&
-          Object.hasOwn(args, 'key')
-        ) {
-          throw new ArtefactError('forbidden', 'Only an admin can supply a share key')
-        }
-      },
     ),
     tool(
       'list_share_links',

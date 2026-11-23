@@ -109,7 +109,12 @@ async function completeHandoff(request: Request, runtime: Runtime) {
   return redirect(result.path, 303, [setCookie(readCookie, result.cookie, result.maxAge)])
 }
 
-export async function read(request: Request, url: URL, runtime: Runtime): Promise<Response> {
+export async function read(
+  request: Request,
+  url: URL,
+  runtime: Runtime,
+  ctx: ExecutionContext,
+): Promise<Response> {
   const head = request.method === 'HEAD'
   try {
     if (request.method === 'POST' && url.pathname === callback) return await completeHandoff(request, runtime)
@@ -117,9 +122,10 @@ export async function read(request: Request, url: URL, runtime: Runtime): Promis
     if (url.pathname.startsWith('/s/')) {
       const target = sharePath(url.pathname)
       if (!target) return notFound(head)
-      const decision = await shareRead(runtime, target.slug, target.key, target.path)
+      const decision = await shareRead(runtime, target.slug, target.key, target.path, ctx)
       if (decision.kind === 'not-found') return notFound(head)
       if (decision.kind === 'slash') return redirect(`${url.pathname}/${url.search}`, 301)
+      if (decision.kind === 'entry') return redirect(`${url.pathname}${decision.path}${url.search}`)
       return await serveFile(request, runtime.env.BLOBS, decision.file, false, false)
     }
     const target = artefactPath(url.pathname)
@@ -137,6 +143,8 @@ export async function read(request: Request, url: URL, runtime: Runtime): Promis
             decision.public,
             runtime.config.allowIndexing,
           )
+        case 'slash':
+          return redirect(`${url.pathname}/${url.search}`, 301)
         case 'sign-in':
         case 'revalidate':
           if (isDocumentNavigation(request)) return await startHandoff(request, url, runtime)

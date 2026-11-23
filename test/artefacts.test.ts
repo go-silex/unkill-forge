@@ -760,6 +760,11 @@ it('serves private share links anonymously with relative subresources and thrott
     'site.js': 'document.title = "Loaded"',
     'assets/photo.svg': '<svg xmlns="http://www.w3.org/2000/svg"/>',
   }
+  const types = {
+    'site.css': 'text/css; charset=utf-8',
+    'site.js': 'text/javascript; charset=utf-8',
+    'assets/photo.svg': 'image/svg+xml; charset=utf-8',
+  }
   await call('publish', {
     slug,
     mode: 'replace',
@@ -794,6 +799,7 @@ it('serves private share links anonymously with relative subresources and thrott
       expect(relative.href.startsWith(url)).toBe(true)
       const asset = await send(relative)
       expect(asset.status).toBe(200)
+      expect(asset.headers.get('content-type')).toBe(types[path as keyof typeof types])
       expect(await asset.text()).toBe(resources[path as keyof typeof resources])
     }
     expect((await list())[0].lastUsedAt).toBe(now)
@@ -808,6 +814,109 @@ it('serves private share links anonymously with relative subresources and thrott
   }
 })
 
+it('keeps the original share URL valid when a replacement moves the entry file', async () => {
+  const send = runtime()
+  const { call } = await bot(send)
+  const slug = 'share-entry'
+  await call('publish', { slug, mode: 'replace', files: [file('index.html', 'Original')] })
+  const { id, url } = await call('create_share_link', { slug })
+  expect(await (await send(url)).text()).toBe('Original')
+  await call('publish', { slug, mode: 'replace', files: [file('docs/index.html', 'Replacement')] })
+  expect(await call('get_share_link', { id })).toEqual({ url })
+  const { url: newUrl } = await call('create_share_link', { slug })
+  for (const root of [url, newUrl]) {
+    expect(new URL(root).pathname.split('/')).toHaveLength(5)
+    const opened = await send(`${root}?preview=1`)
+    expect(opened.status).toBe(302)
+    expect(opened.headers.get('cache-control')).toBe('private, no-store')
+    const entry = new URL(opened.headers.get('location') ?? '', root)
+    expect(entry.href).toBe(`${root}docs/index.html?preview=1`)
+    expect(await (await send(entry)).text()).toBe('Replacement')
+  }
+})
+
+it('redirects authorized directory indexes without a slash so relative assets load on both routes', async () => {
+  const send = runtime()
+  const { call } = await bot(send)
+  const slug = 'share-directory'
+  const html = '<link rel="stylesheet" href="site.css">'
+  await call('publish', {
+    slug,
+    mode: 'replace',
+    files: [
+      file('index.html'),
+      file('guide/index.html', html),
+      file('guide/site.css', 'body { color: red }'),
+    ],
+  })
+  const { url } = await call('create_share_link', { slug })
+  const canonical = `${read}/a/${slug}/`
+  expect((await send(`${canonical}guide`)).status).toBe(401)
+  const wrongKey = `${read}/s/${slug}/wrong-but-well-formed-key/guide`
+  expect((await send(wrongKey)).status).toBe(404)
+  expect(await call('set_visibility', { slug, visibility: 'public' })).toEqual({ visibility: 'public' })
+  for (const root of [canonical, url]) {
+    const bare = await send(`${root}guide?theme=red`)
+    expect(bare.status).toBe(301)
+    if (root === url) expect(bare.headers.get('cache-control')).toBe('private, no-store')
+    const directory = new URL(bare.headers.get('location') ?? '', root)
+    expect(directory.href).toBe(`${root}guide/?theme=red`)
+    expect(await (await send(directory)).text()).toBe(html)
+    const css = new URL('site.css', directory)
+    const asset = await send(css)
+    expect(asset.status).toBe(200)
+    expect(asset.headers.get('content-type')).toBe('text/css; charset=utf-8')
+    expect(await asset.text()).toBe('body { color: red }')
+  }
+})
+
+it('records at most one concurrent use and serves files even if tracking fails', async () => {
+  const send = runtime()
+  const { call } = await bot(send)
+  const slug = 'share-usage'
+  await call('publish', { slug, mode: 'replace', files: [file('index.html')] })
+  const { url } = await call('create_share_link', { slug })
+  const { url: failingUrl } = await call('create_share_link', { slug })
+  await db.batch([
+    db.prepare('CREATE TABLE test_share_writes (link TEXT NOT NULL)'),
+    db.prepare(`CREATE TRIGGER test_count_share_writes AFTER UPDATE OF last_used_at ON share_links
+      BEGIN INSERT INTO test_share_writes (link) VALUES (NEW.id); END`),
+  ])
+  const clock = vi.spyOn(Date, 'now')
+  clock.mockReturnValue(Date.now())
+  try {
+    const responses = await Promise.all([send(url), send(url)])
+    expect(responses.map((response) => response.status)).toEqual([200, 200])
+    expect(await Promise.all(responses.map((response) => response.text()))).toEqual(['hello', 'hello'])
+    expect(await db.prepare('SELECT COUNT(*) AS count FROM test_share_writes').first('count')).toBe(1)
+    await db
+      .prepare(`CREATE TRIGGER test_fail_share_write BEFORE UPDATE OF last_used_at ON share_links
+        BEGIN SELECT RAISE(ABORT, 'test usage tracking failure'); END`)
+      .run()
+    const response = await send(failingUrl)
+    expect(response.status).toBe(200)
+    expect(await response.text()).toBe('hello')
+  } finally {
+    clock.mockRestore()
+  }
+})
+
+it('caps active share links atomically and frees capacity on revocation', async () => {
+  const { call } = await bot(runtime())
+  const slug = 'share-capacity'
+  await call('publish', { slug, mode: 'replace', files: [file('index.html')] })
+  for (let i = 0; i < 99; i++) {
+    expect(await call('create_share_link', { slug })).toHaveProperty('id')
+  }
+  const final = await Promise.all([call('create_share_link', { slug }), call('create_share_link', { slug })])
+  expect(final.filter((value) => value.error === 'too_large')).toHaveLength(1)
+  const { shareLinks } = await call('list_share_links', { slug })
+  expect(shareLinks).toHaveLength(100)
+  expect((await call('get_artefact', { slug })).shareLinks).toHaveLength(100)
+  expect(await call('revoke_share_link', { id: shareLinks[0].id })).toEqual({})
+  expect(await call('create_share_link', { slug })).toHaveProperty('id')
+})
+
 it('returns the same 404 for invalid, cross-artefact, deleted and revoked share URLs on a public artefact', async () => {
   const send = runtime({ ALLOW_INDEXING: 'true' })
   const { call } = await bot(send)
@@ -817,7 +926,12 @@ it('returns the same 404 for invalid, cross-artefact, deleted and revoked share 
   }
   expect(await call('set_visibility', { slug, visibility: 'public' })).toEqual({ visibility: 'public' })
   const { id, url } = await call('create_share_link', { slug })
-  expect((await send(url)).status).toBe(200)
+  const active = await send(url, { headers: { 'if-none-match': '*' } })
+  expect(active.status).toBe(200)
+  expect(active.headers.get('cache-control')).toBe('private, no-store')
+  expect(active.headers.get('x-robots-tag')).toBe('noindex')
+  expect(active.headers.has('etag')).toBe(false)
+  expect(await active.text()).toBe('hello')
   const other = await call('create_share_link', { slug: 'share-other' })
   const crossArtefact = await send(other.url.replace('/share-other/', `/${slug}/`))
   expect(crossArtefact.status).toBe(404)
@@ -854,10 +968,9 @@ it('restricts share management to publishers, reveals keys only on create or get
   const viewer = await bot(send, 'viewer')
   const slug = 'share-manage'
   await publisher.call('publish', { slug, mode: 'replace', files: [file('index.html')] })
-  const requested = 'publisher-imported-key'
-  expect(await publisher.call('create_share_link', { slug, key: requested })).toMatchObject({
-    error: 'forbidden',
-  })
+  for (const key of ['publisher-imported-key', 17]) {
+    expect(await publisher.call('create_share_link', { slug, key })).toMatchObject({ error: 'forbidden' })
+  }
   expect(await viewer.call('create_share_link', { slug })).toMatchObject({ error: 'forbidden' })
   const { id, url } = await publisher.call('create_share_link', { slug, label: 'Demo' })
   expect(await publisher.call('get_share_link', { id })).toEqual({ url })

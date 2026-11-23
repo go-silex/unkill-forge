@@ -14,7 +14,7 @@ export default {
     const host = request.headers.get('Host')
     if (host !== null && host.toLowerCase() !== url.host) return new Response('Not found', { status: 404 })
     const runtime = { config, env }
-    if (url.origin === config.readOrigin) return read(request, url, runtime)
+    if (url.origin === config.readOrigin) return read(request, url, runtime, ctx)
     if (url.origin !== config.manageOrigin) return new Response('Not found', { status: 404 })
 
     const path = url.pathname
