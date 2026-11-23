@@ -317,7 +317,7 @@ export async function recordRevocation(
   return result.meta.changes === 1
 }
 
-// This must immediately follow the mutation it audits in the same batch.
+// This must immediately follow the mutation it audits in the same batch. A function `at` is read after `prepare()`.
 export function auditChange(
   db: D1Database,
   at: number | (() => number),
