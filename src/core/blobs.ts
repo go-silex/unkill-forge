@@ -73,6 +73,12 @@ export async function storeBlobs(
   return hashes
 }
 
+export async function openBlob(bucket: R2Bucket, sha256: string, range?: R2Range) {
+  const blob = await bucket.get(`blobs/${sha256}`, range ? { range } : undefined)
+  if (!blob) throw new Error('Missing artefact blob')
+  return blob
+}
+
 export const MAX_TEXT_BYTES = 8 * 1024 * 1024
 
 export async function blobText(bucket: R2Bucket, file: { type: string; size: number; sha256: string }) {
@@ -80,8 +86,7 @@ export async function blobText(bucket: R2Bucket, file: { type: string; size: num
   if (!type.startsWith('text/') && !['application/json', 'application/xml', 'image/svg+xml'].includes(type))
     return { reason: 'binary' } as const
   if (file.size > MAX_TEXT_BYTES) return { reason: 'text_too_large' } as const
-  const blob = await bucket.get(`blobs/${file.sha256}`)
-  if (!blob) throw new Error('Missing artefact blob')
+  const blob = await openBlob(bucket, file.sha256)
   if (blob.size > MAX_TEXT_BYTES) {
     await blob.body.cancel()
     return { reason: 'text_too_large' } as const

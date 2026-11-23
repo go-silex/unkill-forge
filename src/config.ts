@@ -78,6 +78,14 @@ const vars = z
       .enum(['true', 'false'])
       .default('false')
       .transform((value) => value === 'true'),
+    PUBLIC_INDEX: z
+      .enum(['true', 'false'])
+      .default('false')
+      .transform((value) => value === 'true'),
+    ALLOW_INDEXING: z
+      .enum(['true', 'false'])
+      .default('false')
+      .transform((value) => value === 'true'),
     FORGE_COOKIE_KEY: z.string().min(32),
     MAX_FILES_PER_ARTEFACT: positiveInt.pipe(z.int().max(MAX_ARTEFACT_FILES)).default(1_000),
     MAX_BLOB_WRITES_PER_CALL: positiveInt.pipe(z.int().max(900)).default(500),
@@ -114,6 +122,8 @@ export type Config = {
   cookieKey: string
   mcpAllowedOrigins: string[]
   allowDcr: boolean
+  publicIndex: boolean
+  allowIndexing: boolean
   maxFilesPerArtefact: number
   maxBlobWritesPerCall: number
   maxInlineBytes: number
@@ -156,6 +166,8 @@ export function configuration(env: Env): Config | null {
         cookieKey: value.FORGE_COOKIE_KEY,
         mcpAllowedOrigins: value.MCP_ALLOWED_ORIGINS,
         allowDcr: value.ALLOW_DCR,
+        publicIndex: value.PUBLIC_INDEX,
+        allowIndexing: value.ALLOW_INDEXING,
         maxFilesPerArtefact: value.MAX_FILES_PER_ARTEFACT,
         maxBlobWritesPerCall: value.MAX_BLOB_WRITES_PER_CALL,
         maxInlineBytes: value.MAX_INLINE_BYTES,

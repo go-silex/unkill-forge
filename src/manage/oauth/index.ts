@@ -10,6 +10,7 @@ import {
   releaseAuthorizationCode,
 } from '../../core'
 import { useApiToken } from '../../core/admin'
+import { readBoundedBody } from '../../http'
 import { handleMcp } from '../mcp'
 import { manageHeaders } from '../origin'
 import { authorize } from './consent'
@@ -154,28 +155,6 @@ async function oauthMember(bindings: Env, claims: z.infer<typeof grant>, grantId
 
 const tokenBodyLimit = 16 * 1024
 
-async function readTokenBody(request: Request): Promise<Uint8Array<ArrayBuffer> | null> {
-  if (Number(request.headers.get('Content-Length')) > tokenBodyLimit) return null
-  if (!request.body) return new Uint8Array()
-  const reader = request.body.getReader()
-  const bytes = new Uint8Array(tokenBodyLimit)
-  let length = 0
-  try {
-    for (;;) {
-      const { done, value } = await reader.read()
-      if (done) return bytes.subarray(0, length)
-      if (value.byteLength > tokenBodyLimit - length) {
-        await reader.cancel()
-        return null
-      }
-      bytes.set(value, length)
-      length += value.byteLength
-    }
-  } finally {
-    reader.releaseLock()
-  }
-}
-
 async function exchangeToken(
   provider: OAuthProvider<OAuthEnv>,
   request: Request,
@@ -183,7 +162,7 @@ async function exchangeToken(
   ctx: ExecutionContext,
 ): Promise<Response> {
   const redemption: Redemption = { retryableGrantWriteFailed: false }
-  const body = await readTokenBody(request)
+  const body = await readBoundedBody(request, tokenBodyLimit)
   if (body === null) {
     return Response.json(
       { error: 'invalid_request', error_description: 'Token request body exceeds 16 KiB' },

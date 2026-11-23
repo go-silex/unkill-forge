@@ -168,28 +168,28 @@ Rules:
 Resolution order for a request:
 
 1. `/a/<slug>` → 301 to `/a/<slug>/`.
-2. `/a/<slug>/<path>` where `slug` is a live artefact → resolve `path`, then `path/index.html`, then `path.html` in the current revision; apply canonical access.
+2. `/a/<slug>/<path>` where `slug` is a live artefact → apply canonical access, then resolve `path`, `path/index.html`, `path.html` in the current revision. A denied reader gets the access response whether or not the file exists.
 3. `/s/<slug>/<key>/<path>` where `slug` is a live artefact → same resolution under share-link access. Relative links stay under the share prefix, so no cookie is involved.
-4. `/_forge/session` → end of the login handoff.
+4. `POST /_forge/session` → end of the login handoff.
 5. Otherwise, the longest matching `redirects.from_prefix` → 302 to the target with the remaining path. Redirects never shadow a live artefact.
-6. `/` → the public artefact index when `PUBLIC_INDEX=true`, else the branded landing page.
+6. `/` → when `PUBLIC_INDEX=true`, list the newest 200 public artefacts by creation time; otherwise show the branded landing page.
 7. Anything else → 404.
 
-Unknown artefact, unauthorized share request and missing file all return the same 404.
+Unknown artefacts, unauthorized share requests and missing files return the same 404, but a missing file in a private artefact only returns 404 to a reader with access. Other readers get the handoff or pending response regardless of whether the file exists.
 
 Response headers:
 
 - All responses: `X-Content-Type-Options: nosniff`; `Referrer-Policy: same-origin`.
 - `X-Robots-Tag: noindex`, unless the artefact is public and indexing is enabled.
-- Caching: `/s/` and non-public content send `Cache-Control: private, no-store`. Public content sends `no-cache` with the blob hash as `ETag`, so every request, including a `304`, goes through the access check.
+- Caching: `/s/` and non-public content send `Cache-Control: private, no-store`. Public content sends `no-cache` and a strong `ETag` combining the blob SHA-256 and the first eight hex digits of the served content type's SHA-256. Every request, including a `304`, goes through the access check. A type change invalidates the cache even when the bytes are unchanged.
 - Range requests are served from R2.
 
 **Login handoff.** Sessions live on the manage host; the read host keeps its own cookie, bound to that session.
 
-1. Anonymous request for a private artefact: the read host sets a short-lived `__Host-forge-state` nonce cookie, then 302s to `https://<manage>/auth/handoff?return=<path>&state=<nonce>`.
-2. The manage host requires a valid session (signing in if needed) of an active member. It validates `return` as a read-host path starting with `/a/` (decoded, normalised, no scheme, no `//`), stores a single-use code (60 s) with the session and the state hash, then 302s to `https://<read>/_forge/session?code=…&state=…`.
-3. The read host checks that `state` matches its nonce cookie, consumes the code atomically (`DELETE … RETURNING`), sets `__Host-forge` (HttpOnly, Secure, SameSite=Lax), an HMAC-signed `{sessionIdHash, exp}`, clears the nonce, and redirects to the stored path.
-4. Each private read checks that the bound manage session is still valid and its member active. Signing out, session revocation and identity revocation on the manage side end read access too.
+1. A top-level navigation to a private artefact without a read session sets or refreshes the ten-minute `__Host-forge-state` browser cookie (HttpOnly, Secure, SameSite=None). It redirects to `/auth/handoff` on the manage host with the return path, a per-flow nonce and a challenge derived from the browser cookie and nonce. The return URL has a limit of 8,192 characters measured after URL encoding; if the path and query exceed it, the handoff keeps the path and drops the query. The read host then wraps that path and query in unpadded base64url so it does not expand when nested inside the manage sign-in URL. Unauthenticated subresources return an empty, non-cacheable 401 without starting a handoff. If Fetch Metadata is missing, a GET accepting `text/html` is treated as a navigation unless the available metadata indicates otherwise.
+2. The manage host requires a valid session (signing in if needed). It decodes the base64url value, validates it as a read-host path starting with `/a/` (decoded, normalised, no scheme or empty segments), and enforces the same return URL limit. It stores a single-use code (60 s) with the session and the state hash, then serves an auto-submitting form that POSTs the code, challenge, nonce and validated path to `/_forge/session` on the read host. The code never enters a URL. A pending member can establish identity on the read host to receive the pending page, not the file.
+3. The read host streams at most 32 KiB into memory for the form, allowing for re-encoding the return URL and the fixed fields. It atomically consumes the code (`DELETE … RETURNING`) before verifying the challenge against the cookie and nonce. A valid redemption sets `__Host-forge` (HttpOnly, Secure, SameSite=Lax), an HMAC-signed `{sessionIdHash, exp}`, then 303s to the stored path. It keeps the browser-state cookie for other pending tabs. A binding mismatch returns a non-cacheable 400, including when initial tabs raced to set the cookie. A manual retry link is shown only if the posted return path passes the same validation and URL limit; the page never discloses the stored path. Unknown, expired and already-used codes return 404.
+4. Each private read checks that the bound manage session is still valid and its member active. Signing out, session revocation and identity revocation on the manage side end read access too. Stale OIDC sessions follow §10.
 
 ## 8. Publishing semantics
 
@@ -328,11 +328,11 @@ On **Members**, admins choose a role and create an invite link, valid for seven 
 
 ## 12. Configuration, branding, deployment
 
-| Kind     | Names                                                                                                                                                                                                                                  |
-| -------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Vars     | `FORGE_NAME`, `READ_ORIGIN`, `MANAGE_ORIGIN`, `ADMIN_EMAILS`, `AUTH_PROVIDERS` (JSON list of provider settings, §10), optional `MCP_ALLOWED_ORIGINS` and `ALLOW_DCR` (default `false`); `LOCALE`, `PUBLIC_INDEX` and limits in Phase 1 |
-| Secrets  | `FORGE_SEAL_KEY`, `FORGE_COOKIE_KEY`, one `AUTH_<ID>_CLIENT_SECRET` per provider                                                                                                                                                       |
-| Bindings | `DB` (D1), `BLOBS` (R2), `OAUTH_KV` (KV), optional rate-limit binding                                                                                                                                                                  |
+| Kind     | Names                                                                                                                                                                                                                                                     |
+| -------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Vars     | `FORGE_NAME`, `READ_ORIGIN`, `MANAGE_ORIGIN`, `ADMIN_EMAILS`, `AUTH_PROVIDERS` (JSON list of provider settings, §10), optional `MCP_ALLOWED_ORIGINS`; `ALLOW_DCR`, `PUBLIC_INDEX` and `ALLOW_INDEXING` default to `false`; `LOCALE` and limits in Phase 1 |
+| Secrets  | `FORGE_SEAL_KEY`, `FORGE_COOKIE_KEY`, one `AUTH_<ID>_CLIENT_SECRET` per provider                                                                                                                                                                          |
+| Bindings | `DB` (D1), `BLOBS` (R2), `OAUTH_KV` (KV), optional rate-limit binding                                                                                                                                                                                     |
 
 The publish limits are positive integers: `MAX_FILES_PER_ARTEFACT` (default `1000`, up to `10000`, applied to the resulting revision), `MAX_BLOB_WRITES_PER_CALL` (default `500`, up to `900` to stay within the Workers subrequest budget), and `MAX_INLINE_BYTES` (default `2097152`, up to `8388608`, summed decoded bytes per call). Each of the `files` and `delete` arrays is independently capped at 10,000 entries.
 
@@ -363,7 +363,7 @@ Operators who keep their configuration private run `npm run deploy -- --config <
 
 Known limits, stated in `docs/security.md`:
 
-- Artefact JavaScript runs on the read origin with the viewer's cookie and can fetch any artefact that viewer can read. Publishers are trusted; never publish untrusted third-party HTML. Per-artefact origins are the upgrade path.
+- Artefact JavaScript acts with the viewer's read access and can sign the browser into another read session (login CSRF on the read host). There is no separate read-host sign-out; sign out on the manage host. Publishers are trusted; never publish untrusted third-party HTML. Per-artefact origins are the upgrade path.
 - A share key travels in the URL. `Referrer-Policy` keeps it from third parties by default, but artefact HTML can override the policy, artefact JavaScript can read its own URL, and Cloudflare request logs may record paths. Anyone holding a link can forward it until revocation.
 - An invite URL can appear in platform request logs. Treat it as a bearer secret until it is used, revoked or expires.
 - Back-channel logout is best effort. A missing notification can leave the Forge session alive until revalidation or the cap. If the IdP session ends without a logout notification, the grant is only caught by subject-wide revocation, member removal or the 7-day grant end.
@@ -415,3 +415,7 @@ Known limits, stated in `docs/security.md`:
 1. **No HTTP API in v2.0.** Autonomous agents use `/mcp` over Streamable HTTP with an API token.
 2. **Revision retention:** 20 revisions per artefact by default, configurable.
 3. **Public index:** off by default (`PUBLIC_INDEX=false`).
+4. **Read handoff:** a stable browser cookie and per-flow nonce bind concurrent handoffs. The code travels only in a manage-origin form POST and is burned even if state verification fails. `FORGE_COOKIE_KEY` signs the read session with an origin-specific context.
+5. **Pending readers:** a pending session can complete handoff to display the read-host pending page. Access is checked against live membership on every private request.
+6. **OIDC freshness:** stale private navigations use manage's silent revalidation; stale subresources return an empty, non-cacheable 401, and stale handoff redemptions do not restart the flow.
+7. **HTTP ranges:** single byte ranges are supported; unsupported units, malformed and multipart ranges fall back to the whole response.

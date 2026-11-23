@@ -119,6 +119,20 @@ function entryUrl(origin: string, slug: string, path: string) {
   return path === 'index.html' ? base : base + path.split('/').map(encodeURIComponent).join('/')
 }
 
+export async function publicArtefacts({ env: { DB: db }, config }: Runtime) {
+  const { results } = await db
+    .prepare(`SELECT a.slug, a.title, (
+      SELECT f.path FROM files f WHERE f.artefact_id = a.id AND f.revision = a.current_revision
+      ORDER BY CASE WHEN f.path = 'index.html' THEN 0
+        WHEN f.content_type = 'text/html; charset=utf-8' THEN 1 ELSE 2 END, f.path LIMIT 1
+    ) AS path FROM artefacts a WHERE a.deleted_at IS NULL AND a.visibility = 'public'
+    ORDER BY a.created_at DESC, a.slug LIMIT 200`)
+    .all<{ slug: string; title: string; path: string | null }>()
+  return results.flatMap(({ slug, title, path }) =>
+    path === null ? [] : [{ title, url: entryUrl(config.readOrigin, slug, path) }],
+  )
+}
+
 function audit(db: D1Database, at: number, member: Member, id: string, action: string, detail: object) {
   return db
     .prepare(`INSERT INTO audit_log (id, at, member_id, action, artefact_id, detail_json)
@@ -196,6 +210,36 @@ async function findFile(db: D1Database, id: string, revision: number, path: stri
   // Files reference their revision, so a hit proves that the revision exists too.
   if (!file) throw new ArtefactError('not_found', 'File not found at that revision')
   return file
+}
+
+type CanonicalRead =
+  | { kind: 'serve'; file: File; public: boolean }
+  | { kind: 'not-found' | 'sign-in' | 'pending' | 'revalidate' }
+
+export async function canonicalRead(
+  { env: { DB: db } }: Runtime,
+  slug: string,
+  path: string,
+  session: () => Promise<{ member: Member; fresh: boolean } | null>,
+): Promise<CanonicalRead> {
+  const artefact = await head(db, slug)
+  if (!artefact || artefact.deletedAt !== null) return { kind: 'not-found' }
+  const isPublic = artefact.visibility === 'public'
+  if (!isPublic) {
+    const current = await session()
+    if (!current) return { kind: 'sign-in' }
+    if (!current.fresh) return { kind: 'revalidate' }
+    if (current.member.status !== 'active') return { kind: 'pending' }
+  }
+  const directory = path === '' || path.endsWith('/')
+  const index = directory ? `${path}index.html` : `${path}/index.html`
+  const file = await db
+    .prepare(`SELECT path, size, content_type AS type, sha256 FROM files
+      WHERE artefact_id = ?1 AND revision = ?2 AND path IN (?3, ?4, ?5)
+      ORDER BY CASE path WHEN ?3 THEN 0 WHEN ?4 THEN 1 ELSE 2 END LIMIT 1`)
+    .bind(artefact.id, artefact.revision, directory ? null : path, index, directory ? null : `${path}.html`)
+    .first<File>()
+  return file ? { kind: 'serve', public: isPublic, file } : { kind: 'not-found' }
 }
 
 export async function readFile(

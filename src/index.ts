@@ -1,4 +1,5 @@
 import { configuration, type Env } from './config'
+import { manageHandoff } from './manage/handoff'
 import { loginRoute } from './manage/login'
 import { localClientDocument, localClientPath, oauthFetch } from './manage/oauth'
 import { checkManageOrigin, manageHeaders } from './manage/origin'
@@ -12,15 +13,16 @@ export default {
     const url = new URL(request.url)
     const host = request.headers.get('Host')
     if (host !== null && host.toLowerCase() !== url.host) return new Response('Not found', { status: 404 })
-    if (url.origin === config.readOrigin) return read.fetch(request, config, ctx)
+    const runtime = { config, env }
+    if (url.origin === config.readOrigin) return read(request, url, runtime)
     if (url.origin !== config.manageOrigin) return new Response('Not found', { status: 404 })
 
     const path = url.pathname
     const blocked = checkManageOrigin(request, path, config)
     if (blocked) return manageHeaders(blocked)
-    const runtime = { config, env }
     try {
       if (request.method === 'GET' && path === localClientPath) return localClientDocument(config)
+      if (path === '/auth/handoff') return manageHeaders(await manageHandoff(request, url, runtime))
       if (
         path === '/mcp' ||
         path === '/authorize' ||
