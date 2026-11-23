@@ -8,7 +8,7 @@ import type { Member } from '../src/core'
 import { restoreDeletedArtefact, setRedirects } from '../src/core/artefacts'
 import { purgeArtefact } from '../src/core/purge'
 import { sealShareKey, unsealShareKey } from '../src/core/share-keys'
-import { admin, configuredEnv, type Handle, listedId, read, runtime, setupStorage } from './http'
+import { admin, configuredEnv, type Handle, listedId, location, read, runtime, setupStorage } from './http'
 import { mockProvider, setupOidc } from './oidc'
 
 setupStorage()
@@ -41,8 +41,9 @@ async function bot(send: Handle, role: 'viewer' | 'publisher' = 'publisher', nam
   expect((await owner.post('/admin/bots', { action: 'create', name, role })).status).toBe(303)
   const id = await listedId(owner, '/admin/members', name)
   const response = await owner.post('/admin/bots', { action: 'token', id, name: 'Artefact token' })
-  expect(response.status).toBe(200)
-  const token = /<code>(fgt_[A-Za-z0-9_-]+)<\/code>/.exec(await response.text())?.[1]
+  expect(response.status).toBe(303)
+  const tokenPage = await owner.request(location(response))
+  const token = /<code>(fgt_[A-Za-z0-9_-]+)<\/code>/.exec(await tokenPage.text())?.[1]
   if (!token) throw new Error('Expected a bot token')
   return {
     id,

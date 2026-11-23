@@ -16,7 +16,8 @@ import {
   sessionIsFresh,
 } from '../../core/index'
 import { consumeInviteContext, createInviteContext, inviteKey } from '../../core/invites'
-import { isDocumentNavigation, readBoundedBody } from '../../http'
+import { formBodyLimit, isDocumentNavigation, readBoundedBody } from '../../http'
+import { messages } from '../../i18n'
 import {
   authorizationEndpoint,
   discover,
@@ -153,25 +154,26 @@ async function callback(
   provider: Provider,
   params: URLSearchParams,
 ): Promise<Response> {
+  const text = messages(runtime.config).login
   const state = params.get('state')
   const browser = readCookie(req, flowCookie)
-  if (!state || params.getAll('state').length !== 1 || !browser) return respond(400, 'Invalid login flow')
+  if (!state || params.getAll('state').length !== 1 || !browser) return respond(400, text.invalidFlow)
 
   const now = Date.now()
   const [stateHash, browserHash] = await Promise.all([hashSecret(state), hashSecret(browser)])
   const db = runtime.env.DB
   const flow = await consumeFlow(db, { stateHash, browserHash, provider: provider.id, now })
-  if (!flow) return respond(400, 'Invalid login flow')
+  if (!flow) return respond(400, text.invalidFlow)
 
   let previous: BrowserSession | null = null
   if (flow.sessionHash !== null) {
     const session = readCookie(req, sessionCookie)
     if (!session || provider.type !== 'oidc' || (await hashSecret(session)) !== flow.sessionHash) {
-      return respond(401, 'Session no longer valid')
+      return respond(401, text.invalidSession)
     }
     previous = await readSession(db, flow.sessionHash, now)
     if (!previous || previous.provider !== provider.id || previous.member.status === 'removed') {
-      return respond(401, 'Session no longer valid')
+      return respond(401, text.invalidSession)
     }
   }
 
@@ -197,7 +199,7 @@ async function callback(
       console.warn('Sign-in refused', provider.id, error.constructor.name, error.message)
     }
     if (error instanceof IdentityDenied || error instanceof SessionDenied) {
-      if (!previous) return respond(401, 'Sign-in refused')
+      if (!previous) return respond(401, text.loginRefused)
       const now = Date.now()
       if (error instanceof IdentityDenied) {
         await recordRevocation(db, {
@@ -210,9 +212,9 @@ async function callback(
       } else {
         await revokeSession(db, previous.idHash, now)
       }
-      return respond(401, 'Sign-in required', undefined, writeCookie(sessionCookie, '', 0))
+      return respond(401, text.loginRequired, undefined, writeCookie(sessionCookie, '', 0))
     }
-    if (error instanceof InvalidProviderResponse) return respond(401, 'Sign-in refused')
+    if (error instanceof InvalidProviderResponse) return respond(401, text.loginRefused)
     throw error
   }
 
@@ -229,7 +231,7 @@ async function callback(
         flowCreatedAt: flow.createdAt,
       }))
     ) {
-      return respond(401, 'Session no longer valid', undefined, writeCookie(sessionCookie, '', 0))
+      return respond(401, text.invalidSession, undefined, writeCookie(sessionCookie, '', 0))
     }
     return respond(302, null, path)
   }
@@ -246,7 +248,7 @@ async function callback(
       provider.autoJoinRole !== undefined && { autoJoinRole: provider.autoJoinRole }),
     now: validatedAt,
   })
-  if (member.status === 'removed') return respond(403, 'Sign-in refused')
+  if (member.status === 'removed') return respond(403, text.loginRefused)
   const session = randomSecret()
   const cap = provider.sessionMaxHours * 3_600_000
   if (
@@ -264,7 +266,7 @@ async function callback(
       flowGeneration: flow.generation,
     }))
   )
-    return respond(401, 'Sign-in refused')
+    return respond(401, text.loginRefused)
   const priorCookie = readCookie(req, sessionCookie)
   if (priorCookie) await revokeSession(db, await hashSecret(priorCookie), validatedAt)
   return respond(302, null, path, writeCookie(sessionCookie, session, Math.floor(cap / 1_000)))
@@ -298,6 +300,10 @@ async function backchannel(req: Request, runtime: Runtime, provider: Provider): 
 }
 
 async function logout(req: Request, runtime: Runtime): Promise<Response> {
+  if ((await readBoundedBody(req, formBodyLimit)) === null) {
+    const text = messages(runtime.config).login
+    return respond(413, text.logoutTooLarge)
+  }
   const session = readCookie(req, sessionCookie)
   if (session) await revokeSession(runtime.env.DB, await hashSecret(session), Date.now())
   const response = respond(303, null, '/login', writeCookie(sessionCookie, '', 0))
@@ -310,15 +316,17 @@ export async function loginRoute(req: Request, runtime: Runtime): Promise<Respon
   if (url.pathname === '/logout' && req.method === 'POST') return logout(req, runtime)
   const [, encodedId, action] =
     /^\/login\/([^/]+)(?:\/(callback|backchannel-logout))?$/.exec(url.pathname) ?? []
-  if (!encodedId) return respond(404, 'Not found')
+  const backchannelRequest = action === 'backchannel-logout'
+  const notFound = backchannelRequest ? 'Not found' : messages(runtime.config).notFound
+  if (!encodedId) return respond(404, notFound)
   let id: string
   try {
     id = decodeURIComponent(encodedId)
   } catch {
-    return respond(404, 'Not found')
+    return respond(404, notFound)
   }
   const provider = runtime.config.providers.find((entry) => entry.id === id)
-  if (!provider) return respond(404, 'Not found')
+  if (!provider) return respond(404, notFound)
 
   try {
     if (req.method === 'GET' && !action) {
@@ -337,9 +345,12 @@ export async function loginRoute(req: Request, runtime: Runtime): Promise<Respon
       return await callback(req, runtime, provider, url.searchParams)
     if (req.method === 'POST' && action === 'backchannel-logout')
       return await backchannel(req, runtime, provider)
-    return respond(404, 'Not found')
+    return respond(404, notFound)
   } catch (error) {
-    if (error instanceof ProviderUnavailable) return respond(503, 'Identity provider unavailable')
+    if (error instanceof ProviderUnavailable) {
+      const { login } = messages(backchannelRequest ? { locale: 'en' } : runtime.config)
+      return respond(503, login.providerUnavailable)
+    }
     throw error
   }
 }
@@ -363,13 +374,14 @@ export async function requireBrowserSession(
     )
   }
   if (sessionIsFresh(provider, current, now)) return current
+  const text = messages(runtime.config).login
   if (!isDocumentNavigation(req)) {
-    return respond(401, 'Session revalidation required')
+    return respond(401, text.revalidationRequired)
   }
   try {
     return await start(req, runtime, provider, path, current.idHash)
   } catch (error) {
-    if (error instanceof ProviderUnavailable) return respond(503, 'Identity provider unavailable')
+    if (error instanceof ProviderUnavailable) return respond(503, text.providerUnavailable)
     throw error
   }
 }

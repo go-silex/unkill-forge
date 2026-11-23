@@ -1,13 +1,25 @@
-import { auditChange, hashSecret, type Member, type Role, randomSecret } from './index'
+import { ArtefactError, checkMember, requireAdmin } from './artefacts'
+import { activeMember, auditChange, hashSecret, type Member, type Role, randomSecret } from './index'
 
 export function isAdmin(member: Member): boolean {
   return member.status === 'active' && member.role === 'admin'
 }
 
-export async function listMembers(db: D1Database): Promise<(Member & { provider: string | null })[]> {
+export async function uiActor(db: D1Database, actor: string, minimum: Role = 'viewer'): Promise<Member> {
+  const member = await activeMember(db, actor)
+  if (!member) throw new ArtefactError('forbidden', 'An active member is required')
+  if (minimum === 'admin') requireAdmin(member)
+  else checkMember(member, minimum === 'publisher')
+  return member
+}
+
+export async function listMembers(db: D1Database, actor: string, after = '', botsOnly = false) {
+  await uiActor(db, actor, 'admin')
   const { results } = await db
     .prepare(`SELECT m.id, m.kind, m.name, COALESCE(i.email, m.email) AS email, m.role, m.status, i.provider
-    FROM members m LEFT JOIN identities i ON i.member_id = m.id ORDER BY m.created_at, m.id`)
+    FROM members m LEFT JOIN identities i ON i.member_id = m.id
+    WHERE m.id > ? AND (? = 0 OR m.kind = 'bot') ORDER BY m.id LIMIT 50`)
+    .bind(after, Number(botsOnly))
     .all<Member & { provider: string | null }>()
   return results
 }
@@ -59,13 +71,29 @@ export type TokenSummary = {
   name: string
   prefix: string
   revokedAt: number | null
+  lastUsedAt: number | null
 }
-export async function listTokens(db: D1Database): Promise<TokenSummary[]> {
+async function tokenPage(db: D1Database, memberId: string, after: string, limit: number) {
   const { results } = await db
-    .prepare(`SELECT id, member_id AS memberId, name, prefix, revoked_at AS revokedAt
-    FROM api_tokens ORDER BY created_at DESC, id`)
+    .prepare(`SELECT id, member_id AS memberId, name, prefix, revoked_at AS revokedAt, last_used_at AS lastUsedAt
+      FROM api_tokens WHERE member_id = ? AND id > ? ORDER BY id LIMIT ?`)
+    .bind(memberId, after, limit)
     .all<TokenSummary>()
   return results
+}
+
+export async function listTokens(db: D1Database, actor: string, memberId: string, after = '') {
+  await uiActor(db, actor, 'admin')
+  const bot = await db.prepare("SELECT id FROM members WHERE id = ? AND kind = 'bot'").bind(memberId).first()
+  return bot ? tokenPage(db, memberId, after, 50) : []
+}
+
+export async function listOwnTokens(db: D1Database, actor: string, after = '') {
+  await uiActor(db, actor, 'publisher')
+  const tokens = await tokenPage(db, actor, after, 51)
+  const more = tokens.length > 50
+  if (more) tokens.pop()
+  return { tokens, nextCursor: more ? tokens[49].id : undefined }
 }
 
 export async function createApiToken(
@@ -75,14 +103,31 @@ export async function createApiToken(
   name: string,
   now: number,
 ): Promise<string | null> {
+  return createToken(db, actor, memberId, name, now, false)
+}
+
+export async function createOwnToken(db: D1Database, actor: string, name: string, now: number) {
+  return createToken(db, actor, actor, name, now, true)
+}
+
+async function createToken(
+  db: D1Database,
+  actor: string,
+  memberId: string,
+  name: string,
+  now: number,
+  own: boolean,
+) {
   const token = `fgt_${randomSecret()}`
   const id = crypto.randomUUID()
   const [result] = await db.batch([
     db
       .prepare(`INSERT INTO api_tokens (id, member_id, name, prefix, token_hash, created_at)
-      SELECT ?, bot.id, ?, ?, ?, ? FROM members bot JOIN members actor ON actor.id = ?
-      WHERE bot.id = ? AND bot.kind = 'bot' AND bot.status = 'active' AND actor.status = 'active' AND actor.role = 'admin'`)
-      .bind(id, name, token.slice(0, 12), await hashSecret(token), now, actor, memberId),
+      SELECT ?1, target.id, ?2, ?3, ?4, ?5 FROM members target JOIN members actor ON actor.id = ?6
+      WHERE target.id = ?7 AND target.status = 'active' AND actor.status = 'active'
+      AND (?8 = 1 AND target.id = actor.id AND actor.role IN ('admin','publisher')
+        OR ?8 = 0 AND target.kind = 'bot' AND actor.role = 'admin')`)
+      .bind(id, name, token.slice(0, 12), await hashSecret(token), now, actor, memberId, Number(own)),
     auditChange(db, now, actor, 'token.create', { id, memberId }),
   ])
   return result.meta.changes === 1 ? token : null
@@ -94,11 +139,22 @@ export async function revokeApiToken(
   id: string,
   now: number,
 ): Promise<boolean> {
+  return revokeToken(db, actor, id, now, false)
+}
+
+export async function revokeOwnToken(db: D1Database, actor: string, id: string, now: number) {
+  return revokeToken(db, actor, id, now, true)
+}
+
+async function revokeToken(db: D1Database, actor: string, id: string, now: number, own: boolean) {
   const [result] = await db.batch([
     db
-      .prepare(`UPDATE api_tokens SET revoked_at = ? WHERE id = ? AND revoked_at IS NULL
-      AND EXISTS (SELECT 1 FROM members actor WHERE actor.id = ? AND actor.status = 'active' AND actor.role = 'admin')`)
-      .bind(now, id, actor),
+      .prepare(`UPDATE api_tokens SET revoked_at = ?1 WHERE id = ?2 AND revoked_at IS NULL
+      AND EXISTS (SELECT 1 FROM members actor JOIN members target ON target.id = api_tokens.member_id
+        WHERE actor.id = ?3 AND actor.status = 'active'
+        AND (?4 = 1 AND target.id = actor.id AND actor.role IN ('admin','publisher')
+          OR ?4 = 0 AND target.kind = 'bot' AND actor.role = 'admin'))`)
+      .bind(now, id, actor, Number(own)),
     auditChange(db, now, actor, 'token.revoke', { id }),
   ])
   return result.meta.changes === 1
@@ -108,7 +164,7 @@ export async function useApiToken(db: D1Database, token: string, now: number) {
   if (!/^fgt_[A-Za-z0-9_-]{43}$/.test(token)) return null
   return db
     .prepare(`UPDATE api_tokens SET last_used_at = ? WHERE token_hash = ? AND revoked_at IS NULL
-    AND member_id IN (SELECT id FROM members WHERE status = 'active')
+    AND member_id IN (SELECT id FROM members WHERE status = 'active' AND (kind = 'bot' OR role <> 'viewer'))
     RETURNING member_id AS memberId, (SELECT generation FROM members WHERE id = member_id) AS generation`)
     .bind(now, await hashSecret(token))
     .first<{ memberId: string; generation: number }>()

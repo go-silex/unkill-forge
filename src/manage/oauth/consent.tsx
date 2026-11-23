@@ -6,9 +6,11 @@ import {
 } from '@cloudflare/workers-oauth-provider'
 import type { Runtime } from '../../config'
 import { consumeConsent, type Grant, hashSecret, putConsent, randomSecret, readSession } from '../../core'
+import { readForm } from '../../http'
+import { messages } from '../../i18n'
 import { requireBrowserSession } from '../login'
 import { manageHeaders } from '../origin'
-import { Page } from '../ui'
+import { Page } from '../ui/page'
 
 export async function authorize(
   request: Request,
@@ -16,12 +18,14 @@ export async function authorize(
   helpers: OAuthHelpers,
   localClientId: string,
 ): Promise<Response> {
+  const common = messages(runtime.config)
+  const text = common.consent
   if (request.method !== 'GET' && request.method !== 'POST') {
-    return new Response('Method not allowed', { status: 405, headers: { Allow: 'GET, POST' } })
+    return new Response(text.methodNotAllowed, { status: 405, headers: { Allow: 'GET, POST' } })
   }
   const session = await requireBrowserSession(request, runtime)
   if (session instanceof Response) return session
-  if (session.member.status !== 'active') return new Response('Pending access', { status: 403 })
+  if (session.member.status !== 'active') return new Response(text.pending, { status: 403 })
   const {
     config,
     env: { DB },
@@ -43,32 +47,32 @@ export async function authorize(
       const token = randomSecret()
       await putConsent(DB, await hashSecret(token), session.idHash, request.url, Date.now())
       const page = (
-        <Page config={config} title="Connect an agent">
+        <Page config={config} title={common.connect}>
           {consent.clientDomain && !local ? (
             <p>
-              Verified client domain: <strong>{consent.clientDomain}</strong>
+              {text.verified} <strong>{consent.clientDomain}</strong>
             </p>
           ) : (
-            <p>{local ? 'Unverified client (local application)' : 'Unverified client'}</p>
+            <p>{local ? text.unverifiedLocal : text.unverified}</p>
           )}
-          <p>Client: {consent.clientName}</p>
           <p>
-            Redirect destination:{' '}
+            {text.client} {consent.clientName}
+          </p>
+          <p>
+            {text.destination}{' '}
             <strong>{consent.redirectIsLoopback ? redirect.host : consent.redirectHost}</strong>
           </p>
-          {consent.redirectIsLoopback && (
-            <p>Warning: any local process could be listening on this loopback address.</p>
-          )}
+          {consent.redirectIsLoopback && <p>{text.loopback}</p>}
           <p>
-            This client will act as {session.member.name} ({session.member.role}).
+            {text.actingAs} {session.member.name} ({common.roles[session.member.role]}).
           </p>
           <form method="post" action="/authorize">
             <input type="hidden" name="consent" value={token} />
             <button type="submit" name="decision" value="approve">
-              Allow
+              {text.allow}
             </button>
             <button type="submit" name="decision" value="deny">
-              Deny
+              {text.deny}
             </button>
           </form>
         </Page>
@@ -82,12 +86,8 @@ export async function authorize(
         target,
       )
     }
-    let form: FormData
-    try {
-      form = await request.formData()
-    } catch {
-      return new Response('Invalid consent form', { status: 400 })
-    }
+    const form = await readForm(request)
+    if (!form) return new Response(text.invalidForm, { status: 400 })
     const token = form.get('consent')
     const decision = form.get('decision')
     if (
@@ -95,10 +95,10 @@ export async function authorize(
       !/^[A-Za-z0-9_-]{43}$/.test(token) ||
       (decision !== 'approve' && decision !== 'deny')
     ) {
-      return new Response('Invalid consent form', { status: 400 })
+      return new Response(text.invalidForm, { status: 400 })
     }
     const stored = await consumeConsent(DB, await hashSecret(token), session.idHash, Date.now())
-    if (!stored) return new Response('Expired or already used consent', { status: 400 })
+    if (!stored) return new Response(text.expiredConsent, { status: 400 })
     // Reconstruct from the request bound at render time, never from editable form fields.
     const authRequest = await helpers.parseAuthRequest(new Request(stored))
     if (decision === 'deny')
@@ -107,7 +107,7 @@ export async function authorize(
     const current = await readSession(DB, session.idHash, grantedAt)
     // Check after timestamping: a concurrent back-channel event either kills this session
     // before this query, or is new enough to kill the grant on code exchange.
-    if (current?.member.status !== 'active') return new Response('Sign in again', { status: 401 })
+    if (current?.member.status !== 'active') return new Response(text.signInAgain, { status: 401 })
     const props: Grant = {
       memberId: current.member.id,
       provider: current.provider,
@@ -133,9 +133,9 @@ export async function authorize(
     if (error instanceof AuthorizationError) {
       return error.redirectTo
         ? Response.redirect(error.redirectTo, 303)
-        : new Response('Invalid authorization request', { status: 400 })
+        : new Response(text.invalidRequest, { status: 400 })
     }
-    if (error instanceof CimdFetchError) return new Response('Client metadata unavailable', { status: 503 })
+    if (error instanceof CimdFetchError) return new Response(text.metadataUnavailable, { status: 503 })
     throw error
   }
 }

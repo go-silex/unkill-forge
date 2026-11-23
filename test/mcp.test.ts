@@ -297,8 +297,15 @@ describe('MCP discovery and bot credentials', () => {
 
     async function mint(label: string) {
       const response = await owner.post(path, { action: 'token', id: memberId, name: label })
-      expect(response.status).toBe(200)
-      const credential = /<code>(fgt_[A-Za-z0-9_-]+)<\/code>/.exec(await response.text())?.[1]
+      expect(response.status).toBe(303)
+      const destination = location(response)
+      expect(destination.pathname).toBe(path)
+      expect(destination.searchParams.get('bot')).toBe(memberId)
+      expect(await response.text()).not.toContain('fgt_')
+      const landing = await owner.request(destination)
+      expect(landing.status).toBe(200)
+      expect(landing.headers.get('Cache-Control')).toBe('no-store')
+      const credential = /<code>(fgt_[A-Za-z0-9_-]+)<\/code>/.exec(await landing.text())?.[1]
       if (!credential) throw new Error('Token was not returned when minted')
       return credential
     }
@@ -314,14 +321,16 @@ describe('MCP discovery and bot credentials', () => {
     const ui = await send('/admin/bots', { headers: { authorization: `Bearer ${first}` } })
     expect(location(ui).pathname).toBe('/login')
 
-    const rendered = await (await owner.request(path)).text()
+    const focusedPath = `${path}?${new URLSearchParams({ bot: memberId })}`
+    const rendered = await (await owner.request(focusedPath)).text()
     expect(rendered).not.toContain(first)
     expect(rendered).not.toContain(second)
     const firstRow = [...rendered.matchAll(/<li\b[^>]*>(.*?)<\/li>/gs)].find((row) =>
       row[1]?.includes('First token'),
     )
     if (!firstRow?.[1]) throw new Error('Expected a revoke form for the first token')
-    expect((await owner.post(path, { action: 'revoke', id: formValue(firstRow[1], 'id') })).status).toBe(303)
+    const revoked = await owner.post(focusedPath, { action: 'revoke', id: formValue(firstRow[1], 'id') })
+    expect(revoked.status).toBe(303)
     expect((await mcpCall(send, first)).status).toBe(401)
     expect((await whoami(send, second)).id).toBe(memberId)
 

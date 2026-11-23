@@ -41,7 +41,9 @@ type Publish = {
   message?: string
 }
 
-const listCursor = z.tuple([z.int().nonnegative(), z.uuid(), z.string()])
+const listCursorFields = [z.int().nonnegative(), z.uuid(), z.string()] as const
+const listCursor = z.tuple(listCursorFields)
+const filteredCursor = z.tuple([...listCursorFields, z.enum(['private', 'public']).nullable(), z.boolean()])
 const fileCursor = z.tuple([z.uuid(), z.int().positive(), z.string()])
 const revisionCursor = z.tuple([z.uuid(), z.int().positive()])
 
@@ -210,29 +212,47 @@ export async function listArtefacts(
   member: Member,
   query = '',
   cursor?: string,
+  filter?: { visibility?: Visibility; prefix?: boolean },
 ) {
   checkMember(member)
-  const after = cursor === undefined ? null : decodeCursor(cursor, listCursor)
-  if (after && after[2] !== query)
+  const visibility = filter?.visibility ?? null
+  const prefix = filter?.prefix ?? false
+  const after =
+    cursor === undefined
+      ? null
+      : filter
+        ? decodeCursor(cursor, filteredCursor)
+        : decodeCursor(cursor, listCursor)
+  if (after && (after[2] !== query || (filter && (after[3] !== visibility || after[4] !== prefix))))
     throw new ArtefactError('invalid_input', 'Cursor belongs to a different query')
-  const like = `%${query.replace(/[!%_]/g, '!$&')}%`
+  const like = `${prefix ? '' : '%'}${query.replace(/[!%_]/g, '!$&')}%`
   // D1 caps LIKE patterns at 50 bytes; use the equivalent literal search for longer patterns.
   const pattern = new TextEncoder().encode(like).length <= 50 ? like : null
   const { results } = await db
     .prepare(`SELECT id, slug, title, visibility, current_revision AS revision, updated_at AS updatedAt
-    FROM artefacts WHERE deleted_at IS NULL AND CASE WHEN ?1 IS NOT NULL
+    FROM artefacts WHERE deleted_at IS NULL AND (?5 IS NULL OR visibility = ?5) AND CASE WHEN ?1 IS NOT NULL
       THEN slug LIKE ?1 ESCAPE '!' OR title LIKE ?1 ESCAPE '!'
+      WHEN ?6 = 1 THEN instr(lower(slug), lower(?4)) = 1 OR instr(lower(title), lower(?4)) = 1
       ELSE instr(lower(slug), lower(?4)) > 0 OR instr(lower(title), lower(?4)) > 0 END
     AND (?2 IS NULL OR updated_at < ?2 OR (updated_at = ?2 AND id > ?3))
     ORDER BY updated_at DESC, id LIMIT 51`)
-    .bind(pattern, after?.[0] ?? null, after?.[1] ?? null, query)
+    .bind(pattern, after?.[0] ?? null, after?.[1] ?? null, query, visibility, Number(prefix))
     .all<Pick<Artefact, 'id' | 'slug' | 'title' | 'visibility' | 'revision' | 'updatedAt'>>()
   const more = results.length > 50
   if (more) results.pop()
   const last = results.at(-1)
   return {
     artefacts: results.map(({ id: _id, ...row }) => row),
-    nextCursor: more && last ? base64url.encode(JSON.stringify([last.updatedAt, last.id, query])) : undefined,
+    nextCursor:
+      more && last
+        ? base64url.encode(
+            JSON.stringify(
+              filter
+                ? [last.updatedAt, last.id, query, visibility, prefix]
+                : [last.updatedAt, last.id, query],
+            ),
+          )
+        : undefined,
   }
 }
 
@@ -991,6 +1011,34 @@ export async function deleteArtefact({ env: { DB: db } }: Runtime, member: Membe
 
 const deletedRetentionMs = 30 * 24 * 60 * 60 * 1_000
 
+export async function listDeletedArtefacts({ env: { DB: db } }: Runtime, member: Member, after = '') {
+  requireAdmin(member)
+  const { results: artefacts } = await db
+    .prepare(`SELECT a.id, a.slug, a.title, a.deleted_at AS deletedAt,
+      p.artefact_id IS NOT NULL AS purging, p.artefact_id IS NULL AND a.deleted_at > ?2 AS restorable
+    FROM artefacts a LEFT JOIN artefact_purges p ON p.artefact_id = a.id
+    WHERE a.deleted_at IS NOT NULL AND a.slug > ?1
+    UNION ALL
+    SELECT p.artefact_id, p.slug, NULL, NULL, 1, 0 FROM artefact_purges p
+    WHERE p.slug > ?1 AND NOT EXISTS (SELECT 1 FROM artefacts WHERE id = p.artefact_id)
+    ORDER BY slug LIMIT 51`)
+    .bind(after, Date.now() - deletedRetentionMs)
+    .all<{
+      id: string
+      slug: string
+      title: string | null
+      deletedAt: number | null
+      purging: number
+      restorable: number
+    }>()
+  const more = artefacts.length > 50
+  if (more) artefacts.pop()
+  return {
+    artefacts: artefacts.map((row) => ({ ...row, purging: !!row.purging, restorable: !!row.restorable })),
+    nextCursor: more ? artefacts[49].slug : undefined,
+  }
+}
+
 export async function restoreDeletedArtefact({ env: { DB: db } }: Runtime, member: Member, slug: string) {
   requireAdmin(member)
   checkSlug(slug)
@@ -1011,6 +1059,20 @@ export async function restoreDeletedArtefact({ env: { DB: db } }: Runtime, membe
 }
 
 export const redirectBatchLimit = 50
+
+export async function listRedirects({ env: { DB: db } }: Runtime, member: Member, after = '') {
+  requireAdmin(member)
+  const { results: redirects } = await db
+    .prepare(`SELECT r.from_prefix AS fromPrefix,
+      substr(r.from_prefix, 1, 3) || a.slug || '/' || r.target_path AS toPrefix
+    FROM redirects r JOIN artefacts a ON a.id = r.target_artefact_id
+    WHERE r.from_prefix > ? ORDER BY r.from_prefix LIMIT 51`)
+    .bind(after)
+    .all<{ fromPrefix: string; toPrefix: string }>()
+  const more = redirects.length > 50
+  if (more) redirects.pop()
+  return { redirects, nextCursor: more ? redirects[49].fromPrefix : undefined }
+}
 
 export async function setRedirects(
   { env: { DB: db } }: Runtime,
@@ -1124,20 +1186,30 @@ export async function listShareLinks({ env: { DB: db } }: Runtime, member: Membe
   return { shareLinks: await shareLinkMetadata(db, id) }
 }
 
-export async function getShareLink({ env: { DB: db }, config }: Runtime, member: Member, id: string) {
+export async function getShareLink(
+  { env: { DB: db }, config }: Runtime,
+  member: Member,
+  id: string,
+  slug?: string,
+) {
   checkMember(member, true)
   const link = await db
     .prepare(`SELECT s.artefact_id AS artefactId, s.key_sealed AS sealed, a.slug
       FROM share_links s JOIN artefacts a ON a.id = s.artefact_id
-      WHERE s.id = ? AND s.revoked_at IS NULL AND a.deleted_at IS NULL`)
-    .bind(id)
+      WHERE s.id = ?1 AND s.revoked_at IS NULL AND a.deleted_at IS NULL AND (?2 IS NULL OR a.slug = ?2)`)
+    .bind(id, slug ?? null)
     .first<{ artefactId: string; sealed: string; slug: string }>()
   if (!link) throw new ArtefactError('not_found', 'Share link not found')
   const key = await unsealShareKey(config.sealKey, id, link.artefactId, link.sealed)
   return { url: shareUrl(config.readOrigin, link.slug, key) }
 }
 
-export async function revokeShareLink({ env: { DB: db } }: Runtime, member: Member, id: string) {
+export async function revokeShareLink(
+  { env: { DB: db } }: Runtime,
+  member: Member,
+  id: string,
+  slug?: string,
+) {
   checkMember(member, true)
   const artefactId = await db
     .prepare('SELECT artefact_id FROM share_links WHERE id = ? AND revoked_at IS NULL')
@@ -1147,9 +1219,9 @@ export async function revokeShareLink({ env: { DB: db } }: Runtime, member: Memb
   const now = Date.now()
   const [update] = await db.batch([
     db
-      .prepare(`UPDATE share_links SET revoked_at = ? WHERE id = ? AND revoked_at IS NULL
-        AND EXISTS (SELECT 1 FROM artefacts WHERE id = ? AND deleted_at IS NULL)`)
-      .bind(now, id, artefactId),
+      .prepare(`UPDATE share_links SET revoked_at = ?1 WHERE id = ?2 AND revoked_at IS NULL
+        AND EXISTS (SELECT 1 FROM artefacts WHERE id = ?3 AND deleted_at IS NULL AND (?4 IS NULL OR slug = ?4))`)
+      .bind(now, id, artefactId, slug ?? null),
     audit(db, now, member, artefactId, 'share.revoke', { id }),
   ])
   if (update.meta.changes !== 1) throw new ArtefactError('not_found', 'Share link not found')
