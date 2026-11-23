@@ -2,9 +2,9 @@
 
 Forge is a self-hosted service for publishing HTML artefacts at stable URLs, controlling who can read them, and working with them through remote MCP. It runs on Cloudflare.
 
-**Phase 1:** this build delivers public and private artefacts on the read host, supports publishing, editing and reading over MCP, and includes sign-in, member administration and bot administration. See [the specification](docs/spec.md).
+**Phase 1:** this build delivers public and private artefacts on the read host, supports publishing, editing, reading and streamed binary uploads over MCP, and includes sign-in, member administration and bot administration. See [the specification](docs/spec.md).
 
-The runtime is 3,870 lines under `src/`.
+The runtime is 4,105 lines under `src/`.
 
 ## Configure sign-in
 
@@ -90,9 +90,23 @@ MCP tools:
 
 - `whoami`: check the connected identity, role and instance URLs.
 - `list_artefacts`, `get_artefact`, `read_file`: find artefacts, inspect files and read revision-specific text.
-- `publish`: merge or replace files with inline UTF-8 or base64. New artefacts are private.
+- `publish`: merge or replace files with inline UTF-8, base64 or stored upload IDs. New artefacts are private.
+- `create_uploads`: prepare single-use capability URLs for binary or large files.
 - `edit_file`: replace literal text at an expected revision; stale edits fail without changing the artefact.
 - `set_visibility`: change an artefact between private and public without creating a revision.
+
+## Upload binary or large files
+
+1. Call `create_uploads` with the target `slug` and `files: [{path, size, sha256, contentType?}]`. Give the file size in bytes and its lowercase SHA-256 hash. The optional `contentType` controls how the read host serves the file.
+2. For each URL returned, upload the local file within 15 minutes. Skip files marked `alreadyStored: true`.
+
+   ```sh
+   curl -T file -H 'Content-Type: application/octet-stream' "$upload_url"
+   ```
+
+3. Within an hour of storage, call `publish` for the same slug with the returned `{path, uploadId}` entries. Keep upload URLs private; PUT needs no additional authentication.
+
+Use `MAX_UPLOAD_BYTES` in Wrangler vars to lower the per-file limit from its default and maximum of `100000000` bytes (100 MB).
 
 ## License
 

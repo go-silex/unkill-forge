@@ -122,7 +122,7 @@ wrangler.jsonc    template without account identifiers
 | `files`                | (`artefact_id`, `revision`, `path`) PK, `sha256`, `size`, `content_type`                                                                                                                       |
 | `share_links`          | `id` PK, `artefact_id`, `label`, `key_hash` UNIQUE, `key_sealed`, `created_by`, `created_at`, `revoked_at`, `last_used_at`                                                                     |
 | `api_tokens`           | `id` PK, `member_id`, `name`, `prefix`, `token_hash` UNIQUE, `created_at`, `last_used_at`, `revoked_at`                                                                                        |
-| `uploads`              | `token_hash` PK, `member_id`, `slug`, `path`, `sha256`, `size`, `content_type`, `state` ∈ pending/stored/consumed, `expires_at`                                                                |
+| `uploads`              | `token_hash` PK, `upload_id` UNIQUE, `member_id`, `slug`, `path`, `sha256`, `size`, `content_type`, `state` ∈ pending/receiving/stored/consumed/failed, `expires_at`, `created_at`             |
 | `handoffs`             | `code_hash` PK, `session_id_hash`, `state_hash`, `return_path`, `expires_at`                                                                                                                   |
 | `redirects`            | `from_prefix` PK, `to_prefix`, `created_at`                                                                                                                                                    |
 | `audit_log`            | `id`, `at`, `member_id`, `action`, `artefact_id`, `detail_json`                                                                                                                                |
@@ -237,7 +237,7 @@ Gate 0 reserves the code's `grant_id` and `redeemed_at` in D1's `oauth_code_rede
 | `read_file`         | `slug`, `path`, `revision?`, `offset?`, `limit?`                                                                                     | revision read, total length, a text slice (default 40,000, max 100,000 characters); binary files return metadata only |
 | `publish`           | `slug`, `title?`, `files[]` (`{path, content, encoding?}` or `{path, uploadId}`), `mode`, `delete?`, `expectedRevision?`, `message?` | entry URL, revision                                                                                                   |
 | `edit_file`         | `slug`, `path`, `oldText`, `newText`, `expectedRevision` (required), `replaceAll?`                                                   | new revision; fails unless exactly one match (or `replaceAll`)                                                        |
-| `create_uploads`    | `slug`, `files[]` (`path`, `size`, `sha256`, `contentType?`)                                                                         | per file: `uploadId` and a single-use `PUT` URL valid 15 min, or "already stored" when the blob exists                |
+| `create_uploads`    | `slug`, `files[]` (`path`, `size`, `sha256`, `contentType?`)                                                                         | `{files: [{path, uploadId, url}]}`; a file with a referenced hash has `alreadyStored: true` instead of `url`          |
 | `set_visibility`    | `slug`, `visibility`                                                                                                                 | `{visibility}`                                                                                                        |
 | `create_share_link` | `slug`, `label?`, `key?` (admin only)                                                                                                | share URL, in full                                                                                                    |
 | `list_share_links`  | `slug`                                                                                                                               | id, label, created, last used                                                                                         |
@@ -260,10 +260,11 @@ Gate 0 reserves the code's `grant_id` and `redeemed_at` in D1's `oauth_code_rede
 
 **Uploads.** `create_uploads` returns capability URLs on the manage host, `PUT /upload/<token>`. They serve shells that cannot hold the OAuth token.
 
-- The token is 256 random bits, stored hashed, bound to member, slug, path, size and SHA-256, valid 15 minutes.
-- The first `PUT` atomically moves the upload from `pending` to receiving; the Worker streams the body to R2 with the declared SHA-256 and marks it `stored`. Any other `PUT` is refused.
-- `publish` accepts only `stored` uploads of the same member, slug and path, and marks them `consumed` in its commit batch.
-- A local folder is published in three steps: `create_uploads` → a shell loop of `curl -T` → `publish`. `docs/mcp.md` gives the recipe.
+- An active publisher or admin submits one slug and up to `MAX_BLOB_WRITES_PER_CALL` distinct paths. Sizes are byte counts (zero is allowed), bounded by `MAX_UPLOAD_BYTES`; SHA-256 is 64 lowercase hex digits. `contentType` overrides the type inferred from the path. Bad declarations return `invalid_input`, exceeding the limits returns `too_large`, and viewers receive `forbidden`.
+- The URL is a 15-minute capability: a 256-bit random token stored only as a hash, bound to member, slug, path, size and SHA-256. `uploadId` is a separate, non-secret identifier. A hash already referenced in D1 returns a stored upload ID with `alreadyStored: true`; skip the PUT.
+- PUT requires the declared `Content-Length` and uses neither cookies nor OAuth. The read origin is refused and no CORS allowances are sent. The first PUT atomically claims the capability, streams the body to R2 with SHA-256 verification and without overwriting existing objects, and returns an empty `204` on success. Unknown, expired and already-claimed URLs return `404`. A missing length returns `411`, a wrong length `400`, and a checksum mismatch `422`. A failed attempt is terminal. An existing R2 object without matching checksum and size is refused with `409`.
+- `publish` accepts `{path, uploadId}` only for the same member, slug and path, within one hour of storage (or of issuance for `alreadyStored`). Other IDs return `not_found`. The revision and upload consumption commit together, so a failed publish does not consume the upload. Uploaded files count toward the revision file limit but not the inline-byte or blob-write limits.
+- To publish from a shell: call `create_uploads`, use `curl -T` for each `url`, then pass the returned paths and IDs to `publish`.
 
 ## 10. Sign-in and accounts
 
@@ -335,6 +336,8 @@ On **Members**, admins choose a role and create an invite link, valid for seven 
 | Bindings | `DB` (D1), `BLOBS` (R2), `OAUTH_KV` (KV), optional rate-limit binding                                                                                                                                                                                     |
 
 The publish limits are positive integers: `MAX_FILES_PER_ARTEFACT` (default `1000`, up to `10000`, applied to the resulting revision), `MAX_BLOB_WRITES_PER_CALL` (default `500`, up to `900` to stay within the Workers subrequest budget), and `MAX_INLINE_BYTES` (default `2097152`, up to `8388608`, summed decoded bytes per call). Each of the `files` and `delete` arrays is independently capped at 10,000 entries.
+
+`MAX_UPLOAD_BYTES` is a positive integer with a default and hard ceiling of `100000000` (100 MB), the Workers Free request-size limit. Set a smaller value to reduce the maximum per-file upload size.
 
 - Configuration is parsed once. Any invalid value makes every request answer 503 and logs the list of errors.
 - **Branding** is data: name, logo, favicon, colours and landing text, from configuration and `brand/`. Page structure, sign-in and consent markup belong to Forge, so forks merge upstream without touching security-relevant templates.
@@ -419,3 +422,6 @@ Known limits, stated in `docs/security.md`:
 5. **Pending readers:** a pending session can complete handoff to display the read-host pending page. Access is checked against live membership on every private request.
 6. **OIDC freshness:** stale private navigations use manage's silent revalidation; stale subresources return an empty, non-cacheable 401, and stale handoff redemptions do not restart the flow.
 7. **HTTP ranges:** single byte ranges are supported; unsupported units, malformed and multipart ranges fall back to the whole response.
+8. **Upload validity:** capability URLs expire after 15 minutes; a stored upload has one hour to be published. Invalid or interrupted requests never restore a capability to `pending`.
+9. **Upload deduplication:** issuance trusts D1-referenced blobs; a concurrent or orphaned R2 object is reused on a conditional miss only if its recorded SHA-256 and size match. A conditional miss does not prove possession of the bytes in the current PUT.
+10. **Upload cleanup:** expired pending and receiving rows are refused immediately; issue #11 owns cron cleanup of expired rows and unreferenced blobs.
