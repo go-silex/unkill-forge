@@ -2,6 +2,7 @@ import type { Config } from '../config'
 
 export function checkManageOrigin(request: Request, path: string, config: Config): Response | null {
   const origin = request.headers.get('Origin')
+  if (origin === config.readOrigin) return new Response('Forbidden origin', { status: 403 })
   if (path === '/mcp' && origin !== null && !config.mcpAllowedOrigins.includes(origin)) {
     return new Response('Forbidden origin', { status: 403 })
   }

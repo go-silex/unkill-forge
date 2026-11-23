@@ -2,9 +2,9 @@
 
 Forge is a self-hosted service for publishing HTML artefacts at stable URLs, controlling who can read them, and working with them through remote MCP. It runs on Cloudflare.
 
-**Phase 1:** this build supports publishing, editing and reading artefacts over MCP, as well as sign-in, member administration (including invites and reinstatement) and bot administration. Read-host delivery is not part of this build. See [the specification](docs/spec.md).
+**Phase 1:** this build delivers public and private artefacts on the read host, supports publishing, editing and reading over MCP, and includes sign-in, member administration and bot administration. See [the specification](docs/spec.md).
 
-The runtime is 3,338 lines under `src/`.
+The runtime is 3,774 lines under `src/`.
 
 ## Configure sign-in
 
@@ -45,6 +45,12 @@ The first eligible verified address in `ADMIN_EMAILS` can bootstrap an administr
 In **Members**, choose a role and create an invite link. Copy it when it appears: it is shown once, expires after seven days, and admits one new or pending member when they open it and sign in. Admins can revoke unused links from the same page.
 
 Only an admin can reinstate a removed member. Reinstatement restores the role, not access for old sessions, OAuth grants, or API tokens. Sign in again, authorize MCP clients again, or issue new API tokens as appropriate. Keep an active administrator to manage access.
+
+## Configure the read host
+
+Set `PUBLIC_INDEX=true` to list public artefacts on the read host landing page. Set `ALLOW_INDEXING=true` to allow search engines to index public artefacts. Both default to `false`.
+
+Private reads use a separate host-only cookie signed with the existing `FORGE_COOKIE_KEY`. Signing out, revoking the manage session or removing the member ends private read access on the next request.
 
 ## Deploy
 

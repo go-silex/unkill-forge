@@ -16,7 +16,9 @@
     "MANAGE_ORIGIN": "https://manage.forge.example.com",
     "ADMIN_EMAILS": "admin@example.com",
     "AUTH_PROVIDERS": "[{\"id\":\"github\",\"type\":\"github\",\"label\":\"GitHub\",\"clientId\":\"replace-with-client-id\"}]",
-    "ALLOW_DCR": "false"
+    "ALLOW_DCR": "false",
+    "PUBLIC_INDEX": "false",
+    "ALLOW_INDEXING": "false"
   },
   "d1_databases": [
     {

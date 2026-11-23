@@ -1,3 +1,5 @@
+import type { Provider } from '../config'
+
 export type Role = 'viewer' | 'publisher' | 'admin'
 export type Member = {
   id: string
@@ -246,6 +248,14 @@ export async function readSession(
   if (!row) return null
   const { id, kind, name, email, role, status, ...session } = row
   return { ...session, member: { id, kind, name, email, role, status } }
+}
+
+export function sessionIsFresh(provider: Provider, session: BrowserSession, now: number) {
+  return (
+    provider.type !== 'oidc' ||
+    provider.revalidateAfterMinutes === 0 ||
+    now - session.validatedAt < provider.revalidateAfterMinutes * 60_000
+  )
 }
 
 export async function revalidateSession(

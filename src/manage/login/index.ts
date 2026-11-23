@@ -13,6 +13,7 @@ import {
   recordRevocation,
   revalidateSession,
   revokeSession,
+  sessionIsFresh,
 } from '../../core/index'
 import { consumeInviteContext, createInviteContext, inviteKey } from '../../core/invites'
 import {
@@ -364,13 +365,7 @@ export async function requireBrowserSession(
       session ? writeCookie(sessionCookie, '', 0) : undefined,
     )
   }
-  if (
-    provider.type !== 'oidc' ||
-    provider.revalidateAfterMinutes === 0 ||
-    now - current.validatedAt < provider.revalidateAfterMinutes * 60_000
-  ) {
-    return current
-  }
+  if (sessionIsFresh(provider, current, now)) return current
   if (
     req.method !== 'GET' ||
     req.headers.get('sec-fetch-mode') !== 'navigate' ||

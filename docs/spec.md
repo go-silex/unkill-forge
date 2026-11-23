@@ -186,10 +186,10 @@ Response headers:
 
 **Login handoff.** Sessions live on the manage host; the read host keeps its own cookie, bound to that session.
 
-1. Anonymous request for a private artefact: the read host sets a short-lived `__Host-forge-state` nonce cookie, then 302s to `https://<manage>/auth/handoff?return=<path>&state=<nonce>`.
-2. The manage host requires a valid session (signing in if needed) of an active member. It validates `return` as a read-host path starting with `/a/` (decoded, normalised, no scheme, no `//`), stores a single-use code (60 s) with the session and the state hash, then 302s to `https://<read>/_forge/session?code=…&state=…`.
-3. The read host checks that `state` matches its nonce cookie, consumes the code atomically (`DELETE … RETURNING`), sets `__Host-forge` (HttpOnly, Secure, SameSite=Lax), an HMAC-signed `{sessionIdHash, exp}`, clears the nonce, and redirects to the stored path.
-4. Each private read checks that the bound manage session is still valid and its member active. Signing out, session revocation and identity revocation on the manage side end read access too.
+1. An anonymous request for a private artefact sets a five-minute `__Host-forge-state` cookie and redirects to `https://<manage>/auth/handoff?return=<path>&state=<challenge>`. The challenge is the SHA-256 digest of the cookie's random verifier.
+2. The manage host requires a valid session (signing in if needed). It validates `return` as a read-host path starting with `/a/` (decoded, normalised, no scheme or empty segments), stores a single-use code (60 s) with the session and the state hash, then redirects to `https://<read>/_forge/session?code=…&state=…`. A pending member can establish identity on the read host to receive the pending page, not the file.
+3. The read host checks `state` against the cookie's verifier, consumes the code atomically (`DELETE … RETURNING`), sets `__Host-forge` (HttpOnly, Secure, SameSite=Lax), an HMAC-signed `{sessionIdHash, exp}`, clears the verifier and redirects to the stored path. A failed callback redirects to the same endpoint without the query before rendering a 404.
+4. Each private read checks that the bound manage session is still valid and its member active. Signing out, session revocation and identity revocation on the manage side end read access too. Stale OIDC sessions follow §10.
 
 ## 8. Publishing semantics
 
@@ -328,11 +328,11 @@ On **Members**, admins choose a role and create an invite link, valid for seven 
 
 ## 12. Configuration, branding, deployment
 
-| Kind     | Names                                                                                                                                                                                                                                  |
-| -------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Vars     | `FORGE_NAME`, `READ_ORIGIN`, `MANAGE_ORIGIN`, `ADMIN_EMAILS`, `AUTH_PROVIDERS` (JSON list of provider settings, §10), optional `MCP_ALLOWED_ORIGINS` and `ALLOW_DCR` (default `false`); `LOCALE`, `PUBLIC_INDEX` and limits in Phase 1 |
-| Secrets  | `FORGE_SEAL_KEY`, `FORGE_COOKIE_KEY`, one `AUTH_<ID>_CLIENT_SECRET` per provider                                                                                                                                                       |
-| Bindings | `DB` (D1), `BLOBS` (R2), `OAUTH_KV` (KV), optional rate-limit binding                                                                                                                                                                  |
+| Kind     | Names                                                                                                                                                                                                                                                     |
+| -------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Vars     | `FORGE_NAME`, `READ_ORIGIN`, `MANAGE_ORIGIN`, `ADMIN_EMAILS`, `AUTH_PROVIDERS` (JSON list of provider settings, §10), optional `MCP_ALLOWED_ORIGINS`; `ALLOW_DCR`, `PUBLIC_INDEX` and `ALLOW_INDEXING` default to `false`; `LOCALE` and limits in Phase 1 |
+| Secrets  | `FORGE_SEAL_KEY`, `FORGE_COOKIE_KEY`, one `AUTH_<ID>_CLIENT_SECRET` per provider                                                                                                                                                                          |
+| Bindings | `DB` (D1), `BLOBS` (R2), `OAUTH_KV` (KV), optional rate-limit binding                                                                                                                                                                                     |
 
 The publish limits are positive integers: `MAX_FILES_PER_ARTEFACT` (default `1000`, up to `10000`, applied to the resulting revision), `MAX_BLOB_WRITES_PER_CALL` (default `500`, up to `900` to stay within the Workers subrequest budget), and `MAX_INLINE_BYTES` (default `2097152`, up to `8388608`, summed decoded bytes per call). Each of the `files` and `delete` arrays is independently capped at 10,000 entries.
 
@@ -415,3 +415,7 @@ Known limits, stated in `docs/security.md`:
 1. **No HTTP API in v2.0.** Autonomous agents use `/mcp` over Streamable HTTP with an API token.
 2. **Revision retention:** 20 revisions per artefact by default, configurable.
 3. **Public index:** off by default (`PUBLIC_INDEX=false`).
+4. **Read handoff:** the URL carries a challenge, not the cookie's random verifier; `FORGE_COOKIE_KEY` signs the read session with an origin-specific context. Failed callbacks never render credential-bearing URLs.
+5. **Pending readers:** a pending session can complete handoff to display the read-host pending page. Access is checked against live membership on every private request.
+6. **OIDC freshness:** stale private navigations use manage's silent revalidation; stale subresources return an empty, non-cacheable 401, and stale handoff redemptions do not restart the flow.
+7. **HTTP ranges:** single byte ranges are supported; unsupported units, malformed and multipart ranges fall back to the whole response.
