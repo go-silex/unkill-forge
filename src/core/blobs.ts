@@ -49,14 +49,21 @@ export async function storeBlobs(
     if (!unique.has(sha256)) unique.set(sha256, { checksum, bytes })
     hashes.push(sha256)
   }
-  // One JSON parameter covers every distinct hash, even above D1's 100-bind cap.
-  const { results } = await db
-    .prepare(
-      'SELECT value AS sha256 FROM json_each(?) WHERE EXISTS (SELECT 1 FROM files WHERE sha256 = value)',
+  // One bind per statement; 256 SHA-256 hex strings fit in under 18 KiB.
+  const keys = [...unique.keys()]
+  const lookups: D1PreparedStatement[] = []
+  for (let start = 0; start < keys.length; start += 256) {
+    lookups.push(
+      db
+        .prepare(
+          'SELECT value AS sha256 FROM json_each(?) WHERE EXISTS (SELECT 1 FROM files WHERE sha256 = value)',
+        )
+        .bind(JSON.stringify(keys.slice(start, start + 256))),
     )
-    .bind(JSON.stringify([...unique.keys()]))
-    .all<{ sha256: string }>()
-  for (const { sha256 } of results) unique.delete(sha256)
+  }
+  for (const { results } of await db.batch<{ sha256: string }>(lookups)) {
+    for (const { sha256 } of results) unique.delete(sha256)
+  }
   if (unique.size > maxWrites) return null
 
   const onlyIf = new Headers({ 'If-None-Match': '*' })

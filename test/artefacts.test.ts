@@ -297,7 +297,7 @@ it('edits literal matches at the expected head; rejects stale, missing, repeated
   })
 })
 
-it('applies 10,000 literal replacements but refuses 10,001 before creating a revision', async () => {
+it('applies 10,000 literal replacements and stops counting at the first excess match', async () => {
   const { call } = await bot(runtime())
   const slug = 'many-matches'
   const edit = { slug, path: 'index.html', oldText: 'a', newText: 'b', replaceAll: true }
@@ -309,7 +309,7 @@ it('applies 10,000 literal replacements but refuses 10,001 before creating a rev
     revision: 2,
     text: 'b'.repeat(10_000),
   })
-  expect(await write(10_001)).toMatchObject({ revision: 3 })
+  expect(await write(10_500)).toMatchObject({ revision: 3 })
   expect(await call('edit_file', { ...edit, expectedRevision: 3 })).toMatchObject({
     error: 'invalid_input',
     matches: 10_001,
@@ -317,7 +317,7 @@ it('applies 10,000 literal replacements but refuses 10,001 before creating a rev
   })
   expect(await call('read_file', { slug, path: edit.path })).toMatchObject({
     revision: 3,
-    text: 'a'.repeat(10_001),
+    text: 'a'.repeat(10_500),
   })
 })
 
@@ -402,6 +402,8 @@ it('enforces resulting file count and summed decoded bytes, and fails closed on 
   expect((await runtime({ BLOBS: undefined })('/')).status).toBe(503)
   expect((await runtime({ MAX_INLINE_BYTES: '1.5' })('/')).status).toBe(503)
   expect((await runtime({ MAX_FILES_PER_ARTEFACT: 0 })('/')).status).toBe(503)
+  expect((await runtime({ MAX_FILES_PER_ARTEFACT: 10_001 })('/')).status).toBe(503)
+  expect((await runtime({ MAX_INLINE_BYTES: 8 * 1024 * 1024 + 1 })('/')).status).toBe(503)
   expect((await runtime({ MAX_BLOB_WRITES_PER_CALL: 901 })('/')).status).toBe(503)
 })
 
@@ -410,8 +412,9 @@ it('rejects oversized publish arrays before validating their entries or touching
   const { call } = await bot(withBucket({ put }, { MAX_FILES_PER_ARTEFACT: 2 }))
   const args = { slug: 'path-limit', mode: 'merge', files: [file('first.txt')] }
   const error = { error: 'too_large' }
-  expect(await call('publish', { ...args, files: [false, null, 123] })).toMatchObject(error)
-  expect(await call('publish', { ...args, delete: [false, null, 123] })).toMatchObject(error)
+  const oversized = Array.from({ length: 10_001 }, () => null)
+  expect(await call('publish', { ...args, files: oversized })).toMatchObject(error)
+  expect(await call('publish', { ...args, delete: oversized })).toMatchObject(error)
   expect(put).not.toHaveBeenCalled()
   expect(await call('publish', { ...args, files: [file('first.txt'), file('second.txt')] })).toMatchObject({
     revision: 1,
@@ -423,7 +426,30 @@ it('rejects oversized publish arrays before validating their entries or touching
   })
 })
 
-it('budgets only unreferenced blobs: 500 fresh files and a 501-file reused replacement succeed', async () => {
+it('can delete more paths than the lowered artefact limit to bring the head within it', async () => {
+  const { call } = await bot(runtime())
+  const slug = 'lowered-limit'
+  const paths = ['a.txt', 'b.txt', 'c.txt', 'd.txt']
+  expect(
+    await call('publish', { slug, mode: 'replace', files: paths.map((path) => file(path)) }),
+  ).toMatchObject({
+    revision: 1,
+  })
+  const lower = runtime({ MAX_FILES_PER_ARTEFACT: 1 })
+  expect(
+    await call(
+      'publish',
+      { slug, mode: 'merge', files: [], delete: paths.slice(1), expectedRevision: 1 },
+      lower,
+    ),
+  ).toMatchObject({ revision: 2 })
+  expect(await call('get_artefact', { slug }, lower)).toMatchObject({
+    revision: 2,
+    files: [{ path: 'a.txt' }],
+  })
+})
+
+it('publishes 500 distinct small files with exactly 500 real R2 puts', async () => {
   const put = vi.fn(bucket.put.bind(bucket))
   const { call } = await bot(withBucket({ put }))
   const slug = 'full-call'
@@ -431,12 +457,21 @@ it('budgets only unreferenced blobs: 500 fresh files and a 501-file reused repla
   expect(await call('publish', { slug, mode: 'replace', files })).toMatchObject({ revision: 1 })
   expect(put).toHaveBeenCalledTimes(500)
   expect(await call('read_file', { slug, path: '499.txt' })).toMatchObject({ text: 'content 499' })
+}, 30_000)
+
+it('rejects excess new blobs without PUTs but atomically replaces 501 files with reused content', async () => {
+  const put = vi.fn(bucket.put.bind(bucket))
+  const { call } = await bot(withBucket({ put }, { MAX_BLOB_WRITES_PER_CALL: 2 }))
+  const slug = 'reuse'
+  const files = Array.from({ length: 500 }, (_, index) => file(`${index}.txt`, 'reused'))
+  expect(await call('publish', { slug, mode: 'replace', files })).toMatchObject({ revision: 1 })
+  expect(put).toHaveBeenCalledTimes(1)
   put.mockClear()
   const tooMany = {
     slug,
     mode: 'replace',
     expectedRevision: 1,
-    files: Array.from({ length: 501 }, (_, index) => file(`${index}.txt`, `fresh ${index}`)),
+    files: ['new one', 'new two', 'new three'].map((content, index) => file(`${index}.txt`, content)),
   }
   expect(await call('publish', tooMany)).toMatchObject({
     error: 'too_large',
@@ -454,7 +489,7 @@ it('budgets only unreferenced blobs: 500 fresh files and a 501-file reused repla
   expect(await call('read_file', { slug, path: '499.txt' })).toMatchObject({ error: 'not_found' })
   expect(await call('read_file', { slug, path: '498.txt' })).toMatchObject({
     revision: 2,
-    text: 'content 498',
+    text: 'reused',
   })
   expect(await call('read_file', { slug, path: 'right.txt' })).toMatchObject({
     revision: 2,
@@ -464,6 +499,36 @@ it('budgets only unreferenced blobs: 500 fresh files and a 501-file reused repla
     .prepare('SELECT COUNT(*) AS count FROM files WHERE revision = 2')
     .first<number>('count')
   expect(count).toBe(501)
+})
+
+it('rejects wide and deep JSON below the byte limit without counting syntax inside strings', async () => {
+  const send = runtime({ MAX_INLINE_BYTES: 1000 })
+  const { token, call } = await bot(send)
+  let nested: unknown = null
+  for (let i = 0; i < 33; i++) nested = [nested]
+  for (const value of [Array.from({ length: 64_001 }, () => ({})), Array(64_001).fill(0), nested]) {
+    const body = JSON.stringify({
+      jsonrpc: '2.0',
+      id: 1,
+      method: 'tools/call',
+      params: { name: 'whoami', arguments: { value } },
+    })
+    expect(body.length).toBeLessThan(512 * 1024)
+    const response = await mcpPost(send, token, body)
+    expect(response.status).toBe(413)
+    expect(await response.json()).toMatchObject({
+      jsonrpc: '2.0',
+      id: null,
+      error: { data: { error: 'too_large' } },
+    })
+  }
+  const slug = 'quoted-delimiters'
+  const path = 'text.txt'
+  const text = JSON.stringify([String.fromCharCode(34, 92), '['.repeat(100)])
+  expect(await call('publish', { slug, mode: 'replace', files: [file(path, text)] })).toMatchObject({
+    revision: 1,
+  })
+  expect(await call('read_file', { slug, path })).toMatchObject({ text })
 })
 
 it('negotiates a non-batching protocol, rejects batches, and bounds JSON-RPC envelopes', async () => {
@@ -609,7 +674,7 @@ it('reuses unchanged content without a second R2 put, with the SHA-256 checksum 
 })
 
 it('returns metadata for binary, non-UTF-8 and oversized text and caps text slices', async () => {
-  const { call } = await bot(runtime({ MAX_INLINE_BYTES: '9000000' }))
+  const { call } = await bot(runtime())
   const slug = 'byte-types'
   expect(
     await call('publish', {
@@ -618,11 +683,20 @@ it('returns metadata for binary, non-UTF-8 and oversized text and caps text slic
       files: [
         { path: 'image.png', content: '/w==', encoding: 'base64' },
         { path: 'bad.txt', content: '/w==', encoding: 'base64' },
-        file('large.txt', 'x'.repeat(8 * 1024 * 1024 + 1)),
+        file('large.txt'),
         file('slice.txt', 'x'.repeat(100_001)),
       ],
     }),
   ).toMatchObject({ revision: 1 })
+  // Model a large upload in D1/R2; it is above the inline cap.
+  const bytes = new Uint8Array(8 * 1024 * 1024 + 1).fill(120)
+  const checksum = await crypto.subtle.digest('SHA-256', bytes)
+  const sha256 = Array.from(new Uint8Array(checksum), (byte) => byte.toString(16).padStart(2, '0')).join('')
+  await bucket.put(`blobs/${sha256}`, bytes, { sha256: checksum })
+  await db
+    .prepare('UPDATE files SET sha256 = ?, size = ? WHERE path = ?')
+    .bind(sha256, bytes.length, 'large.txt')
+    .run()
   expect(await call('read_file', { slug, path: 'image.png' })).toEqual({
     path: 'image.png',
     revision: 1,

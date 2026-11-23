@@ -12,7 +12,7 @@ import {
   type Tool,
 } from '@modelcontextprotocol/sdk/types.js'
 import { z } from 'zod'
-import type { Runtime } from '../../config'
+import { MAX_ARTEFACT_FILES, type Runtime } from '../../config'
 import type { Member } from '../../core'
 
 import {
@@ -82,6 +82,53 @@ function requestError(status: number, code: ErrorCode, message: string, error: s
   return Response.json({ jsonrpc: '2.0', id: null, error: { code, message, data: { error } } }, { status })
 }
 
+// This only budgets allocations; JSON.parse still validates syntax.
+// Count container openings, primitive starts, and strings that are not object keys.
+function exceedsJsonBudget(text: string) {
+  let depth = 0
+  let values = 0
+  let string = false
+  let afterString = false
+  let primitive = false
+  for (let i = 0; i < text.length; i++) {
+    const char = text[i]
+    if (string) {
+      if (char === '\\') i++
+      else if (char === '"') {
+        string = false
+        afterString = true
+      }
+      continue
+    }
+    if (char === ' ' || char === '\t' || char === '\r' || char === '\n') {
+      primitive = false
+      continue
+    }
+    if (afterString) {
+      if (char !== ':') values++
+      afterString = false
+    }
+    if (char === '"' || char === '{' || char === '[') {
+      if (char === '"') string = true
+      else {
+        values++
+        if (++depth > 32) return true
+      }
+      primitive = false
+    } else if (char === '}' || char === ']') {
+      depth--
+      primitive = false
+    } else if (char === ':' || char === ',') {
+      primitive = false
+    } else if (!primitive) {
+      values++
+      primitive = true
+    }
+    if (values > 64_000) return true
+  }
+  return values + Number(afterString) > 64_000
+}
+
 export async function handleMcp(request: Request, runtime: Runtime, member: Member): Promise<Response> {
   const { config } = runtime
   let parsedBody: unknown
@@ -98,6 +145,14 @@ export async function handleMcp(request: Request, runtime: Runtime, member: Memb
       const body = await readRequestBody(request, maxBody)
       if (body.tooLarge) {
         return requestError(413, ErrorCode.InvalidRequest, `MCP body exceeds ${maxBody} bytes`, 'too_large')
+      }
+      if (exceedsJsonBudget(body.text)) {
+        return requestError(
+          413,
+          ErrorCode.InvalidRequest,
+          'MCP body has too many JSON values or nesting levels',
+          'too_large',
+        )
       }
       parsedBody = JSON.parse(body.text)
     } catch {
@@ -165,17 +220,16 @@ export async function handleMcp(request: Request, runtime: Runtime, member: Memb
       z.strictObject({
         slug,
         title: z.string().max(200).optional(),
-        files: z.array(inlineFile).max(config.maxFilesPerArtefact),
+        files: z.array(inlineFile).max(MAX_ARTEFACT_FILES),
         mode: z.enum(['merge', 'replace']),
-        delete: z.array(path).max(config.maxFilesPerArtefact).optional(),
+        delete: z.array(path).max(MAX_ARTEFACT_FILES).optional(),
         expectedRevision: z.int().nonnegative().optional().describe('Use 0 to require a new slug'),
         message: z.string().max(1_000).optional(),
       }),
       (input) => publish(runtime, member, input),
       false,
       (args) => {
-        if (typeof args === 'object' && args !== null)
-          checkPublishArrayLengths(args, config.maxFilesPerArtefact)
+        if (typeof args === 'object' && args !== null) checkPublishArrayLengths(args)
       },
     ),
     tool(

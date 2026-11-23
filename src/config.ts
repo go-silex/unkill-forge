@@ -62,6 +62,8 @@ const positiveInt = z
   ])
   .pipe(z.int().positive())
 
+export const MAX_ARTEFACT_FILES = 10_000
+
 const vars = z
   .object({
     FORGE_NAME: z.string().trim().min(1),
@@ -77,9 +79,9 @@ const vars = z
       .default('false')
       .transform((value) => value === 'true'),
     FORGE_COOKIE_KEY: z.string().min(32),
-    MAX_FILES_PER_ARTEFACT: positiveInt.default(1_000),
+    MAX_FILES_PER_ARTEFACT: positiveInt.pipe(z.int().max(MAX_ARTEFACT_FILES)).default(1_000),
     MAX_BLOB_WRITES_PER_CALL: positiveInt.pipe(z.int().max(900)).default(500),
-    MAX_INLINE_BYTES: positiveInt.default(2_097_152),
+    MAX_INLINE_BYTES: positiveInt.pipe(z.int().max(8 * 1024 * 1024)).default(2_097_152),
     DB: z.custom<D1Database>(
       (value) => typeof (value as D1Database | undefined)?.prepare === 'function',
       'Missing D1 binding',

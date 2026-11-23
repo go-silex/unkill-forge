@@ -1,6 +1,6 @@
 import { base64url } from 'jose'
 import { z } from 'zod'
-import type { Runtime } from '../config'
+import { MAX_ARTEFACT_FILES, type Runtime } from '../config'
 import { blobText, contentType, MAX_TEXT_BYTES, storeBlobs, textSlice } from './blobs'
 import type { Member } from './index'
 
@@ -44,6 +44,8 @@ const fileCursor = z.tuple([z.uuid(), z.int().positive(), z.string()])
 
 function decodeCursor<S extends z.ZodType>(cursor: string, schema: S): z.output<S> {
   try {
+    // Forge's longest cursor is a file tuple containing a path of at most 512 UTF-16 code units.
+    if (cursor.length > 4096) throw new Error('Cursor length exceeds limit')
     return schema.parse(JSON.parse(new TextDecoder().decode(base64url.decode(cursor))))
   } catch {
     throw new ArtefactError('invalid_input', 'Invalid cursor; use the cursor returned by Forge')
@@ -223,10 +225,10 @@ function tooLarge(field: string, limit: number) {
 }
 
 // Also used by the MCP adapter before Zod walks entries in either array.
-export function checkPublishArrayLengths(args: { files?: unknown; delete?: unknown }, limit: number) {
+export function checkPublishArrayLengths(args: { files?: unknown; delete?: unknown }) {
   for (const array of [args.files, args.delete]) {
-    if (Array.isArray(array) && array.length > limit) {
-      throw tooLarge('File count', limit)
+    if (Array.isArray(array) && array.length > MAX_ARTEFACT_FILES) {
+      throw tooLarge('Input array length', MAX_ARTEFACT_FILES)
     }
   }
 }
@@ -266,7 +268,7 @@ export async function publish(runtime: Runtime, member: Member, input: Publish) 
   checkSlug(input.slug)
   const maxFiles = config.maxFilesPerArtefact
   const maxBytes = config.maxInlineBytes
-  checkPublishArrayLengths(input, maxFiles)
+  checkPublishArrayLengths(input)
 
   const deletes = new Set(input.delete)
   for (const path of deletes) checkPath(path)
@@ -435,12 +437,13 @@ export async function editFile(
     let at = text.indexOf(input.oldText);
     at !== -1;
     at = text.indexOf(input.oldText, at + input.oldText.length)
-  )
-    matches++
+  ) {
+    if (++matches > 10_000) break
+  }
   if (matches > 10_000) {
     throw new ArtefactError(
       'invalid_input',
-      `Found ${matches} matches; edit_file allows at most 10,000. Use publish instead`,
+      `Found at least ${matches} matches; edit_file allows at most 10,000. Use publish instead`,
       {
         matches,
       },
