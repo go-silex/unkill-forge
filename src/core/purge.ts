@@ -128,7 +128,7 @@ async function runPurgeStep(
           AND NOT EXISTS (SELECT 1 FROM purge_candidates WHERE slug = artefact_purges.slug)
           AND NOT EXISTS (SELECT 1 FROM artefacts WHERE id = ?1)`)
         .bind(id, token),
-      auditChange(db, Date.now(), memberId, 'artefact.purge', { slug }, id),
+      auditChange(db, Date.now, memberId, 'artefact.purge', { slug }, id),
       db.prepare('SELECT 1 FROM artefact_purges WHERE artefact_id = ?').bind(id),
     ])
     return { done: finished.meta.changes === 1 || remaining.results.length === 0 }

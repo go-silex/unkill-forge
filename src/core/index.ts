@@ -317,9 +317,10 @@ export async function recordRevocation(
   return result.meta.changes === 1
 }
 
+// This must immediately follow the mutation it audits in the same batch.
 export function auditChange(
   db: D1Database,
-  at: number,
+  at: number | (() => number),
   memberId: string | null,
   action: string,
   detail: object,
@@ -328,7 +329,14 @@ export function auditChange(
   return db
     .prepare(`INSERT INTO audit_log (id, at, member_id, action, artefact_id, detail_json)
     SELECT ?, ?, ?, ?, ?, ? WHERE changes() = 1`)
-    .bind(crypto.randomUUID(), at, memberId, action, artefactId, JSON.stringify(detail))
+    .bind(
+      crypto.randomUUID(),
+      typeof at === 'number' ? at : at(),
+      memberId,
+      action,
+      artefactId,
+      JSON.stringify(detail),
+    )
 }
 
 export function activeMember(db: D1Database, memberId: string): Promise<Member | null> {
