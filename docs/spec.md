@@ -346,7 +346,7 @@ Management mutations use a 303 redirect and a one-use flash notice. Consent redi
 | -------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | Vars     | `FORGE_NAME`, `READ_ORIGIN`, `MANAGE_ORIGIN`, `ADMIN_EMAILS`, `AUTH_PROVIDERS` (§10), optional `LOCALE`, `BRAND`, `MCP_ALLOWED_ORIGINS` and limits below; `ALLOW_DCR`, `PUBLIC_INDEX` and `ALLOW_INDEXING` default to `false`. |
 | Secrets  | `FORGE_SEAL_KEY`, `FORGE_COOKIE_KEY`, one `AUTH_<ID>_CLIENT_SECRET` per provider                                                                                                                                               |
-| Bindings | `DB` (D1), `BLOBS` (R2), `OAUTH_KV` (KV), optional `THEME` (Workers Static Assets) and optional rate-limit binding |
+| Bindings | `DB` (D1), `BLOBS` (R2), `OAUTH_KV` (KV), optional `THEME` (Workers Static Assets) and optional rate-limit binding                                                                                                             |
 
 The publish limits are positive integers: `MAX_FILES_PER_ARTEFACT` (default `1000`, up to `10000`, applied to the resulting revision), `MAX_BLOB_WRITES_PER_CALL` (default `500`, up to `900` to stay within the Workers subrequest budget), and `MAX_INLINE_BYTES` (default `2097152`, up to `8388608`, summed decoded bytes per call). Each of the `files` and `delete` arrays is independently capped at 10,000 entries.
 

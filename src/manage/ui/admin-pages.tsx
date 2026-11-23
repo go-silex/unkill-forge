@@ -375,7 +375,12 @@ adminPages.get(
             </Action>
             <h2>{t('delete')}</h2>
             <p>{t('deleteHelp')}</p>
-            <Action action="delete" variant="danger" label={t('delete')} fields={{ artefactId: artefact.id }} />
+            <Action
+              action="delete"
+              variant="danger"
+              label={t('delete')}
+              fields={{ artefactId: artefact.id }}
+            />
           </>
         )}
       </>,

@@ -150,12 +150,12 @@ Forge-authored pages load `/_theme/theme.css` after `/style.css` whenever `THEME
 
 The allowlist applies to paths as received by Forge. A client or proxy may normalize `.` or `..` before sending the request; Forge does not decode path components or allow traversal within the theme binding.
 
-| Theme file under `/_theme/` | Response type |
-| --- | --- |
-| `theme.css` | `text/css` |
-| Root `*.svg` | `image/svg+xml` (sandbox CSP) |
-| Root `*.png` | `image/png` |
-| `fonts/*.woff2` | `font/woff2` |
+| Theme file under `/_theme/` | Response type                 |
+| --------------------------- | ----------------------------- |
+| `theme.css`                 | `text/css`                    |
+| Root `*.svg`                | `image/svg+xml` (sandbox CSP) |
+| Root `*.png`                | `image/png`                   |
+| `fonts/*.woff2`             | `font/woff2`                  |
 
 Image and font basenames start with an ASCII letter, digit, `_` or `-`; remaining characters may also include `.`. Only `GET` and `HEAD` are allowed. Other paths (including encoded path components), missing assets and other methods return 404 with `nosniff`. Assets use `Cache-Control: no-cache` so browsers revalidate across deployments.
 
@@ -163,15 +163,15 @@ Image and font basenames start with an ASCII letter, digit, `_` or `-`; remainin
 
 Override these properties with ordinary rules; match `@media (prefers-color-scheme: dark)` if your overrides need separate dark values.
 
-| Property | Purpose |
-| --- | --- |
-| `--forge-font-sans`, `--forge-font-mono` | UI and code font stacks |
-| `--forge-page`, `--forge-surface` | Page background and raised surfaces |
-| `--forge-ink`, `--forge-muted`, `--forge-hairline` | Main text, secondary text and borders |
-| `--forge-accent`, `--forge-on-accent` | Accent (defaults to `BRAND.accent`) and text on accent |
-| `--forge-link`, `--forge-danger`, `--forge-focus` | Link, destructive action and focus ring colours |
-| `--forge-radius`, `--forge-control-height`, `--forge-space` | Corner radius, minimum regular control height and base spacing unit |
-| `--forge-text-small`, `--forge-text-base`, `--forge-text-heading`, `--forge-text-title` | Dense text, body text, section heading and page title sizes |
+| Property                                                                                | Purpose                                                             |
+| --------------------------------------------------------------------------------------- | ------------------------------------------------------------------- |
+| `--forge-font-sans`, `--forge-font-mono`                                                | UI and code font stacks                                             |
+| `--forge-page`, `--forge-surface`                                                       | Page background and raised surfaces                                 |
+| `--forge-ink`, `--forge-muted`, `--forge-hairline`                                      | Main text, secondary text and borders                               |
+| `--forge-accent`, `--forge-on-accent`                                                   | Accent (defaults to `BRAND.accent`) and text on accent              |
+| `--forge-link`, `--forge-danger`, `--forge-focus`                                       | Link, destructive action and focus ring colours                     |
+| `--forge-radius`, `--forge-control-height`, `--forge-space`                             | Corner radius, minimum regular control height and base spacing unit |
+| `--forge-text-small`, `--forge-text-base`, `--forge-text-heading`, `--forge-text-title` | Dense text, body text, section heading and page title sizes         |
 
 For example, `theme.css` can register a font and set the UI stack:
 
@@ -191,20 +191,20 @@ For example, `theme.css` can register a font and set the UI stack:
 
 These classes and the custom properties above are the supported theme contract. Built-in selectors have low specificity so themes can use plain rules. The rest of the HTML and the built-in layout are not extension APIs; dress the pages without changing their content, order or behaviour.
 
-| Class | Purpose |
-| --- | --- |
-| `.forge-shell`, `.forge-tray`, `.forge-content` | Signed-in manage grid, navigation/brand tray, and main content; the tray moves to the top on narrow screens |
-| `.forge-brand`, `.forge-brand__logo` | Instance mark/name group and height-sized image |
-| `.forge-nav`, `.forge-nav__link` | Section navigation and links; use `[aria-current="page"]` for the active section |
-| `.forge-title` | Page heading |
-| `.forge-panel`, `.forge-panel__header`, `.forge-panel__body` | Single-panel layout, header when present, and body |
-| `.forge-panel--sign-in`, `.forge-panel--invite`, `.forge-panel--consent`, `.forge-panel--handoff` | Manage sign-in, invitation, consent, and read-session relay panels |
-| `.forge-panel--landing`, `.forge-panel--pending`, `.forge-panel--error` | Read landing, approval-pending, and error panels |
-| `.forge-table-scroll`, `.forge-table` | Horizontal scroll container and dense data table |
-| `.forge-action`, `.forge-button` | Form actions and styled action controls |
-| `.forge-button--primary`, `.forge-button--danger` | Primary and destructive control variants |
-| `.forge-notice`, `.forge-secret`, `.forge-empty` | Flash notice, one-use secret and copy action group, and empty-state text |
-| `.forge-link-list` | Sign-in provider links or public artefact list |
+| Class                                                                                             | Purpose                                                                                                     |
+| ------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------- |
+| `.forge-shell`, `.forge-tray`, `.forge-content`                                                   | Signed-in manage grid, navigation/brand tray, and main content; the tray moves to the top on narrow screens |
+| `.forge-brand`, `.forge-brand__logo`                                                              | Instance mark/name group and height-sized image                                                             |
+| `.forge-nav`, `.forge-nav__link`                                                                  | Section navigation and links; use `[aria-current="page"]` for the active section                            |
+| `.forge-title`                                                                                    | Page heading                                                                                                |
+| `.forge-panel`, `.forge-panel__header`, `.forge-panel__body`                                      | Single-panel layout, header when present, and body                                                          |
+| `.forge-panel--sign-in`, `.forge-panel--invite`, `.forge-panel--consent`, `.forge-panel--handoff` | Manage sign-in, invitation, consent, and read-session relay panels                                          |
+| `.forge-panel--landing`, `.forge-panel--pending`, `.forge-panel--error`                           | Read landing, approval-pending, and error panels                                                            |
+| `.forge-table-scroll`, `.forge-table`                                                             | Horizontal scroll container and dense data table                                                            |
+| `.forge-action`, `.forge-button`                                                                  | Form actions and styled action controls                                                                     |
+| `.forge-button--primary`, `.forge-button--danger`                                                 | Primary and destructive control variants                                                                    |
+| `.forge-notice`, `.forge-secret`, `.forge-empty`                                                  | Flash notice, one-use secret and copy action group, and empty-state text                                    |
+| `.forge-link-list`                                                                                | Sign-in provider links or public artefact list                                                              |
 
 ## Upgrades, maintenance and backups
 

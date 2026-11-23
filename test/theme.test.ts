@@ -26,7 +26,7 @@ const theme = {
 }
 
 it.each([manage, read])('serves only allowed theme assets and controlled headers on %s', async (origin) => {
-  const upstream = new Array<string>()
+  const upstream: string[] = []
   const send = runtime({
     THEME: {
       fetch(request: Request) {
@@ -44,7 +44,10 @@ it.each([manage, read])('serves only allowed theme assets and controlled headers
   })
   for (const [path, [type, body]] of Object.entries(assets)) {
     for (const method of ['GET', 'HEAD']) {
-      const response = await send(`${origin}/_theme${path}?v=1`, { method, headers: { Cookie: 'test=secret' } })
+      const response = await send(`${origin}/_theme${path}?v=1`, {
+        method,
+        headers: { Cookie: 'test=secret' },
+      })
       expect(response.status).toBe(200)
       expect(await response.text()).toBe(method === 'GET' ? body : '')
       expect(Object.fromEntries(response.headers)).toEqual({
@@ -57,7 +60,9 @@ it.each([manage, read])('serves only allowed theme assets and controlled headers
       })
     }
   }
-  const validated = await send(`${origin}/_theme/theme.css`, { headers: { 'If-None-Match': '"theme-revision"' } })
+  const validated = await send(`${origin}/_theme/theme.css`, {
+    headers: { 'If-None-Match': '"theme-revision"' },
+  })
   expect(validated.status).toBe(304)
   expect(await validated.text()).toBe('')
   expect(validated.headers.get('ETag')).toBe('"theme-revision"')
@@ -89,32 +94,39 @@ it.each([manage, read])('serves only allowed theme assets and controlled headers
   expect(upstream).toEqual(['/absent.png', '/redirect.svg'])
 })
 
-it.each(['/login', `${read}/`])('links optional CSS after built-in styles and selects configured marks on %s', async (path) => {
-  const themed = runtime({ THEME: theme, BRAND: '{"logo":"wordmark.svg","favicon":"icon.png"}' })
-  const response = await themed(path)
-  expect(response.status).toBe(200)
-  const body = await response.text()
-  expect(body.match(/<link[^>]+>/g)).toEqual([
-    '<link rel="icon" href="/_theme/icon.png"/>',
-    '<link rel="stylesheet" href="/style.css"/>',
-    '<link rel="stylesheet" href="/_theme/theme.css"/>',
-  ])
-  expect(body).toContain('<img class="forge-brand__logo" src="/_theme/wordmark.svg" alt=""/>')
-  expect(response.headers.get('Content-Security-Policy')).toContain("font-src 'self'")
+it.each(['/login', `${read}/`])(
+  'links optional CSS after built-in styles and selects configured marks on %s',
+  async (path) => {
+    const themed = runtime({ THEME: theme, BRAND: '{"logo":"wordmark.svg","favicon":"icon.png"}' })
+    const response = await themed(path)
+    expect(response.status).toBe(200)
+    const body = await response.text()
+    expect(body.match(/<link[^>]+>/g)).toEqual([
+      '<link rel="icon" href="/_theme/icon.png"/>',
+      '<link rel="stylesheet" href="/style.css"/>',
+      '<link rel="stylesheet" href="/_theme/theme.css"/>',
+    ])
+    expect(body).toContain('<img class="forge-brand__logo" src="/_theme/wordmark.svg" alt=""/>')
+    expect(response.headers.get('Content-Security-Policy')).toContain("font-src 'self'")
 
-  const unthemed = runtime()
-  const bundled = await unthemed(path)
-  const fallback = await bundled.text()
-  expect(fallback).not.toContain('/_theme/')
-  expect(fallback).toContain('href="/favicon.svg"')
-  expect(fallback).toContain('src="/logo.svg"')
-  const missing = await unthemed(`${new URL(path, manage).origin}/_theme/theme.css`)
-  expect(missing.status).toBe(404)
-  expect(Object.fromEntries(missing.headers)).toEqual(themeHeaders)
-})
+    const unthemed = runtime()
+    const bundled = await unthemed(path)
+    const fallback = await bundled.text()
+    expect(fallback).not.toContain('/_theme/')
+    expect(fallback).toContain('href="/favicon.svg"')
+    expect(fallback).toContain('src="/logo.svg"')
+    const missing = await unthemed(`${new URL(path, manage).origin}/_theme/theme.css`)
+    expect(missing.status).toBe(404)
+    expect(Object.fromEntries(missing.headers)).toEqual(themeHeaders)
+  },
+)
 
 it('keeps each unspecified bundled mark without probing the binding', async () => {
-  const binding = { fetch: () => { throw new Error('Unexpected mark lookup') } }
+  const binding = {
+    fetch: () => {
+      throw new Error('Unexpected mark lookup')
+    },
+  }
   const logoOnly = runtime({ THEME: binding, BRAND: '{"logo":"wordmark.svg"}' })
   const logoPage = await (await logoOnly('/login')).text()
   expect(logoPage).toContain('src="/_theme/wordmark.svg"')
@@ -136,6 +148,8 @@ it.each(['logo', 'favicon'])('fails closed for invalid or unbound BRAND.%s', asy
 
 it('keeps font CSP out of non-page responses', async () => {
   const send = runtime({ THEME: theme })
-  expect((await send('/oauth/clients/local.json')).headers.get('Content-Security-Policy')).not.toContain('font-src')
+  expect((await send('/oauth/clients/local.json')).headers.get('Content-Security-Policy')).not.toContain(
+    'font-src',
+  )
   expect((await send(`${read}/_theme/theme.css`)).headers.has('Content-Security-Policy')).toBe(false)
 })

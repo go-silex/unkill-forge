@@ -1,7 +1,10 @@
 import { z } from 'zod'
 import { accent } from '../brand/defaults'
 
-const mark = z.string().regex(/^[a-z0-9-]+\.(?:svg|png)$/).optional()
+const mark = z
+  .string()
+  .regex(/^[a-z0-9-]+\.(?:svg|png)$/)
+  .optional()
 
 const brand = z.strictObject({
   accent: z
@@ -118,7 +121,9 @@ const vars = z
       (value) => typeof (value as KVNamespace | undefined)?.get === 'function',
       'Missing KV binding',
     ),
-    THEME: z.custom<Fetcher>((value) => typeof (value as Fetcher | undefined)?.fetch === 'function').optional(),
+    THEME: z
+      .custom<Fetcher>((value) => typeof (value as Fetcher | undefined)?.fetch === 'function')
+      .optional(),
   })
   .refine((value) => value.READ_ORIGIN !== value.MANAGE_ORIGIN, {
     path: ['MANAGE_ORIGIN'],

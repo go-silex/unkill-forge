@@ -616,7 +616,9 @@ it.each(['en', 'fr'] as const)(
     })
     expect(complete.status).toBe(303)
     expect(await html(reader, privateUrl)).toContain(french ? 'Accès en attente' : 'Pending access')
-    expect((await reader.request(privateUrl)).headers.get('Content-Security-Policy')).toContain("font-src 'self'")
+    expect((await reader.request(privateUrl)).headers.get('Content-Security-Policy')).toContain(
+      "font-src 'self'",
+    )
     const next = await new Browser(send).request(privateUrl, { headers: navigation })
     const nextHandoff = await pending.request(location(next), { headers: navigation })
     const retry = await anonymous.request(`${read}/_forge/session`, {
