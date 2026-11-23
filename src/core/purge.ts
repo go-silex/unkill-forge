@@ -121,7 +121,7 @@ async function runPurgeStep(
   if (attempt.meta.changes === 0) return { done: false }
   try {
     await deleteBlobPage(db, blobs, id, slug, token)
-    const [finished] = await db.batch([
+    const [finished, , remaining] = await db.batch([
       db
         .prepare(`DELETE FROM artefact_purges WHERE artefact_id = ?1
           AND EXISTS (SELECT 1 FROM purge_attempts WHERE artefact_id = ?1 AND token = ?2)
@@ -132,12 +132,9 @@ async function runPurgeStep(
         .prepare(`INSERT INTO audit_log (id, at, member_id, action, artefact_id, detail_json)
           SELECT ?, ?, ?, 'artefact.purge', ?, ? WHERE changes() = 1`)
         .bind(crypto.randomUUID(), Date.now(), memberId, id, JSON.stringify({ slug })),
+      db.prepare('SELECT 1 FROM artefact_purges WHERE artefact_id = ?').bind(id),
     ])
-    return {
-      done:
-        finished.meta.changes === 1 ||
-        !(await db.prepare('SELECT 1 FROM artefact_purges WHERE artefact_id = ?').bind(id).first()),
-    }
+    return { done: finished.meta.changes === 1 || remaining.results.length === 0 }
   } finally {
     // Keep hash claims on failure, but let the next request retry once this delete has settled.
     await db.prepare('DELETE FROM purge_attempts WHERE artefact_id = ? AND token = ?').bind(id, token).run()

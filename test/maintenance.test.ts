@@ -1,6 +1,7 @@
 import { createScheduledController, env } from 'cloudflare:test'
 import { beforeEach, expect, it, vi } from 'vitest'
 import type { Env } from '../src/config'
+import { putConsent, readSession } from '../src/core'
 import worker from '../src/index'
 import { configuredEnv, setupStorage } from './http'
 
@@ -8,6 +9,7 @@ setupStorage()
 const { DB: db, BLOBS: bucket } = env as typeof env & Pick<Env, 'DB' | 'BLOBS'>
 const now = Date.now() - 1000
 const day = 86_400_000
+const sessionCutoff = now - day
 const revokedCutoff = now - 8 * day
 const deletedCutoff = now - 30 * day
 const controller = createScheduledController({ scheduledTime: now, cron: '0 3 * * *' })
@@ -46,10 +48,11 @@ const expiryCases = [
   },
   {
     table: 'sessions',
+    cutoff: sessionCutoff,
     insert: `INSERT INTO sessions (id_hash, member_id, provider, subject, auth_time, created_at, validated_at, expires_at)
       SELECT n, 'member', 'team', 'subject', 0, 0, 0, ? + n - 129 FROM fixture_numbers`,
     read: 'SELECT expires_at AS expiry FROM sessions',
-    active: [now + 1, now + 60_000],
+    active: [sessionCutoff + 1, now + 60_000],
   },
   {
     table: 'uploads',
@@ -61,18 +64,21 @@ const expiryCases = [
     read: 'SELECT expires_at AS expiry FROM uploads',
   },
   {
+    cutoff: sessionCutoff,
     table: 'handoffs',
     insert: `INSERT INTO handoffs (code_hash, session_id_hash, state_hash, return_path, expires_at)
       SELECT n, 'active-session', 'state', '/', ? + n - 129 FROM fixture_numbers`,
     read: 'SELECT expires_at AS expiry FROM handoffs',
   },
   {
+    cutoff: sessionCutoff,
     table: 'oauth_consents',
     insert: `INSERT INTO oauth_consents (token_hash, session_hash, request_url, expires_at)
       SELECT n, 'active-session', '/authorize', ? + n - 129 FROM fixture_numbers`,
     read: 'SELECT expires_at AS expiry FROM oauth_consents',
   },
   {
+    cutoff: sessionCutoff,
     table: 'ui_flashes',
     insert: `INSERT INTO ui_flashes (id, session_hash, path, role, message, expires_at)
       SELECT n, 'active-session', '/', 'admin', 'notice', ? + n - 129 FROM fixture_numbers`,
@@ -119,16 +125,16 @@ it.each(expiryCases)(
 
 it('drains child pages before deleting expired parent sessions and invites', async () => {
   await db.batch([
-    db.prepare("UPDATE sessions SET expires_at = ? WHERE id_hash = 'active-session'").bind(now),
+    db.prepare("UPDATE sessions SET expires_at = ? WHERE id_hash = 'active-session'").bind(sessionCutoff),
     db.prepare("UPDATE invites SET expires_at = ? WHERE token_hash = 'active-invite'").bind(now),
     db
       .prepare(`INSERT INTO handoffs (code_hash, session_id_hash, state_hash, return_path, expires_at)
         SELECT n, 'active-session', 'state', '/', ? FROM fixture_numbers`)
-      .bind(now),
+      .bind(sessionCutoff),
     db
       .prepare(`INSERT INTO ui_flashes (id, session_hash, path, role, message, expires_at)
         SELECT n, 'active-session', '/', 'admin', 'notice', ? FROM fixture_numbers`)
-      .bind(now),
+      .bind(sessionCutoff),
     db
       .prepare(`INSERT INTO invite_contexts (id, browser_hash, invite_hash, expires_at)
         SELECT n, 'browser', 'active-invite', ? FROM fixture_numbers`)
@@ -202,7 +208,7 @@ it('sweeps past empty revision pages, keeps the configured tail, and prunes at m
   expect(await bucket.head('blobs/revision-hash')).not.toBeNull()
 })
 
-it('drives at most four purges per run and resumes file and blob pages after hard deletion', async () => {
+it('drives at most three purge steps per run and resumes file and blob pages after hard deletion', async () => {
   const shared = '1'.padStart(64, '0')
   const exclusive = '41'.padStart(64, '0')
   const earliest = deletedCutoff - 1
@@ -232,7 +238,7 @@ it('drives at most four purges per run and resumes file and blob pages after har
       ({ id }) => id,
     )
   await run()
-  expect(await ids()).toEqual(['a-large', 'boundary', 'e-small', 'live', 'recent'])
+  expect(await ids()).toEqual(['a-large', 'boundary', 'd-small', 'e-small', 'live', 'recent'])
   expect(await db.prepare("SELECT count(*) AS n FROM files WHERE artefact_id = 'a-large'").first('n')).toBe(1)
   expect(await bucket.head(`blobs/${exclusive}`)).not.toBeNull()
   await run()
@@ -258,6 +264,150 @@ it('drives at most four purges per run and resumes file and blob pages after har
   ).toBe(5)
 })
 
+function observeD1(call: (sql: string[]) => void | Promise<void>): D1Database {
+  const statements = new WeakMap<D1PreparedStatement, { sql: string; original: D1PreparedStatement }>()
+  function observe(sql: string, original: D1PreparedStatement): D1PreparedStatement {
+    const wrapped = new Proxy(original, {
+      get(target, key) {
+        if (key === 'bind') return (...values: unknown[]) => observe(sql, target.bind(...values))
+        if (key === 'all' || key === 'first' || key === 'run' || key === 'raw') {
+          return async (...args: unknown[]) => {
+            await call([sql])
+            return Reflect.apply(target[key], target, args)
+          }
+        }
+        return Reflect.get(target, key)
+      },
+    })
+    statements.set(wrapped, { sql, original })
+    return wrapped
+  }
+  return {
+    prepare: (sql: string) => observe(sql, db.prepare(sql)),
+    async batch(batch: D1PreparedStatement[]) {
+      const entries = batch.map((statement) => {
+        const entry = statements.get(statement)
+        if (!entry) throw new Error('Unobserved D1 statement')
+        return entry
+      })
+      await call(entries.map(({ sql }) => sql))
+      return db.batch(entries.map(({ original }) => original))
+    },
+  } as D1Database
+}
+
+it('reserves the whole cron below 45 D1 calls with three worst-case purge steps', async () => {
+  await db.batch([
+    artefact('a', deletedCutoff - 1),
+    artefact('b', deletedCutoff - 1),
+    artefact('c', deletedCutoff - 1),
+    db.prepare(`INSERT INTO revisions (artefact_id, number, created_by, created_at)
+      SELECT id, 1, 'member', 0 FROM artefacts`),
+    db.prepare(`INSERT INTO files (artefact_id, revision, path, sha256, size, content_type)
+      SELECT id, 1, printf('%03d', n), printf('%s%063x', id, n), 1, 'text/plain'
+      FROM artefacts CROSS JOIN fixture_numbers WHERE n < 65`),
+  ])
+  let calls = 0
+  await run({
+    DB: observeD1(() => {
+      calls++
+    }),
+  })
+  expect(calls).toBe(43)
+  expect(calls).toBeLessThanOrEqual(45)
+  expect(await db.prepare('SELECT count(*) AS n FROM purge_candidates').first('n')).toBe(3)
+  expect(await db.prepare('SELECT count(*) AS n FROM artefacts').first('n')).toBe(0)
+})
+
+it('rechecks revision heads and purge eligibility between selection and D1 batch', async () => {
+  await db.batch([
+    artefact('history', null, 3),
+    artefact('restored', deletedCutoff - 1),
+    db.prepare(`INSERT INTO revisions (artefact_id, number, created_by, created_at)
+      SELECT 'history', n, 'member', 0 FROM fixture_numbers WHERE n BETWEEN 1 AND 3`),
+  ])
+  const seen: string[] = []
+  await run({
+    REVISION_RETENTION: '2',
+    DB: observeD1(async (sql) => {
+      if (
+        sql.some((statement) =>
+          statement.includes('DELETE FROM revisions WHERE artefact_id = ?1 AND number = ?2'),
+        )
+      ) {
+        seen.push('revisions')
+        await db.prepare("UPDATE artefacts SET current_revision = 1 WHERE id = 'history'").run()
+      }
+      if (sql.some((statement) => statement.startsWith('INSERT INTO artefact_purges'))) {
+        seen.push('deleted')
+        await db.prepare("UPDATE artefacts SET deleted_at = NULL WHERE id = 'restored'").run()
+      }
+    }),
+  })
+  expect(seen).toEqual(['revisions', 'deleted'])
+  expect(
+    await db.prepare("SELECT number FROM revisions WHERE artefact_id = 'history' AND number = 1").first(),
+  ).not.toBeNull()
+  expect(await db.prepare("SELECT deleted_at FROM artefacts WHERE id = 'restored'").first()).toEqual({
+    deleted_at: null,
+  })
+  expect(await db.prepare('SELECT artefact_id FROM artefact_purges').first()).toBeNull()
+})
+
+it('keeps expired sessions for in-flight writes without still authenticating them', async () => {
+  await db.prepare("UPDATE sessions SET expires_at = ? WHERE id_hash = 'active-session'").bind(now).run()
+  const authorized = await readSession(db, 'active-session', now - 1)
+  if (!authorized) throw new Error('Session did not authorize before expiration')
+  await run()
+  expect(await readSession(db, authorized.idHash, now)).toBeNull()
+  await putConsent(db, 'in-flight', authorized.idHash, '/authorize', now)
+  expect(
+    await db.prepare("SELECT token_hash FROM oauth_consents WHERE token_hash = 'in-flight'").first(),
+  ).not.toBeNull()
+})
+
+it('rotates a failed purge out of the invocation without hiding the failed event', async () => {
+  await db.batch([
+    artefact('a-failed', deletedCutoff - 1),
+    artefact('b-done', deletedCutoff - 1),
+    db.prepare(`CREATE TRIGGER fail_purge BEFORE DELETE ON artefacts WHEN OLD.id = 'a-failed'
+      BEGIN SELECT RAISE(ABORT, 'secret-purge-error'); END`),
+  ])
+  const log = vi.spyOn(console, 'error')
+  try {
+    await expect(run()).rejects.toMatchObject({
+      name: 'AggregateError',
+      errors: [new Error('purges')],
+    })
+    expect(log.mock.calls).toEqual([
+      ['Forge maintenance incomplete', 'purges', { attempted: 2, done: 1, failed: 1 }],
+    ])
+  } finally {
+    log.mockRestore()
+  }
+  expect(await db.prepare('SELECT id FROM artefacts').first('id')).toBe('a-failed')
+})
+
+it('rolls back revision deletions if the cursor write fails and retries the same page', async () => {
+  await db.batch([
+    artefact('history', null, 3),
+    db.prepare(`INSERT INTO revisions (artefact_id, number, created_by, created_at)
+      SELECT 'history', n, 'member', 0 FROM fixture_numbers WHERE n BETWEEN 1 AND 3`),
+    db.prepare(`CREATE TRIGGER fail_cursor BEFORE INSERT ON maintenance_cursors
+      WHEN NEW.task = 'revisions' BEGIN SELECT RAISE(ABORT, 'cursor write failed'); END`),
+  ])
+  const revision = db.prepare("SELECT number FROM revisions WHERE artefact_id = 'history' AND number = 1")
+  const cursor = db.prepare("SELECT id FROM maintenance_cursors WHERE task = 'revisions'")
+  const sweep = () => run({ REVISION_RETENTION: '2' })
+  await expect(sweep()).rejects.toMatchObject({ errors: [new Error('revisions')] })
+  expect(await revision.first()).not.toBeNull()
+  expect(await cursor.first()).toBeNull()
+  await db.prepare('DROP TRIGGER fail_cursor').run()
+  await sweep()
+  expect(await revision.first()).toBeNull()
+  expect(await cursor.first()).not.toBeNull()
+})
+
 it('continues later tasks after a failure and does not log the binding error', async () => {
   await db.batch([
     db.prepare(`INSERT INTO login_flows (state_hash, browser_hash, provider, return_path, created_at, expires_at)
@@ -270,7 +420,10 @@ it('continues later tasks after a failure and does not log the binding error', a
   ])
   const log = vi.spyOn(console, 'error')
   try {
-    await run()
+    await expect(run()).rejects.toMatchObject({
+      name: 'AggregateError',
+      errors: [new Error('login flows')],
+    })
     expect(log.mock.calls).toEqual([['Forge maintenance failed', 'login flows']])
   } finally {
     log.mockRestore()

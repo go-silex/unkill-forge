@@ -5,7 +5,7 @@ Forge is one Cloudflare Worker per team. `src/index.ts` validates configuration 
 | Boundary                     | Responsibility                                                                                                                                                                        |
 | ---------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | Read origin, `src/read/`     | Delivers published files and the landing page, serves `/a/<slug>/` and `/s/<slug>/<key>/`, and redeems private read handoffs. It never hosts management.                              |
-| Manage origin, `src/manage/` | Sign-in, UI, OAuth and MCP, streamed upload ingress, and issuing read handoffs. It never serves artefact bytes.                                                                       |
+| Manage origin, `src/manage/` | Sign-in, UI, OAuth, MCP, streamed uploads and read handoffs. It does not serve artefacts as web content; authorized MCP `read_file` can return file text.                             |
 | Core, `src/core/`            | Holds role and lifecycle policy, D1 queries, publish compare-and-set, guarded R2 I/O and scheduled maintenance. Adapters translate HTTP/MCP messages; they do not own the data model. |
 
 | Binding        | What it stores                                                                                                                                                                                                                    |
@@ -28,14 +28,15 @@ An artefact form submits the displayed stable ID with the slug. Most mutations r
 
 ## Maintenance
 
-The daily 03:00 UTC trigger calls core with a cutoff no later than the current time. A failed task does not stop later tasks. Logs contain task names and counts, not binding errors or credentials. Work advances in pages across runs; cleanup is not the authority for credential validity.
+The daily 03:00 UTC trigger calls core with a cutoff no later than the current time. Every task gets its turn despite earlier failures; the event fails at the end if any task failed. Logs contain task names and counts, not binding errors or credentials. Work advances in pages across runs; cleanup is not the authority for credential validity.
 
-| Work                                                                                              | Cutoff and per-run limit                                                                                                                                                                                                                                             |
-| ------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Login flows, handoffs, OAuth consents, UI flashes, sessions, uploads, invite contexts and invites | Up to 128 rows per table at or before their recorded expiry. Expire child rows first; defer parents with remaining children to avoid an unbounded cascade. Upload cleanup never deletes R2 objects.                                                                  |
-| Identity revocations                                                                              | Up to 128 markers at least eight days old. This covers the seven-day OAuth grant cap plus authorization-code lifetime and clock margin. Browser session revocation is recorded directly on the session.                                                              |
-| History                                                                                           | Visit at most 64 artefacts and prune up to two outdated live revisions in D1 per run. The live read/restore cutoff and at-publish pruning remain in force. Keep soft-deleted manifests until restore or purge so purge can stage their hashes.                       |
-| Deleted artefacts                                                                                 | Visit up to eight artefacts with `deleted_at` strictly older than 30 days, register their purge jobs and advance up to four registered jobs, oldest attempt first. This also resumes explicit admin purges, including jobs that already removed their artefact rows. |
+- **Login flows, uploads, invite contexts and invites:** Remove up to 128 rows per table at or before recorded expiry. Upload cleanup never deletes R2 objects; a claimed PUT gets a separate one-hour streaming window.
+- **Sessions, handoffs, OAuth consents and UI flashes:** Remove up to 128 rows per table at least one day after expiry, without extending authorization. Children drain before parent sessions and invites to avoid unbounded cascades.
+- **Identity revocations:** Remove up to 128 markers at least eight days old. This covers the seven-day OAuth grant cap plus authorization-code lifetime and clock margin. Browser session revocation is recorded directly on the session.
+- **History:** Visit at most 64 artefacts and prune up to two outdated live revisions in D1 per run. Live read/restore cutoff and at-publish pruning remain in force. Keep soft-deleted manifests until restore or purge so purge can stage their hashes.
+- **Deleted artefacts:** Register up to eight artefacts soft-deleted strictly more than 30 days ago. Advance up to three purge steps, oldest attempt first, including registered admin purges that already removed their artefact rows.
+
+The schedule reserves 13 D1 calls for sweeps and 10 per purge step, capped at 45 calls, including failed attempts (each D1 batch is one call). A lone job can progress three pages per run, but queued jobs share that rate. Each step removes at most 256 rows per dependent table and processes at most 64 candidate blob hashes. Thirty days marks eligibility, not a deadline for physical deletion.
 
 ## Why purge has a fence
 

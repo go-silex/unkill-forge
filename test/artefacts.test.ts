@@ -6,6 +6,7 @@ import { z } from 'zod'
 import { configuration, type Env } from '../src/config'
 import type { Member } from '../src/core'
 import { restoreDeletedArtefact, setRedirects } from '../src/core/artefacts'
+import { maintain } from '../src/core/maintenance'
 import { purgeArtefact } from '../src/core/purge'
 import { sealShareKey, unsealShareKey } from '../src/core/share-keys'
 import {
@@ -845,6 +846,48 @@ function putUpload(
   if (origin) headers.set('origin', origin)
   return send(url, { method: 'PUT', headers, body })
 }
+
+it('finishes an in-flight PUT after maintenance crosses its original capability cutoff', async () => {
+  const { call } = await bot(runtime())
+  const { core } = await coreAdmin()
+  const slug = 'receiving-cleanup-race'
+  const { path, url, uploadId } = await uploadUrl(call, slug)
+  const receipt = db.prepare('SELECT expires_at FROM uploads WHERE upload_id = ?').bind(uploadId)
+  const originalExpiry = await receipt.first<number>('expires_at')
+  if (originalExpiry === null) throw new Error('Missing capability expiry')
+  const receiving = Promise.withResolvers<void>()
+  const resume = Promise.withResolvers<void>()
+  const send = runtime({
+    BLOBS: {
+      get: bucket.get.bind(bucket),
+      put: bucket.put.bind(bucket),
+      delete: bucket.delete.bind(bucket),
+      async head(key: string) {
+        const existing = await bucket.head(key)
+        receiving.resolve()
+        await resume.promise
+        return existing
+      },
+    } as R2Bucket,
+  })
+  const storing = putUpload(send, url)
+  try {
+    await Promise.race([
+      receiving.promise,
+      storing.then((response) => {
+        throw new Error(`PUT did not begin streaming: ${response.status}`)
+      }),
+    ])
+    await maintain(core, originalExpiry)
+    expect(await receipt.first<number>('expires_at')).toBeGreaterThan(originalExpiry)
+  } finally {
+    resume.resolve()
+  }
+  expect((await storing).status).toBe(204)
+  expect(await call('publish', { slug, mode: 'replace', files: [{ path, uploadId }] })).toMatchObject({
+    revision: 1,
+  })
+})
 
 it('claims an upload atomically, refuses replay, and serves no cross-origin allowances', async () => {
   const send = runtime()

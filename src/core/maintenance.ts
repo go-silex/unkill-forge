@@ -6,7 +6,12 @@ const expiryPage = 128
 const revisionPage = 64
 const revisionsPerRun = 2
 const deletedPage = 8
-const purgeStepsPerRun = 4
+const d1CallCeiling = 45
+// Nine expiry statements plus two calls each for revision and deleted-artefact sweeps.
+const sweepD1Calls = 13
+// One queue claim plus up to nine calls in the registered purge step, including lease release.
+const purgeD1Calls = 10
+const sessionCleanupGraceMs = 86_400_000
 // OAuth grants start their seven-day cap at code exchange, after consent. Allow another day
 // for the short-lived authorization code and clock skew; logout JWTs are only valid for five minutes.
 const revocationRetentionMs = 8 * 86_400_000
@@ -85,47 +90,59 @@ async function queueDeleted(db: D1Database, before: number) {
 }
 
 async function drainPurges(runtime: Runtime) {
-  // A registered job may outlive its artefact. Rotate even on failure so one job can't block the queue.
-  const { results } = await runtime.env.DB.prepare(`WITH page AS MATERIALIZED (
-    SELECT artefact_id FROM artefact_purges ORDER BY last_attempted_at, artefact_id LIMIT ?2
-  ) UPDATE artefact_purges SET last_attempted_at = ?1 WHERE artefact_id IN (SELECT artefact_id FROM page)
-    RETURNING artefact_id AS id`)
-    .bind(Date.now(), purgeStepsPerRun)
-    .all<{ id: string }>()
+  // Re-select after each step: a single job can make progress several times, but older jobs go first.
+  const take = runtime.env.DB.prepare(`UPDATE artefact_purges
+    SET last_attempted_at = max(?1, coalesce((SELECT max(last_attempted_at) + 1 FROM artefact_purges), 0))
+    WHERE artefact_id = (
+      SELECT artefact_id FROM artefact_purges
+      WHERE artefact_id NOT IN (SELECT value FROM json_each(?2))
+      ORDER BY last_attempted_at, artefact_id LIMIT 1
+    ) RETURNING artefact_id AS id`)
+  const failedIds: string[] = []
+  let attempted = 0
   let done = 0
   let failed = 0
-  for (const { id } of results) {
+  for (let remaining = d1CallCeiling - sweepD1Calls; remaining >= purgeD1Calls; remaining -= purgeD1Calls) {
+    const id = await take.bind(Date.now(), JSON.stringify(failedIds)).first<string>('id')
+    if (id === null) break
+    attempted++
     try {
       if ((await resumeArtefactPurge(runtime, id)).done) done++
     } catch {
       failed++
+      failedIds.push(id)
     }
   }
-  return { attempted: results.length, done, failed }
-}
-
-async function task(name: string, run: () => Promise<Record<string, number>>) {
-  try {
-    const counts = await run()
-    if (counts.failed) console.error('Forge maintenance incomplete', name, counts)
-    else console.log('Forge maintenance', name, counts)
-  } catch {
-    // Exceptions from bindings can include values or request data; log only the task name.
-    console.error('Forge maintenance failed', name)
-  }
+  return { attempted, done, failed }
 }
 
 export async function maintain(runtime: Runtime, now: number) {
   const { DB: db } = runtime.env
+  const failed: Error[] = []
+  async function task(name: string, run: () => Promise<Record<string, number>>) {
+    try {
+      const counts = await run()
+      if (!counts.failed) {
+        console.log('Forge maintenance', name, counts)
+        return
+      }
+      console.error('Forge maintenance incomplete', name, counts)
+    } catch {
+      // Exceptions from bindings can contain request values and must not reach Cron Events or logs.
+      console.error('Forge maintenance failed', name)
+    }
+    failed.push(new Error(name))
+  }
+  const sessionCutoff = now - sessionCleanupGraceMs
   await task('login flows', () => expire(db, 'login_flows', now))
-  await task('handoffs', () => expire(db, 'handoffs', now))
-  await task('OAuth consents', () => expire(db, 'oauth_consents', now))
-  await task('UI flashes', () => expire(db, 'ui_flashes', now))
+  await task('handoffs', () => expire(db, 'handoffs', sessionCutoff))
+  await task('OAuth consents', () => expire(db, 'oauth_consents', sessionCutoff))
+  await task('UI flashes', () => expire(db, 'ui_flashes', sessionCutoff))
   await task('sessions', () =>
     expire(
       db,
       'sessions',
-      now,
+      sessionCutoff,
       'expires_at',
       `
       AND NOT EXISTS (SELECT 1 FROM handoffs WHERE session_id_hash = sessions.id_hash)
@@ -151,4 +168,5 @@ export async function maintain(runtime: Runtime, now: number) {
   await task('revisions', () => pruneRevisions(runtime))
   await task('deleted artefacts', () => queueDeleted(db, now - deletedRetentionMs))
   await task('purges', () => drainPurges(runtime))
+  if (failed.length) throw new AggregateError(failed, 'Forge scheduled maintenance failed; see Workers Logs')
 }

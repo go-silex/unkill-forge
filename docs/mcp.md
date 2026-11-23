@@ -85,10 +85,12 @@ Open the returned URL in your browser. It is private until a publisher changes v
 
    Call `create_uploads` with `slug: "hello"` and `files: [{path: "clip.mp4", size, sha256, contentType: "video/mp4"}]`, substituting the numeric byte count and the 64-digit digest. The per-file limit is `MAX_UPLOAD_BYTES`, at most 100,000,000 bytes.
 
-2. Within 15 minutes, PUT the same local file to the returned `url` (skip `alreadyStored: true`). A named file lets cURL send the declared `Content-Length`.
+2. Within 15 minutes, assign `upload_url` from `files[0].url` in the result and PUT the same local file (skip this step if `files[0].alreadyStored` is `true`). A named file lets cURL send the declared `Content-Length`; the PUT has one hour to finish once claimed.
 
    ```sh
+   read -r -s upload_url  # Paste files[0].url and press Enter (Bash)
    curl --fail-with-body -T clip.mp4 -H 'Content-Type: application/octet-stream' "$upload_url"
+   unset upload_url
    ```
 
    A successful PUT returns `204`. Do not attach your MCP token; the URL itself authorizes one attempt. If the attempt failed or was interrupted, request a new slot. Do not log or share upload URLs.

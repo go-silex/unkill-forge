@@ -4,6 +4,7 @@ import { contentType, hexChecksum, putBlob, referencedBlobs } from './blobs'
 import { auditChange, hashSecret, type Member, randomSecret } from './index'
 
 const putLifetime = 15 * 60_000
+const receivingLifetime = 60 * 60_000
 const publishLifetime = 60 * 60_000
 
 type UploadRequest = { path: string; size: number; sha256: string; contentType?: string }
@@ -200,14 +201,15 @@ export async function receiveUpload(
   if (!/^[A-Za-z0-9_-]{43}$/.test(token)) return 404
   const { DB: db, BLOBS: bucket } = runtime.env
   const hash = await hashSecret(token)
+  const claimedAt = Date.now()
   const upload = await db
-    .prepare(`UPDATE uploads SET state = 'receiving'
-      WHERE token_hash = ? AND state = 'pending' AND expires_at > ?
+    .prepare(`UPDATE uploads SET state = 'receiving', expires_at = ?1
+      WHERE token_hash = ?2 AND state = 'pending' AND expires_at > ?3
       AND EXISTS (SELECT 1 FROM members WHERE id = uploads.member_id AND status = 'active'
         AND role IN ('publisher', 'admin') AND generation = uploads.member_generation)
       RETURNING upload_id AS uploadId, member_id AS memberId, slug, path, size, sha256,
         (SELECT epoch FROM blob_purge_epoch WHERE singleton = 1) AS epoch`)
-    .bind(hash, Date.now())
+    .bind(claimedAt + receivingLifetime, hash, claimedAt)
     .first<ClaimedUpload>()
   if (!upload) return 404
 
@@ -230,9 +232,10 @@ export async function receiveUpload(
     const [stored] = await db.batch([
       db
         .prepare(`UPDATE uploads SET state = 'stored', expires_at = ? WHERE token_hash = ? AND state = 'receiving'
+          AND expires_at > ?
           AND (SELECT epoch FROM blob_purge_epoch WHERE singleton = 1) = ?
           AND NOT EXISTS (SELECT 1 FROM blob_purge_claims WHERE sha256 = uploads.sha256)`)
-        .bind(now + publishLifetime, hash, upload.epoch),
+        .bind(now + publishLifetime, hash, now, upload.epoch),
       auditChange(db, now, memberId, 'upload.store', { slug, path, size, sha256 }),
       db
         .prepare("UPDATE uploads SET state = 'failed' WHERE token_hash = ? AND state = 'receiving'")
