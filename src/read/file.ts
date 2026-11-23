@@ -14,14 +14,20 @@ function singleRange(value: string | null, size: number) {
   // Unknown units, malformed ranges and multipart ranges fall back to the whole file.
   const match = /^bytes=(\d*)-(\d*)$/i.exec(value?.trim() ?? '')
   if (!match || (!match[1] && !match[2])) return undefined
-  if (size === 0) return null
   if (!match[1]) {
     const length = Math.min(Number(match[2]), size)
     return length > 0 ? { offset: size - length, length } : null
   }
   const offset = Number(match[1])
+  if (match[2]) {
+    // Compare decimal strings so reversed ranges remain invalid even beyond Number precision.
+    const first = match[1].replace(/^0+/, '')
+    const last = match[2].replace(/^0+/, '')
+    if (first.length > last.length || (first.length === last.length && first > last)) return undefined
+  }
+  if (offset >= size) return null
   const end = match[2] ? Math.min(Number(match[2]), size - 1) : size - 1
-  return offset <= end ? { offset, length: end - offset + 1 } : null
+  return { offset, length: end - offset + 1 }
 }
 
 export async function serveFile(
@@ -36,6 +42,7 @@ export async function serveFile(
   const tag = isPublic ? `"${file.sha256}"` : null
   if (tag) headers.set('ETag', tag)
   if (tag && matchesETag(request.headers.get('If-None-Match'), tag)) {
+    headers.set('Content-Type', file.type)
     return new Response(null, { status: 304, headers })
   }
   const ifRange = request.headers.get('If-Range')

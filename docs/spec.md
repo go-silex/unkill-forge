@@ -168,11 +168,11 @@ Rules:
 Resolution order for a request:
 
 1. `/a/<slug>` → 301 to `/a/<slug>/`.
-2. `/a/<slug>/<path>` where `slug` is a live artefact → resolve `path`, then `path/index.html`, then `path.html` in the current revision; apply canonical access.
+2. `/a/<slug>/<path>` where `slug` is a live artefact → apply canonical access, then resolve `path`, `path/index.html`, `path.html` in the current revision. A denied reader gets the access response whether or not the file exists.
 3. `/s/<slug>/<key>/<path>` where `slug` is a live artefact → same resolution under share-link access. Relative links stay under the share prefix, so no cookie is involved.
-4. `/_forge/session` → end of the login handoff.
+4. `POST /_forge/session` → end of the login handoff.
 5. Otherwise, the longest matching `redirects.from_prefix` → 302 to the target with the remaining path. Redirects never shadow a live artefact.
-6. `/` → the public artefact index when `PUBLIC_INDEX=true`, else the branded landing page.
+6. `/` → when `PUBLIC_INDEX=true`, list the newest 200 public artefacts by creation time; otherwise show the branded landing page.
 7. Anything else → 404.
 
 Unknown artefact, unauthorized share request and missing file all return the same 404.
@@ -181,14 +181,14 @@ Response headers:
 
 - All responses: `X-Content-Type-Options: nosniff`; `Referrer-Policy: same-origin`.
 - `X-Robots-Tag: noindex`, unless the artefact is public and indexing is enabled.
-- Caching: `/s/` and non-public content send `Cache-Control: private, no-store`. Public content sends `no-cache` with the blob hash as `ETag`, so every request, including a `304`, goes through the access check.
+- Caching: `/s/` and non-public content send `Cache-Control: private, no-store`. Public content sends `no-cache` with the blob hash as `ETag`, so every request, including a `304`, goes through the access check. A `304` retains the current `Content-Type`.
 - Range requests are served from R2.
 
 **Login handoff.** Sessions live on the manage host; the read host keeps its own cookie, bound to that session.
 
-1. An anonymous request for a private artefact sets a five-minute `__Host-forge-state` cookie and redirects to `https://<manage>/auth/handoff?return=<path>&state=<challenge>`. The challenge is the SHA-256 digest of the cookie's random verifier.
-2. The manage host requires a valid session (signing in if needed). It validates `return` as a read-host path starting with `/a/` (decoded, normalised, no scheme or empty segments), stores a single-use code (60 s) with the session and the state hash, then redirects to `https://<read>/_forge/session?code=…&state=…`. A pending member can establish identity on the read host to receive the pending page, not the file.
-3. The read host checks `state` against the cookie's verifier, consumes the code atomically (`DELETE … RETURNING`), sets `__Host-forge` (HttpOnly, Secure, SameSite=Lax), an HMAC-signed `{sessionIdHash, exp}`, clears the verifier and redirects to the stored path. A failed callback redirects to the same endpoint without the query before rendering a 404.
+1. A top-level navigation to a private artefact without a read session sets or refreshes the ten-minute `__Host-forge-state` browser cookie (HttpOnly, Secure, SameSite=None). It redirects to `/auth/handoff` on the manage host with the return path, a per-flow nonce and a challenge derived from the browser cookie and nonce. Unauthenticated subresources return an empty, non-cacheable 401 without starting a handoff.
+2. The manage host requires a valid session (signing in if needed). It validates the return as a read-host path starting with `/a/` (decoded, normalised, no scheme or empty segments), stores a single-use code (60 s) with the session and the state hash, then serves an auto-submitting form that POSTs the code, challenge and nonce to `/_forge/session` on the read host. The code never enters a URL. A pending member can establish identity on the read host to receive the pending page, not the file.
+3. The read host atomically consumes the code (`DELETE … RETURNING`) before verifying the challenge against the cookie and nonce. A valid redemption sets `__Host-forge` (HttpOnly, Secure, SameSite=Lax), an HMAC-signed `{sessionIdHash, exp}`, then 303s to the stored path. It keeps the browser-state cookie for other pending tabs. Failed redemptions return 404 without creating a session.
 4. Each private read checks that the bound manage session is still valid and its member active. Signing out, session revocation and identity revocation on the manage side end read access too. Stale OIDC sessions follow §10.
 
 ## 8. Publishing semantics
@@ -363,7 +363,7 @@ Operators who keep their configuration private run `npm run deploy -- --config <
 
 Known limits, stated in `docs/security.md`:
 
-- Artefact JavaScript runs on the read origin with the viewer's cookie and can fetch any artefact that viewer can read. Publishers are trusted; never publish untrusted third-party HTML. Per-artefact origins are the upgrade path.
+- Artefact JavaScript acts with the viewer's read access and can sign the browser into another read session (login CSRF on the read host). There is no separate read-host sign-out; sign out on the manage host. Publishers are trusted; never publish untrusted third-party HTML. Per-artefact origins are the upgrade path.
 - A share key travels in the URL. `Referrer-Policy` keeps it from third parties by default, but artefact HTML can override the policy, artefact JavaScript can read its own URL, and Cloudflare request logs may record paths. Anyone holding a link can forward it until revocation.
 - An invite URL can appear in platform request logs. Treat it as a bearer secret until it is used, revoked or expires.
 - Back-channel logout is best effort. A missing notification can leave the Forge session alive until revalidation or the cap. If the IdP session ends without a logout notification, the grant is only caught by subject-wide revocation, member removal or the 7-day grant end.
@@ -415,7 +415,7 @@ Known limits, stated in `docs/security.md`:
 1. **No HTTP API in v2.0.** Autonomous agents use `/mcp` over Streamable HTTP with an API token.
 2. **Revision retention:** 20 revisions per artefact by default, configurable.
 3. **Public index:** off by default (`PUBLIC_INDEX=false`).
-4. **Read handoff:** the URL carries a challenge, not the cookie's random verifier; `FORGE_COOKIE_KEY` signs the read session with an origin-specific context. Failed callbacks never render credential-bearing URLs.
+4. **Read handoff:** a stable browser cookie and per-flow nonce bind concurrent handoffs. The code travels only in a manage-origin form POST and is burned even if state verification fails. `FORGE_COOKIE_KEY` signs the read session with an origin-specific context.
 5. **Pending readers:** a pending session can complete handoff to display the read-host pending page. Access is checked against live membership on every private request.
 6. **OIDC freshness:** stale private navigations use manage's silent revalidation; stale subresources return an empty, non-cacheable 401, and stale handoff redemptions do not restart the flow.
 7. **HTTP ranges:** single byte ranges are supported; unsupported units, malformed and multipart ranges fall back to the whole response.

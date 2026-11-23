@@ -54,6 +54,10 @@ export function validHandoffState(state: string | null): state is string {
   return state !== null && secret.test(state)
 }
 
+export function handoffChallenge(browser: string, nonce: string) {
+  return hashSecret(`forge:handoff:${browser}:${nonce}`)
+}
+
 export async function issueHandoff(db: D1Database, session: BrowserSession, state: string, path: string) {
   const now = Date.now()
   const code = randomSecret()
@@ -72,23 +76,26 @@ export async function redeemHandoff(
   runtime: Runtime,
   code: string | null,
   state: string | null,
-  verifier: string | null,
+  nonce: string | null,
+  browser: string | null,
 ) {
-  if (!validHandoffState(code) || !validHandoffState(state) || !validHandoffState(verifier)) return null
-  // A callback URL discloses only the challenge, never the HttpOnly verifier.
-  if ((await hashSecret(verifier)) !== state) return null
-  const [codeHash, stateHash] = await Promise.all([hashSecret(code), hashSecret(state)])
+  if (!validHandoffState(code)) return null
+  const codeHash = await hashSecret(code)
   const {
     config,
     env: { DB: db },
   } = runtime
   const now = Date.now()
   const handoff = await db
-    .prepare(`DELETE FROM handoffs WHERE code_hash = ? AND state_hash = ? AND expires_at > ?
-    RETURNING return_path AS path, session_id_hash AS sessionIdHash`)
-    .bind(codeHash, stateHash, now)
-    .first<{ path: string; sessionIdHash: string }>()
-  if (!handoff) return null
+    .prepare(`DELETE FROM handoffs WHERE code_hash = ?
+    RETURNING return_path AS path, session_id_hash AS sessionIdHash, state_hash AS stateHash, expires_at AS expiresAt`)
+    .bind(codeHash)
+    .first<{ path: string; sessionIdHash: string; stateHash: string; expiresAt: number }>()
+  if (!handoff || handoff.expiresAt <= now) return null
+  if (!validHandoffState(state) || !validHandoffState(nonce) || !validHandoffState(browser)) return null
+  if ((await handoffChallenge(browser, nonce)) !== state || (await hashSecret(state)) !== handoff.stateHash) {
+    return null
+  }
   const session = await readSession(db, handoff.sessionIdHash, now)
   const provider = session && config.providers.find(({ id }) => id === session.provider)
   const completedAt = Date.now()

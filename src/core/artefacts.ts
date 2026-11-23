@@ -125,7 +125,8 @@ export async function publicArtefacts({ env: { DB: db }, config }: Runtime) {
       SELECT f.path FROM files f WHERE f.artefact_id = a.id AND f.revision = a.current_revision
       ORDER BY CASE WHEN f.path = 'index.html' THEN 0
         WHEN f.content_type = 'text/html; charset=utf-8' THEN 1 ELSE 2 END, f.path LIMIT 1
-    ) AS path FROM artefacts a WHERE a.deleted_at IS NULL AND a.visibility = 'public' ORDER BY a.slug`)
+    ) AS path FROM artefacts a WHERE a.deleted_at IS NULL AND a.visibility = 'public'
+    ORDER BY a.created_at DESC, a.slug LIMIT 200`)
     .all<{ slug: string; title: string; path: string | null }>()
   return results.flatMap(({ slug, title, path }) =>
     path === null ? [] : [{ title, url: entryUrl(config.readOrigin, slug, path) }],
@@ -221,23 +222,24 @@ export async function canonicalRead(
   path: string,
   session: () => Promise<{ member: Member; fresh: boolean } | null>,
 ): Promise<CanonicalRead> {
+  const artefact = await head(db, slug)
+  if (!artefact || artefact.deletedAt !== null) return { kind: 'not-found' }
+  const isPublic = artefact.visibility === 'public'
+  if (!isPublic) {
+    const current = await session()
+    if (!current) return { kind: 'sign-in' }
+    if (!current.fresh) return { kind: 'revalidate' }
+    if (current.member.status !== 'active') return { kind: 'pending' }
+  }
   const directory = path === '' || path.endsWith('/')
   const index = directory ? `${path}index.html` : `${path}/index.html`
-  const row = await db
-    .prepare(`SELECT f.path, f.size, f.content_type AS type, f.sha256, a.visibility
-      FROM artefacts a JOIN files f ON f.artefact_id = a.id AND f.revision = a.current_revision
-      WHERE a.slug = ?1 AND a.deleted_at IS NULL AND f.path IN (?2, ?3, ?4)
-      ORDER BY CASE f.path WHEN ?2 THEN 0 WHEN ?3 THEN 1 ELSE 2 END LIMIT 1`)
-    .bind(slug, directory ? null : path, index, directory ? null : `${path}.html`)
-    .first<File & { visibility: Visibility }>()
-  if (!row) return { kind: 'not-found' }
-  const { visibility, ...file } = row
-  if (visibility === 'public') return { kind: 'serve', public: true, file }
-  const current = await session()
-  if (!current) return { kind: 'sign-in' }
-  if (!current.fresh) return { kind: 'revalidate' }
-  if (current.member.status !== 'active') return { kind: 'pending' }
-  return { kind: 'serve', public: false, file }
+  const file = await db
+    .prepare(`SELECT path, size, content_type AS type, sha256 FROM files
+      WHERE artefact_id = ?1 AND revision = ?2 AND path IN (?3, ?4, ?5)
+      ORDER BY CASE path WHEN ?3 THEN 0 WHEN ?4 THEN 1 ELSE 2 END LIMIT 1`)
+    .bind(artefact.id, artefact.revision, directory ? null : path, index, directory ? null : `${path}.html`)
+    .first<File>()
+  return file ? { kind: 'serve', public: isPublic, file } : { kind: 'not-found' }
 }
 
 export async function readFile(

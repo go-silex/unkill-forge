@@ -2,6 +2,7 @@ import { expect, it, vi } from 'vitest'
 import {
   admin,
   Browser,
+  formValue,
   type Handle,
   listedId,
   location,
@@ -89,45 +90,56 @@ async function fixture(send: Handle = runtime()) {
 }
 
 async function start(readBrowser: Browser, url = privateUrl) {
-  const response = await readBrowser.request(url)
+  const response = await readBrowser.request(url, { headers: navigation })
   expect(response.status).toBe(302)
   expect(response.headers.get('Cache-Control')).toBe('private, no-store')
   expect(response.headers.getSetCookie()[0]).toMatch(
-    /^__Host-forge-state=.+; Path=\/; Max-Age=300; Secure; HttpOnly; SameSite=Lax$/,
+    /^__Host-forge-state=.+; Path=\/; Max-Age=600; Secure; HttpOnly; SameSite=None$/,
   )
   const handoff = location(response)
   expect(handoff.origin + handoff.pathname).toBe(`${manage}/auth/handoff`)
   return handoff
 }
 
-async function issue(manageBrowser: Browser, handoff: URL) {
+type Handoff = { url: string; fields: URLSearchParams }
+
+async function issue(manageBrowser: Browser, handoff: URL): Promise<Handoff> {
   const response = await manageBrowser.request(handoff, { headers: navigation })
-  expect(response.status).toBe(302)
-  const callback = location(response)
-  expect(callback.origin + callback.pathname).toBe(`${read}/_forge/session`)
-  expect(callback.searchParams.get('code')).toBeTruthy()
-  return callback
+  expect(response.status).toBe(200)
+  expect(response.headers.has('Location')).toBe(false)
+  const html = await response.text()
+  const url = `${read}/_forge/session`
+  expect(html).toContain(`method="post" action="${url}"`)
+  const policy = response.headers.get('Content-Security-Policy')
+  expect(policy).toContain(`form-action ${read}`)
+  const script = /<script>([^<]+)<\/script>/.exec(html)?.[1]
+  expect(script).toBeTruthy()
+  const hash = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(script))
+  expect(policy).toContain(`script-src 'sha256-${btoa(String.fromCharCode(...new Uint8Array(hash)))}'`)
+  const fields = new URLSearchParams()
+  for (const field of ['code', 'state', 'nonce']) fields.set(field, formValue(html, field))
+  return { url, fields }
+}
+
+function submit(browser: Browser, callback: Handoff) {
+  return browser.request(callback.url, { method: 'POST', body: callback.fields })
 }
 
 async function acquire(readBrowser: Browser, manageBrowser: Browser) {
   const callback = await issue(manageBrowser, await start(readBrowser))
-  const result = await readBrowser.request(callback)
-  expect(result.status).toBe(302)
+  const result = await submit(readBrowser, callback)
+  expect(result.status).toBe(303)
   expect(result.headers.get('Location')).toBe('/a/private/')
-  expect(result.headers.getSetCookie()).toEqual(
-    expect.arrayContaining([
-      expect.stringMatching(/^__Host-forge=.+; Path=\/; Max-Age=\d+; Secure; HttpOnly; SameSite=Lax$/),
-      expect.stringMatching(/^__Host-forge-state=; Path=\/; Max-Age=0;/),
-    ]),
-  )
+  expect(result.headers.getSetCookie()).toEqual([
+    expect.stringMatching(/^__Host-forge=.+; Path=\/; Max-Age=\d+; Secure; HttpOnly; SameSite=Lax$/),
+  ])
   expect(readBrowser.cookie(readCookie)).toBeTruthy()
   return callback
 }
 
-async function noReadSession(browser: Browser, callback: URL) {
-  const result = await browser.request(callback)
-  expect(result.status).toBe(302)
-  expect(result.headers.get('Location')).toBe('/_forge/session')
+async function noReadSession(browser: Browser, callback: Handoff) {
+  const result = await submit(browser, callback)
+  expect(result.status).toBe(404)
   expect(result.headers.getSetCookie()).toEqual([])
   expect(browser.cookie(readCookie)).toBeUndefined()
 }
@@ -161,13 +173,7 @@ it('redirects slashless URLs and reads the current revision in exact, directory,
 
 it('gives the same 404 for unknown artefacts, unknown paths and non-read routes', async () => {
   const { send } = await fixture()
-  const paths = [
-    `${read}/a/unknown/`,
-    `${publicUrl}missing`,
-    `${privateUrl}missing`,
-    `${publicUrl}%2Fhidden`,
-    `${read}/auth/handoff`,
-  ]
+  const paths = [`${read}/a/unknown/`, `${publicUrl}missing`, `${publicUrl}%2Fhidden`, `${read}/auth/handoff`]
   const reference = await send(`${read}/missing`)
   expect(reference.status).toBe(404)
   const body = await reference.text()
@@ -204,12 +210,16 @@ it('distinguishes anonymous, pending, viewer, publisher and removed canonical re
   )
   const anonymous = new Browser(send)
   await start(anonymous)
+  await start(anonymous, `${privateUrl}missing`)
   const pendingManage = await idp.signedIn(send, 'pending-reader')
   const pendingRead = new Browser(send)
   await acquire(pendingRead, pendingManage)
   const pending = await pendingRead.request(privateUrl)
   expect(pending.status).toBe(200)
   expect(await pending.text()).toContain('Pending access')
+  const pendingMissing = await pendingRead.request(`${privateUrl}missing`)
+  expect(pendingMissing.status).toBe(200)
+  expect(await pendingMissing.text()).toContain('Pending access')
 
   for (const role of ['viewer', 'publisher']) {
     const identity = `${role}-reader`
@@ -219,6 +229,7 @@ it('distinguishes anonymous, pending, viewer, publisher and removed canonical re
     const readBrowser = new Browser(send)
     await acquire(readBrowser, manageBrowser)
     expect(await (await readBrowser.request(privateUrl)).text()).toBe('<h1>Private</h1>')
+    expect((await readBrowser.request(`${privateUrl}missing`)).status).toBe(404)
     expect(await (await readBrowser.request(publicUrl)).text()).toBe('<h1>Public</h1>')
     expect((await owner.post(members, { action: 'remove', id })).status).toBe(303)
     await start(readBrowser)
@@ -242,45 +253,88 @@ it('signs in on manage and resumes the handoff to the original read path and que
   const upstream = location(await manageBrowser.request(providerHref))
   const signedIn = await manageBrowser.request(await idp.issue(upstream, 'new-reader'))
   expect(location(signedIn).href).toBe(handoff.href)
-  const done = await readBrowser.request(await issue(manageBrowser, handoff))
+  const done = await submit(readBrowser, await issue(manageBrowser, handoff))
+  expect(done.status).toBe(303)
   expect(done.headers.get('Location')).toBe('/a/private/?tab=summary')
   expect(await (await readBrowser.request(`${privateUrl}?tab=summary`)).text()).toBe('<h1>Private</h1>')
 })
 
-it('does not redeem codes from another browser, another state, twice, or after expiry', async () => {
+it('redeems only via POST and burns codes on success, bad state, wrong browser or expiry', async () => {
   const { send, owner } = await fixture()
   const reader = new Browser(send)
-  const foreignBrowser = new Browser(send)
+  const foreign = new Browser(send)
   const handoff = await start(reader)
-  const callback = await issue(owner, handoff)
-  await noReadSession(foreignBrowser, callback)
-  const foreignHandoff = await start(foreignBrowser)
-  await noReadSession(foreignBrowser, callback)
-  const mismatched = new URL(callback)
-  mismatched.searchParams.set('state', foreignHandoff.searchParams.get('state') ?? '')
-  await noReadSession(foreignBrowser, mismatched)
-  const verifier = reader.cookie(stateCookie)
-  expect(verifier).toBeTruthy()
-  expect((await reader.request(callback)).headers.get('Location')).toBe('/a/private/')
-  const replay = await send(callback, { headers: { Cookie: `${stateCookie}=${verifier}` } })
-  expect(replay.headers.get('Location')).toBe('/_forge/session')
-  expect(replay.headers.getSetCookie()).toEqual([])
+  await start(foreign)
+  const wrongBrowser = await issue(owner, handoff)
+  await noReadSession(foreign, wrongBrowser)
+  await noReadSession(reader, wrongBrowser)
+
+  const wrongState = await issue(owner, handoff)
+  const fields = new URLSearchParams(wrongState.fields)
+  fields.delete('state')
+  await noReadSession(reader, { ...wrongState, fields })
+  await noReadSession(reader, wrongState)
 
   vi.useFakeTimers({ toFake: ['Date'] })
-  const expired = await issue(owner, await start(foreignBrowser))
+  const expired = await issue(owner, handoff)
   vi.setSystemTime(Date.now() + 60_000)
-  await noReadSession(foreignBrowser, expired)
+  await noReadSession(reader, expired)
+
+  const callback = await issue(owner, handoff)
+  const get = await reader.request(`${callback.url}?${callback.fields}`)
+  expect(get.status).toBe(404)
+  expect(get.headers.getSetCookie()).toEqual([])
+  expect(reader.cookie(readCookie)).toBeUndefined()
+  expect((await submit(reader, callback)).status).toBe(303)
+  const replay = await submit(reader, callback)
+  expect(replay.status).toBe(404)
+  expect(replay.headers.getSetCookie()).toEqual([])
 })
 
-it('refuses tampered cookies and ends read access after logout or identity revocation', async () => {
+it('finishes concurrent tabs without letting a private subresource rotate browser state', async () => {
+  const { send, owner } = await fixture()
+  const browser = new Browser(send)
+  const first = await start(browser, `${privateUrl}?tab=one`)
+  const initialBrowserState = browser.cookie(stateCookie)
+  const subresource = await browser.request(privateUrl, { headers: { 'Sec-Fetch-Dest': 'image' } })
+  expect(subresource.status).toBe(401)
+  expect(subresource.headers.get('Cache-Control')).toBe('private, no-store')
+  expect(subresource.headers.getSetCookie()).toEqual([])
+  expect(await subresource.text()).toBe('')
+  const second = await start(browser, `${privateUrl}?tab=two`)
+  expect(browser.cookie(stateCookie)).toBe(initialBrowserState)
+  const [one, two] = await Promise.all([issue(owner, first), issue(owner, second)])
+  expect(one.fields.get('state')).not.toBe(two.fields.get('state'))
+  expect((await submit(browser, two)).headers.get('Location')).toBe('/a/private/?tab=two')
+  expect((await submit(browser, one)).headers.get('Location')).toBe('/a/private/?tab=one')
+  expect(browser.cookie(stateCookie)).toBe(initialBrowserState)
+  expect(await (await browser.request(privateUrl)).text()).toBe('<h1>Private</h1>')
+})
+
+it('rejects changes to each signed read cookie field', async () => {
+  const { send, idp, owner } = await fixture()
+  const ownerRead = new Browser(send)
+  const viewerRead = new Browser(send)
+  await acquire(ownerRead, owner)
+  await acquire(viewerRead, await idp.signedIn(send, 'other-reader'))
+  const [id, exp, mac] = (ownerRead.cookie(readCookie) ?? '').split('.')
+  const [otherId, , otherMac] = (viewerRead.cookie(readCookie) ?? '').split('.')
+  expect(otherId).not.toBe(id)
+  for (const tampered of [
+    `${otherId}.${exp}.${mac}`,
+    `${id}.${Number(exp) + 1}.${mac}`,
+    `${id}.${exp}.${otherMac}`,
+  ]) {
+    const headers = { ...navigation, Cookie: `${readCookie}=${tampered}` }
+    expect(location(await send(privateUrl, { headers })).pathname).toBe('/auth/handoff')
+  }
+  expect(await (await ownerRead.request(privateUrl)).text()).toBe('<h1>Private</h1>')
+})
+
+it('ends read access after logout or identity revocation', async () => {
   const { send, idp, owner } = await fixture()
   const ownerRead = new Browser(send)
   await acquire(ownerRead, owner)
-  const value = ownerRead.cookie(readCookie) ?? ''
-  const macStart = value.lastIndexOf('.') + 1
-  const tampered = `${value.slice(0, macStart)}${value[macStart] === 'A' ? 'B' : 'A'}${value.slice(macStart + 1)}`
-  const refused = await send(privateUrl, { headers: { Cookie: `${readCookie}=${tampered}` } })
-  expect(location(refused).pathname).toBe('/auth/handoff')
   expect(await (await ownerRead.request(privateUrl)).text()).toBe('<h1>Private</h1>')
   expect((await owner.post('/logout', {})).status).toBe(303)
   await start(ownerRead)
@@ -307,7 +361,7 @@ it('fails stale subresources closed and reuses silent OIDC revalidation for priv
   const authorization = location(await owner.request(handoff, { headers: navigation }))
   expect(authorization.searchParams.get('prompt')).toBe('none')
   expect(location(await owner.request(await idp.issue(authorization, admin))).href).toBe(handoff.href)
-  expect((await reader.request(await issue(owner, handoff))).headers.get('Location')).toBe('/a/private/')
+  expect((await submit(reader, await issue(owner, handoff))).headers.get('Location')).toBe('/a/private/')
   expect(await (await reader.request(privateUrl)).text()).toBe('<h1>Private</h1>')
 
   vi.setSystemTime(Date.now() + 10 * 60_000 - 1_000)
@@ -358,6 +412,8 @@ it('sends the specified security and conditional cache headers only after access
   const cached = await send(url, conditional)
   expect(cached.status).toBe(304)
   expect(cached.headers.get('ETag')).toBe(tag)
+  expect(cached.headers.get('Content-Type')).toBe('text/plain; charset=utf-8')
+  expect(cached.headers.get('Cache-Control')).toBe('no-cache')
   expect(await cached.text()).toBe('')
 
   const indexable = runtime({ ALLOW_INDEXING: 'true', PUBLIC_INDEX: 'true' })
@@ -366,13 +422,32 @@ it('sends the specified security and conditional cache headers only after access
   const browser = new Browser(indexable)
   await acquire(browser, owner)
   await call('set_visibility', { slug: 'public', visibility: 'private' })
-  expect(location(await send(url, conditional)).pathname).toBe('/auth/handoff')
+  const anonymous = await send(url, { headers: { ...navigation, ...conditional.headers } })
+  expect(location(anonymous).pathname).toBe('/auth/handoff')
   const privateFile = await browser.request(url, conditional)
   expect(privateFile.status).toBe(200)
   expect(await privateFile.text()).toBe('0123456789')
   expect(privateFile.headers.get('Cache-Control')).toBe('private, no-store')
   expect(privateFile.headers.get('X-Robots-Tag')).toBe('noindex')
   expect(privateFile.headers.has('ETag')).toBe(false)
+})
+
+it('updates Content-Type on a 304 when an unchanged blob resolves through a different file', async () => {
+  const { send, call } = await fixture()
+  const url = `${publicUrl}section`
+  const tag = (await send(url)).headers.get('ETag')
+  if (!tag) throw new Error('Expected a strong ETag')
+  await call('publish', {
+    slug: 'public',
+    mode: 'merge',
+    files: [{ path: 'section/index.html', content: 'exact' }],
+    delete: ['section'],
+  })
+  const response = await send(url, { headers: { 'If-None-Match': tag } })
+  expect(response.status).toBe(304)
+  expect(response.headers.get('Content-Type')).toBe('text/html; charset=utf-8')
+  expect(response.headers.get('Cache-Control')).toBe('no-cache')
+  expect(response.headers.get('ETag')).toBe(tag)
 })
 
 it('serves single R2 byte ranges and returns 416 for unsatisfiable ranges', async () => {
@@ -390,6 +465,10 @@ it('serves single R2 byte ranges and returns 416 for unsatisfiable ranges', asyn
     expect(response.headers.get('Accept-Ranges')).toBe('bytes')
     expect(await response.text()).toBe(body)
   }
+  const invalid = await send(url, { headers: { Range: 'bytes=8-2' } })
+  expect(invalid.status).toBe(200)
+  expect(invalid.headers.has('Content-Range')).toBe(false)
+  expect(await invalid.text()).toBe('0123456789')
   const unsatisfiable = await send(url, { headers: { Range: 'bytes=10-20' } })
   expect(unsatisfiable.status).toBe(416)
   expect(unsatisfiable.headers.get('Content-Range')).toBe('bytes */10')

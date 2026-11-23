@@ -1,8 +1,8 @@
 import type { Child } from 'hono/jsx'
 import type { Runtime } from '../config'
 import { canonicalRead, publicArtefacts } from '../core/artefacts'
-import { readBoundSession, redeemHandoff } from '../core/handoffs'
-import { hashSecret, randomSecret } from '../core/index'
+import { handoffChallenge, readBoundSession, redeemHandoff, validHandoffState } from '../core/handoffs'
+import { randomSecret } from '../core/index'
 import { artefactPath } from '../core/read-path'
 import { serveFile } from './file'
 import { readHeaders } from './headers'
@@ -22,8 +22,8 @@ function cookie(request: Request, name: string) {
   return value
 }
 
-function setCookie(name: string, value: string, maxAge: number) {
-  return `${name}=${value}; Path=/; Max-Age=${maxAge}; Secure; HttpOnly; SameSite=Lax`
+function setCookie(name: string, value: string, maxAge: number, sameSite: 'Lax' | 'None' = 'Lax') {
+  return `${name}=${value}; Path=/; Max-Age=${maxAge}; Secure; HttpOnly; SameSite=${sameSite}`
 }
 
 function redirect(location: string, status = 302, cookies: string[] = []) {
@@ -56,42 +56,41 @@ function page(title: string, children: Child, head: boolean) {
   return new Response(head ? null : `<!doctype html>${html}`, { headers })
 }
 
-async function startHandoff(url: URL, runtime: Runtime) {
-  const verifier = randomSecret()
+async function startHandoff(request: Request, url: URL, runtime: Runtime) {
+  const current = cookie(request, stateCookie)
+  const browser = validHandoffState(current) ? current : randomSecret()
+  const nonce = randomSecret()
   const target = new URL('/auth/handoff', runtime.config.manageOrigin)
   target.search = new URLSearchParams({
     return: url.pathname + url.search,
-    state: await hashSecret(verifier),
+    state: await handoffChallenge(browser, nonce),
+    nonce,
   }).toString()
-  return redirect(target.href, 302, [setCookie(stateCookie, verifier, 300)])
+  return redirect(target.href, 302, [setCookie(stateCookie, browser, 600, 'None')])
 }
 
-async function completeHandoff(request: Request, url: URL, runtime: Runtime) {
-  if (!url.search) return notFound()
-  try {
-    const result = await redeemHandoff(
-      runtime,
-      url.searchParams.get('code'),
-      url.searchParams.get('state'),
-      cookie(request, stateCookie),
-    )
-    if (result) {
-      return redirect(result.path, 302, [
-        setCookie(readCookie, result.cookie, result.maxAge),
-        setCookie(stateCookie, '', 0),
-      ])
-    }
-  } catch (error) {
-    console.error('Forge handoff failed', error instanceof Error ? error.name : 'unknown')
+async function completeHandoff(request: Request, runtime: Runtime) {
+  if (request.headers.get('Content-Type')?.split(';', 1)[0].trim() !== 'application/x-www-form-urlencoded') {
+    return notFound()
   }
-  // Never leave credentials in the URL of a document visible to read-origin scripts.
-  return redirect(callback)
+  const fields = await request.formData()
+  const result = await redeemHandoff(
+    runtime,
+    String(fields.get('code') ?? ''),
+    String(fields.get('state') ?? ''),
+    String(fields.get('nonce') ?? ''),
+    cookie(request, stateCookie),
+  )
+  return result
+    ? redirect(result.path, 303, [setCookie(readCookie, result.cookie, result.maxAge)])
+    : notFound()
 }
 
 export async function read(request: Request, url: URL, runtime: Runtime): Promise<Response> {
   const head = request.method === 'HEAD'
-  if (request.method !== 'GET' && !head) return notFound()
   try {
+    if (request.method === 'POST' && url.pathname === callback) return await completeHandoff(request, runtime)
+    if (request.method !== 'GET' && !head) return notFound()
     const target = artefactPath(url.pathname)
     if (target) {
       if (target.path === undefined) return redirect(`${url.pathname}/${url.search}`, 301)
@@ -108,14 +107,13 @@ export async function read(request: Request, url: URL, runtime: Runtime): Promis
             runtime.config.allowIndexing,
           )
         case 'sign-in':
-          return await startHandoff(url, runtime)
         case 'revalidate':
           if (
             request.method === 'GET' &&
             request.headers.get('Sec-Fetch-Mode') === 'navigate' &&
             request.headers.get('Sec-Fetch-Dest') === 'document'
           ) {
-            return await startHandoff(url, runtime)
+            return await startHandoff(request, url, runtime)
           }
           return new Response(null, { status: 401, headers: readHeaders() })
         case 'pending':
@@ -131,7 +129,6 @@ export async function read(request: Request, url: URL, runtime: Runtime): Promis
           return notFound(head)
       }
     }
-    if (url.pathname === callback && !head) return await completeHandoff(request, url, runtime)
     if (url.pathname === '/') {
       const { name, publicIndex } = runtime.config
       const entries = publicIndex ? await publicArtefacts(runtime) : null
