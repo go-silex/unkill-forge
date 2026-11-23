@@ -118,7 +118,7 @@ wrangler.jsonc    template without account identifiers
 | `oauth_consents`       | `token_hash` PK, `session_hash`, validated authorization request URL, `expires_at`                                                                                                             |
 | `invites`              | `token_hash` PK, `role`, `created_by`, `created_at`, `expires_at`, `used_by`, `used_at`                                                                                                        |
 | `artefacts`            | `id` PK, `slug` UNIQUE, `title`, `visibility` ∈ private/public, `current_revision`, `created_by`, `created_at`, `updated_at`, `deleted_at`                                                     |
-| `revisions`            | (`artefact_id`, `number`) PK, `created_by`, `created_at`, `message`                                                                                                                            |
+| `revisions`            | (`artefact_id`, `number`) PK, `created_by`, `created_at`, `message`, nullable `entry_path` for legacy revisions                                                                                |
 | `files`                | (`artefact_id`, `revision`, `path`) PK, `sha256`, `size`, `content_type`                                                                                                                       |
 | `share_links`          | `id` PK, `artefact_id`, `label`, `key_hash` UNIQUE, `key_sealed`, `created_by`, `created_at`, `revoked_at`, `last_used_at`                                                                     |
 | `api_tokens`           | `id` PK, `member_id`, `name`, `prefix`, `token_hash` UNIQUE, `created_at`, `last_used_at`, `revoked_at`                                                                                        |
@@ -129,7 +129,7 @@ wrangler.jsonc    template without account identifiers
 
 Indexes:
 
-- `artefacts(deleted_at, updated_at)`, `share_links(artefact_id)`, `files(sha256)`;
+- `artefacts(deleted_at, updated_at)`, `share_links(artefact_id)` plus an active-only index, `files(sha256)`;
 - `sessions(member_id)`, `sessions(provider, subject)`, `sessions(provider, sid)`, `identity_revocations(provider, subject)`;
 - `api_tokens(member_id)`, `audit_log(artefact_id, at)`;
 - `expires_at` on `login_flows`, `invites`, `uploads`, `handoffs`.
@@ -196,7 +196,7 @@ Response headers:
 - **Atomic commit.** `publish` builds revision _n+1_ and commits it in one D1 batch: insert the `revisions` row, copy unchanged file rows with `INSERT … SELECT`, insert new file rows, mark uploads consumed, move `current_revision`, append the audit row. The `revisions` primary key is the compare-and-set: if another publish already took _n+1_, the whole batch fails and nothing changes.
 - With `expectedRevision`, a mismatch returns `conflict` and `currentRevision`. Use `0` to require a new slug. Without it, both modes retry on the new head at most three times. Concurrent creation of the same slug always gives one caller a `conflict`.
 - `mode: "merge"` keeps unmentioned files; `mode: "replace"` makes the call the complete file list. `delete` removes listed paths, which must exist at the head. The resulting revision must not be empty.
-- A new artefact starts private at revision 1. Its title defaults to the slug. Content types come from the extension unless supplied. The result returns the entry URL: `/a/<slug>/` when `index.html` exists, otherwise the first HTML file in path order or, if none, the first file in path order.
+- A new artefact starts private at revision 1. Its title defaults to the slug. Content types come from the extension unless supplied. The result returns the entry URL: `/a/<slug>/` when `index.html` exists, otherwise the first file with base media type `text/html` in path order or, if none, the first file in path order. `publish` persists the entry path within the revision commit. Legacy revisions without an entry path compute and store it on first use.
 - **Restore** creates a new revision from a retained one.
 - **Rename** moves the slug and creates redirects from `/a/<old>/` and `/s/<old>/` to the new prefixes; existing redirects that pointed at the old slug are retargeted, so chains never form. Share links keep working through the redirect.
 - **Delete** is soft for 30 days (admins can restore); a daily cron then purges the D1 rows.
@@ -427,3 +427,4 @@ Known limits, stated in `docs/security.md`:
 11. **Share entry URLs:** create and reveal always return the stable share root. When a revision has no root index, a temporary redirect opens its current entry file without changing the share URL.
 12. **Directory URLs:** after access is checked, redirect directory-index fallback to the trailing-slash path so browsers load relative assets beside the index.
 13. **Share-link limit:** allow at most 100 active links per artefact; revoked links do not count toward the limit.
+14. **Revision entries:** store the chosen entry path on the immutable revision to avoid rescanning its files on reads. A guarded backfill initializes legacy revisions on demand.

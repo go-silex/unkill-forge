@@ -108,11 +108,35 @@ async function liveHead(db: D1Database, slug: string) {
   return artefact
 }
 
-function selectEntry(db: D1Database, id: string, revision: number) {
+type RevisionEntry = { path: string | null }
+
+function selectRevisionEntry(db: D1Database, id: string, revision: number) {
   return db
-    .prepare(`SELECT path FROM files WHERE artefact_id = ? AND revision = ? ORDER BY CASE
-    WHEN path = 'index.html' THEN 0 WHEN content_type = 'text/html; charset=utf-8' THEN 1 ELSE 2 END, path LIMIT 1`)
+    .prepare('SELECT entry_path AS path FROM revisions WHERE artefact_id = ? AND number = ?')
     .bind(id, revision)
+}
+
+function storeRevisionEntry(db: D1Database, id: string, revision: number) {
+  return db
+    .prepare(`UPDATE revisions SET entry_path = COALESCE(
+      (SELECT path FROM files WHERE artefact_id = ?1 AND revision = ?2 AND path = 'index.html'),
+      (SELECT path FROM files WHERE artefact_id = ?1 AND revision = ?2
+       ORDER BY (lower(trim(substr(content_type, 1, instr(content_type || ';', ';') - 1), char(9) || ' '))
+         = 'text/html') DESC, path LIMIT 1)
+    ) WHERE artefact_id = ?1 AND number = ?2 AND entry_path IS NULL RETURNING entry_path AS path`)
+    .bind(id, revision)
+}
+
+function backfillEntry(db: D1Database, id: string, revision: number) {
+  // The conditional write and following point read also handle concurrent backfills.
+  return [storeRevisionEntry(db, id, revision), selectRevisionEntry(db, id, revision)]
+}
+
+async function revisionEntry(db: D1Database, id: string, revision: number) {
+  const cached = await selectRevisionEntry(db, id, revision).first<string>('path')
+  if (cached !== null) return cached
+  const [, entry] = await db.batch<RevisionEntry>(backfillEntry(db, id, revision))
+  return entry.results[0]?.path ?? null
 }
 
 function entryUrl(origin: string, slug: string, path: string) {
@@ -126,13 +150,18 @@ function encodeFilePath(path: string) {
 
 export async function publicArtefacts({ env: { DB: db }, config }: Runtime) {
   const { results } = await db
-    .prepare(`SELECT a.slug, a.title, (
-      SELECT f.path FROM files f WHERE f.artefact_id = a.id AND f.revision = a.current_revision
-      ORDER BY CASE WHEN f.path = 'index.html' THEN 0
-        WHEN f.content_type = 'text/html; charset=utf-8' THEN 1 ELSE 2 END, f.path LIMIT 1
-    ) AS path FROM artefacts a WHERE a.deleted_at IS NULL AND a.visibility = 'public'
-    ORDER BY a.created_at DESC, a.slug LIMIT 200`)
-    .all<{ slug: string; title: string; path: string | null }>()
+    .prepare(`SELECT a.id, a.slug, a.title, r.number AS revision, r.entry_path AS path
+      FROM artefacts a JOIN revisions r ON r.artefact_id = a.id AND r.number = a.current_revision
+      WHERE a.deleted_at IS NULL AND a.visibility = 'public'
+      ORDER BY a.created_at DESC, a.slug LIMIT 200`)
+    .all<RevisionEntry & { id: string; slug: string; title: string; revision: number }>()
+  const legacy = results.filter(({ path }) => path === null)
+  if (legacy.length > 0) {
+    const filled = await db.batch<RevisionEntry>(
+      legacy.flatMap(({ id, revision }) => backfillEntry(db, id, revision)),
+    )
+    for (const [index, row] of legacy.entries()) row.path = filled[index * 2 + 1].results[0]?.path ?? null
+  }
   return results.flatMap(({ slug, title, path }) =>
     path === null ? [] : [{ title, url: entryUrl(config.readOrigin, slug, path) }],
   )
@@ -188,17 +217,15 @@ export async function getArtefact(runtime: Runtime, member: Member, slug: string
   if (after && after[0] !== id)
     throw new ArtefactError('invalid_input', 'Cursor belongs to a different artefact')
   if (after) checkRevision(after[1], revision)
-  const [[page, entry], shareLinks] = await Promise.all([
-    db.batch<Pick<File, 'path' | 'size' | 'type'>>([
-      db
-        .prepare(`SELECT path, size, content_type AS type FROM files
+  const [page, path, shareLinks] = await Promise.all([
+    db
+      .prepare(`SELECT path, size, content_type AS type FROM files
         WHERE artefact_id = ? AND revision = ? AND path > ? ORDER BY path LIMIT 201`)
-        .bind(id, revision, after?.[2] ?? ''),
-      selectEntry(db, id, revision),
-    ]),
+      .bind(id, revision, after?.[2] ?? '')
+      .all<Pick<File, 'path' | 'size' | 'type'>>(),
+    revisionEntry(db, id, revision),
     shareLinkMetadata(db, id),
   ])
-  const path = entry.results[0]?.path
   if (!path) throw new Error('Artefact head has no entry file')
   const files = page.results
   const more = files.length > 200
@@ -276,7 +303,7 @@ export async function shareRead(
   if (path === undefined) return { kind: 'slash' } as const
   const resolved = await resolveReadFile(db, link.artefactId, link.revision, path)
   if (resolved.kind === 'not-found' && path === '') {
-    const entry = await selectEntry(db, link.artefactId, link.revision).first<string>('path')
+    const entry = await revisionEntry(db, link.artefactId, link.revision)
     if (entry !== null) return { kind: 'entry', path: encodeFilePath(entry) } as const
   }
   if (resolved.kind !== 'serve') return resolved
@@ -480,11 +507,11 @@ export async function publish(runtime: Runtime, member: Member, input: Publish) 
         updated_at = MAX(?, updated_at) WHERE id = ?`)
         .bind(revision, input.title ?? null, now, id),
       audit(db, now, member, id, 'artefact.publish', { revision, mode: input.mode }),
-      selectEntry(db, id, revision),
+      storeRevisionEntry(db, id, revision),
     )
-    let entry: D1Result<Pick<File, 'path'>> | undefined
+    let entry: D1Result<RevisionEntry> | undefined
     try {
-      entry = (await db.batch<Pick<File, 'path'>>(statements)).at(-1)
+      entry = (await db.batch<RevisionEntry>(statements)).at(-1)
     } catch (error) {
       const diagnostic = error instanceof Error ? `${error.message} ${error.cause}` : ''
       if (

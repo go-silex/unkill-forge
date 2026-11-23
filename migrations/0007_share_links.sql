@@ -10,3 +10,6 @@ CREATE TABLE share_links (
   last_used_at INTEGER
 );
 CREATE INDEX share_links_artefact ON share_links(artefact_id);
+CREATE INDEX share_links_active_artefact ON share_links(artefact_id) WHERE revoked_at IS NULL;
+
+ALTER TABLE revisions ADD COLUMN entry_path TEXT;

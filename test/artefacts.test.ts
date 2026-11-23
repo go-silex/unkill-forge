@@ -835,6 +835,84 @@ it('keeps the original share URL valid when a replacement moves the entry file',
   }
 })
 
+it('reads a bounded number of D1 rows from a stable share root as the revision grows', async () => {
+  const { call } = await bot(runtime())
+  const slug = 'share-bounded-entry'
+  let rowsRead = 0
+  const measuredDb = new Proxy(db, {
+    get(target, property) {
+      if (property !== 'prepare') return Reflect.get(target, property)
+      return (sql: string) => ({
+        bind: (...args: unknown[]) => ({
+          async first(column?: string) {
+            const { results, meta } = await target
+              .prepare(sql)
+              .bind(...args)
+              .all<Record<string, unknown>>()
+            rowsRead += meta.rows_read
+            const row = results[0]
+            return row ? (column === undefined ? row : row[column]) : null
+          },
+        }),
+      })
+    },
+  })
+  const send = runtime({ DB: measuredDb })
+  const entry = file('docs/index.html', 'Entry')
+  await call('publish', { slug, mode: 'replace', files: [entry] })
+  const { url } = await call('create_share_link', { slug })
+  const check = async () => {
+    rowsRead = 0
+    const response = await send(url)
+    expect(response.status).toBe(302)
+    expect(new URL(response.headers.get('location') ?? '', url).href).toBe(`${url}docs/index.html`)
+    return rowsRead
+  }
+  const initial = await check()
+  expect(initial).toBeGreaterThan(0)
+  const assets = Array.from({ length: 512 }, (_, i) => file(`asset-${i}.txt`))
+  expect(await call('publish', { slug, mode: 'merge', files: assets })).toMatchObject({ revision: 2 })
+  expect(await check()).toBeLessThanOrEqual(initial + 2)
+})
+
+it('backfills a legacy entry once and preserves base media type precedence on publish', async () => {
+  const send = runtime({ PUBLIC_INDEX: 'true' })
+  const { call } = await bot(send)
+  const slug = 'legacy-entry'
+  await call('publish', { slug, mode: 'replace', files: [file('a.txt'), file('y.data'), file('z.data')] })
+  const id = await db.prepare('SELECT id FROM artefacts WHERE slug = ?').bind(slug).first<string>('id')
+  if (!id) throw new Error('Expected a published artefact')
+  // Simulate the prior Worker (which did not persist entries) with HTML media types from uploaded files.
+  await db.batch([
+    db.prepare('UPDATE revisions SET entry_path = NULL WHERE artefact_id = ?').bind(id),
+    db
+      .prepare("UPDATE files SET content_type = 'text/html' WHERE artefact_id = ? AND path = 'z.data'")
+      .bind(id),
+  ])
+  await call('set_visibility', { slug, visibility: 'public' })
+  expect(await (await send(read)).text()).toContain(`href="${read}/a/${slug}/z.data"`)
+  expect(
+    await db.prepare('SELECT entry_path FROM revisions WHERE artefact_id = ?').bind(id).first('entry_path'),
+  ).toBe('z.data')
+
+  await db
+    .prepare(
+      "UPDATE files SET content_type = 'TEXT/HTML ; charset=utf-8' WHERE artefact_id = ? AND path = 'y.data'",
+    )
+    .bind(id)
+    .run()
+  expect(await call('get_artefact', { slug })).toMatchObject({ url: `${read}/a/${slug}/z.data` })
+  expect(await call('publish', { slug, mode: 'merge', files: [file('b.txt')] })).toEqual({
+    revision: 2,
+    url: `${read}/a/${slug}/y.data`,
+  })
+  const { url } = await call('create_share_link', { slug })
+  const root = await send(url)
+  expect(root.status).toBe(302)
+  expect(new URL(root.headers.get('location') ?? '', url).href).toBe(`${url}y.data`)
+  expect(await (await send(read)).text()).toContain(`href="${read}/a/${slug}/y.data"`)
+})
+
 it('redirects authorized directory indexes without a slash so relative assets load on both routes', async () => {
   const send = runtime()
   const { call } = await bot(send)

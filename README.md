@@ -4,7 +4,7 @@ Forge is a self-hosted service for publishing HTML artefacts at stable URLs, con
 
 **Phase 1:** this build delivers public and private artefacts and revocable share links on the read host, supports publishing, editing and reading over MCP, and includes sign-in, member administration and bot administration. See [the specification](docs/spec.md).
 
-The runtime is 4,152 lines under `src/`.
+The runtime is 4,179 lines under `src/`.
 
 ## Configure sign-in
 
@@ -73,7 +73,7 @@ After deploying with `0004_invites.sql`:
 3. Reauthorize all OAuth clients. Gate 0 grants cannot be exchanged, refreshed, or used on MCP.
 4. Between the migration and the Worker rollout, the previous Worker can answer HTTP 409 to a member removal that did succeed. Reload the member list to confirm.
 
-Before upgrading to the share-link release, set `FORGE_SEAL_KEY` on the target Worker. Migration `0007_share_links.sql` adds the shares table without changing existing artefacts or sessions.
+Before upgrading to the share-link release, set `FORGE_SEAL_KEY` on the target Worker. Migration `0007_share_links.sql` adds the shares table and a nullable revision entry path. Existing revisions populate their entry path when first needed.
 
 ## Connect an agent
 
