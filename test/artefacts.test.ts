@@ -8,14 +8,14 @@ setupStorage()
 setupOidc()
 const { DB: db, BLOBS: bucket } = env as typeof env & Pick<Env, 'DB' | 'BLOBS'>
 
-function mcpPost(send: Handle, token: string, body: string) {
+function mcpPost(send: Handle, token: string, body: string, protocolVersion = '2025-11-25') {
   return send('/mcp', {
     method: 'POST',
     headers: {
       'content-type': 'application/json',
       accept: 'application/json, text/event-stream',
       authorization: `Bearer ${token}`,
-      'mcp-protocol-version': '2025-11-25',
+      'mcp-protocol-version': protocolVersion,
     },
     body,
   })
@@ -297,6 +297,30 @@ it('edits literal matches at the expected head; rejects stale, missing, repeated
   })
 })
 
+it('applies 10,000 literal replacements but refuses 10,001 before creating a revision', async () => {
+  const { call } = await bot(runtime())
+  const slug = 'many-matches'
+  const edit = { slug, path: 'index.html', oldText: 'a', newText: 'b', replaceAll: true }
+  const write = (count: number) =>
+    call('publish', { slug, mode: 'replace', files: [file(edit.path, 'a'.repeat(count))] })
+  expect(await write(10_000)).toMatchObject({ revision: 1 })
+  expect(await call('edit_file', { ...edit, expectedRevision: 1 })).toMatchObject({ revision: 2 })
+  expect(await call('read_file', { slug, path: edit.path })).toMatchObject({
+    revision: 2,
+    text: 'b'.repeat(10_000),
+  })
+  expect(await write(10_001)).toMatchObject({ revision: 3 })
+  expect(await call('edit_file', { ...edit, expectedRevision: 3 })).toMatchObject({
+    error: 'invalid_input',
+    matches: 10_001,
+    message: expect.stringContaining('Use publish instead'),
+  })
+  expect(await call('read_file', { slug, path: edit.path })).toMatchObject({
+    revision: 3,
+    text: 'a'.repeat(10_001),
+  })
+})
+
 it('allows viewer reads but refuses every write', async () => {
   const send = runtime()
   const publisher = await bot(send)
@@ -378,27 +402,28 @@ it('enforces resulting file count and summed decoded bytes, and fails closed on 
   expect((await runtime({ BLOBS: undefined })('/')).status).toBe(503)
   expect((await runtime({ MAX_INLINE_BYTES: '1.5' })('/')).status).toBe(503)
   expect((await runtime({ MAX_FILES_PER_ARTEFACT: 0 })('/')).status).toBe(503)
-  expect((await runtime({ MAX_FILES_PER_CALL: 901 })('/')).status).toBe(503)
+  expect((await runtime({ MAX_BLOB_WRITES_PER_CALL: 901 })('/')).status).toBe(503)
 })
 
 it('rejects oversized publish arrays before validating their entries or touching R2', async () => {
   const put = vi.fn(bucket.put.bind(bucket))
-  const { call } = await bot(withBucket({ put }, { MAX_FILES_PER_CALL: 2 }))
+  const { call } = await bot(withBucket({ put }, { MAX_FILES_PER_ARTEFACT: 2 }))
   const args = { slug: 'path-limit', mode: 'merge', files: [file('first.txt')] }
-  const error = { error: 'too_large', message: expect.stringContaining('split into several merge publishes') }
+  const error = { error: 'too_large' }
   expect(await call('publish', { ...args, files: [false, null, 123] })).toMatchObject(error)
   expect(await call('publish', { ...args, delete: [false, null, 123] })).toMatchObject(error)
   expect(put).not.toHaveBeenCalled()
   expect(await call('publish', { ...args, files: [file('first.txt'), file('second.txt')] })).toMatchObject({
     revision: 1,
   })
-  expect(await call('publish', { ...args, files: [file('third.txt')] })).toMatchObject({ revision: 2 })
+  expect(await call('publish', { ...args, files: [file('third.txt')] })).toMatchObject(error)
   expect(await call('get_artefact', { slug: args.slug })).toMatchObject({
-    files: [{ path: 'first.txt' }, { path: 'second.txt' }, { path: 'third.txt' }],
+    revision: 1,
+    files: [{ path: 'first.txt' }, { path: 'second.txt' }],
   })
 })
 
-it('publishes 500 distinct small files with exactly 500 R2 puts', async () => {
+it('budgets only unreferenced blobs: 500 fresh files and a 501-file reused replacement succeed', async () => {
   const put = vi.fn(bucket.put.bind(bucket))
   const { call } = await bot(withBucket({ put }))
   const slug = 'full-call'
@@ -406,11 +431,58 @@ it('publishes 500 distinct small files with exactly 500 R2 puts', async () => {
   expect(await call('publish', { slug, mode: 'replace', files })).toMatchObject({ revision: 1 })
   expect(put).toHaveBeenCalledTimes(500)
   expect(await call('read_file', { slug, path: '499.txt' })).toMatchObject({ text: 'content 499' })
+  put.mockClear()
+  const tooMany = {
+    slug,
+    mode: 'replace',
+    expectedRevision: 1,
+    files: Array.from({ length: 501 }, (_, index) => file(`${index}.txt`, `fresh ${index}`)),
+  }
+  expect(await call('publish', tooMany)).toMatchObject({
+    error: 'too_large',
+    message: expect.stringContaining('split into several merge publishes'),
+  })
+  expect(put).not.toHaveBeenCalled()
+  expect(await call('get_artefact', { slug })).toMatchObject({ revision: 1 })
+  const replacement = [...files.slice(0, 499), file('left.txt', 'new left'), file('right.txt', 'new right')]
+  expect(
+    await call('publish', { slug, mode: 'replace', expectedRevision: 1, files: replacement }),
+  ).toMatchObject({
+    revision: 2,
+  })
+  expect(put).toHaveBeenCalledTimes(2)
+  expect(await call('read_file', { slug, path: '499.txt' })).toMatchObject({ error: 'not_found' })
+  expect(await call('read_file', { slug, path: '498.txt' })).toMatchObject({
+    revision: 2,
+    text: 'content 498',
+  })
+  expect(await call('read_file', { slug, path: 'right.txt' })).toMatchObject({
+    revision: 2,
+    text: 'new right',
+  })
+  const count = await db
+    .prepare('SELECT COUNT(*) AS count FROM files WHERE revision = 2')
+    .first<number>('count')
+  expect(count).toBe(501)
 })
 
-it('rejects JSON-RPC batches before any tool runs and reports oversized bodies as HTTP 413', async () => {
-  const send = runtime({ MAX_INLINE_BYTES: 32, MAX_FILES_PER_CALL: 2 })
+it('negotiates a non-batching protocol, rejects batches, and bounds JSON-RPC envelopes', async () => {
+  const send = runtime({ MAX_INLINE_BYTES: 32 })
   const { token, call } = await bot(send)
+  const initialize = await mcpPost(
+    send,
+    token,
+    JSON.stringify({
+      jsonrpc: '2.0',
+      id: 1,
+      method: 'initialize',
+      params: { protocolVersion: '2025-03-26', capabilities: {}, clientInfo: { name: 'test', version: '1' } },
+    }),
+    '2025-03-26',
+  )
+  expect(initialize.status).toBe(200)
+  const { result } = await initialize.json<{ result: { protocolVersion: string } }>()
+  expect(result.protocolVersion >= '2025-06-18').toBe(true)
   const slug = 'no-batch'
   const publish = {
     jsonrpc: '2.0',
@@ -425,7 +497,10 @@ it('rejects JSON-RPC batches before any tool runs and reports oversized bodies a
     id: null,
     error: { code: -32600, data: { error: 'invalid_request' } },
   })
-  const oversized = await mcpPost(send, token, JSON.stringify(publish) + ' '.repeat(100_000))
+  const bytes = 43 + 512 * 1024 // ceil(32 * 4/3) plus the transport headroom.
+  const whoami = JSON.stringify({ ...publish, params: { name: 'whoami' } })
+  expect((await mcpPost(send, token, whoami.padEnd(bytes))).status).toBe(200)
+  const oversized = await mcpPost(send, token, JSON.stringify(publish).padEnd(bytes + 1))
   expect(oversized.status).toBe(413)
   expect(await oversized.json()).toMatchObject({
     jsonrpc: '2.0',

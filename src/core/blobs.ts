@@ -35,7 +35,12 @@ export function contentType(path: string): string {
   return Object.hasOwn(binaryTypes, extension) ? binaryTypes[extension] : 'application/octet-stream'
 }
 
-export async function storeBlobs(db: D1Database, bucket: R2Bucket, pending: { bytes: Uint8Array }[]) {
+export async function storeBlobs(
+  db: D1Database,
+  bucket: R2Bucket,
+  pending: { bytes: Uint8Array }[],
+  maxWrites: number,
+): Promise<string[] | null> {
   const unique = new Map<string, { checksum: ArrayBuffer; bytes: Uint8Array }>()
   const hashes: string[] = []
   for (const { bytes } of pending) {
@@ -52,6 +57,7 @@ export async function storeBlobs(db: D1Database, bucket: R2Bucket, pending: { by
     .bind(JSON.stringify([...unique.keys()]))
     .all<{ sha256: string }>()
   for (const { sha256 } of results) unique.delete(sha256)
+  if (unique.size > maxWrites) return null
 
   const onlyIf = new Headers({ 'If-None-Match': '*' })
   for (const [sha256, { bytes, checksum }] of unique) {

@@ -138,7 +138,7 @@ Rules:
 - Slug: `^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$`. A slug is unavailable while a live artefact, a soft-deleted artefact or a redirect prefix uses it.
 - Path: relative POSIX path, ≤ 512 characters, no empty, `.` or `..` segment, no segment starting with `.`, no backslash or control character.
 - Retention: the last 20 revisions per artefact by default (configurable), so `files` stays bounded within D1's size limits.
-- Defaults (configurable): 1,000 files per artefact; 500 paths in each `publish` input array (`files` and `delete`); 2 MiB of decoded inline content per MCP call; 100 MB per uploaded file. The per-call file limit leaves room within the Workers subrequest budget. Split larger updates into several `merge` publishes.
+- Defaults (configurable): 1,000 files per artefact; 500 distinct new blob writes per publish; 2 MiB of decoded inline content per MCP call; 100 MB per uploaded file. The blob-write limit leaves room within the Workers subrequest budget and does not count hashes already referenced in D1. Split updates with more new blobs into several `merge` publishes.
 
 ## 6. Access model
 
@@ -199,6 +199,7 @@ Response headers:
 - **Rename** moves the slug and creates redirects from `/a/<old>/` and `/s/<old>/` to the new prefixes; existing redirects that pointed at the old slug are retargeted, so chains never form. Share links keep working through the redirect.
 - **Delete** is soft for 30 days (admins can restore); a daily cron then purges the D1 rows.
 - **Blobs are append-only.** Nothing deletes them automatically: storage is cheap at team scale, and deleting while another publish reuses the same bytes would corrupt it. An admin **purge** hard-deletes an artefact, then deletes each blob no other file references, rechecked just before deletion. This is for content that must disappear, such as a leaked secret, and is documented as racing with a concurrent publish of identical bytes.
+- Republishing identical bytes does not restore a referenced R2 object deleted out of band: D1-based deduplication skips that write, and the missing blob is an operator incident.
 - The cron also expires login flows, sessions, uploads, handoffs, invites, old identity revocations and revisions beyond retention.
 - A reader who loads a page during a publish may get assets from two revisions. Accepted.
 
@@ -229,8 +230,8 @@ Gate 0 reserves the code's `grant_id` and `redeemed_at` in D1's `oauth_code_rede
 | Tool                | Input                                                                                                                                | Result                                                                                                                |
 | ------------------- | ------------------------------------------------------------------------------------------------------------------------------------ | --------------------------------------------------------------------------------------------------------------------- |
 | `whoami`            | —                                                                                                                                    | member, role, read and manage URLs                                                                                    |
-| `list_artefacts`    | `query?`, `cursor?`                                                                                                                  | slug, title, visibility, revision, updated, `nextCursor` when more results exist                                       |
-| `get_artefact`      | `slug`, `cursor?`                                                                                                                    | metadata, current revision, a page of files (path, size, type), URL, share links without keys, `nextCursor` if more    |
+| `list_artefacts`    | `query?`, `cursor?`                                                                                                                  | slug, title, visibility, revision, updated, `nextCursor` when more results exist                                      |
+| `get_artefact`      | `slug`, `cursor?`                                                                                                                    | metadata, current revision, a page of files (path, size, type), URL, share links without keys, `nextCursor` if more   |
 | `read_file`         | `slug`, `path`, `revision?`, `offset?`, `limit?`                                                                                     | revision read, total length, a text slice (default 40,000, max 100,000 characters); binary files return metadata only |
 | `publish`           | `slug`, `title?`, `files[]` (`{path, content, encoding?}` or `{path, uploadId}`), `mode`, `delete?`, `expectedRevision?`, `message?` | entry URL, revision                                                                                                   |
 | `edit_file`         | `slug`, `path`, `oldText`, `newText`, `expectedRevision` (required), `replaceAll?`                                                   | new revision; fails unless exactly one match (or `replaceAll`)                                                        |
@@ -248,10 +249,11 @@ Gate 0 reserves the code's `grant_id` and `redeemed_at` in D1's `oauth_code_rede
 
 - Tool descriptions are written for agents: when to use the tool, what it changes, what to tell the user.
 - Results are compact JSON text. Errors use stable codes: `not_found`, `forbidden`, `conflict`, `invalid_input`, `too_large`.
-- Send one JSON-RPC message per request; batches return `invalid_request`. Bodies above the transport ceiling return HTTP 413 with JSON-RPC `data.error: "too_large"`. The ceiling accounts for JSON escaping, base64 expansion and path metadata and never exceeds 32 MiB.
+- Send one JSON-RPC message per request; batches return `invalid_request`. Initialization never negotiates a version older than `2025-06-18`: older requests receive the latest supported version.
+- The JSON request envelope is limited to `MAX_REQUEST_BYTES = ceil(MAX_INLINE_BYTES × 4/3) + 512 KiB` (derived, not a separate setting). Larger requests return HTTP 413 with JSON-RPC `data.error: "too_large"`. `publish` must fit both this envelope and the decoded inline byte limit; use uploads for large binaries or heavily escaped text that will not fit. `edit_file` shares the envelope, including its combined `oldText` and `newText` plus JSON overhead.
 - `publish` limits `title` to 200 characters and `message` to 1,000; `list_artefacts` limits `query` to 200. Oversized metadata and lone surrogates in inline UTF-8 or `edit_file` text return `invalid_input`.
 - `list_artefacts` returns up to 50 results per page ordered by most recently updated. `get_artefact` returns up to 200 files per page ordered by path. If the head changes between file pages, restart the listing at the new head.
-- `read_file` counts Unicode code points for slicing. Non-UTF-8 content and text files above 8 MiB return metadata only, with a reason. `edit_file` uses the same text decoding cap and refuses files above `MAX_INLINE_BYTES`.
+- `read_file` counts Unicode code points for slicing. Non-UTF-8 content and text files above 8 MiB return metadata only, with a reason. `edit_file` uses the same text decoding cap and refuses files above `MAX_INLINE_BYTES`. More than 10,000 matches returns `invalid_input` with the match count; use `publish` for that change.
 - Members, bots and invites are managed in the admin UI, not over MCP.
 
 **Uploads.** `create_uploads` returns capability URLs on the manage host, `PUT /upload/<token>`. They serve shells that cannot hold the OAuth token.
@@ -326,7 +328,7 @@ Pages:
 | Secrets  | `FORGE_SEAL_KEY`, `FORGE_COOKIE_KEY`, one `AUTH_<ID>_CLIENT_SECRET` per provider                                                                                                                                                       |
 | Bindings | `DB` (D1), `BLOBS` (R2), `OAUTH_KV` (KV), optional rate-limit binding                                                                                                                                                                  |
 
-The publish limits are positive integers: `MAX_FILES_PER_ARTEFACT` (default `1000`), `MAX_FILES_PER_CALL` (default `500`, up to `900` to stay within the Workers subrequest budget), and `MAX_INLINE_BYTES` (default `2097152`, summed decoded bytes per call).
+The publish limits are positive integers: `MAX_FILES_PER_ARTEFACT` (default `1000` for the resulting revision), `MAX_BLOB_WRITES_PER_CALL` (default `500`, up to `900` to stay within the Workers subrequest budget), and `MAX_INLINE_BYTES` (default `2097152`, summed decoded bytes per call).
 
 - Configuration is parsed once. Any invalid value makes every request answer 503 and logs the list of errors.
 - **Branding** is data: name, logo, favicon, colours and landing text, from configuration and `brand/`. Page structure, sign-in and consent markup belong to Forge, so forks merge upstream without touching security-relevant templates.

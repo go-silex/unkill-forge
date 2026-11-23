@@ -226,10 +226,7 @@ function tooLarge(field: string, limit: number) {
 export function checkPublishArrayLengths(args: { files?: unknown; delete?: unknown }, limit: number) {
   for (const array of [args.files, args.delete]) {
     if (Array.isArray(array) && array.length > limit) {
-      throw new ArtefactError(
-        'too_large',
-        `At most ${limit} paths per input array; split into several merge publishes`,
-      )
+      throw tooLarge('File count', limit)
     }
   }
 }
@@ -269,8 +266,7 @@ export async function publish(runtime: Runtime, member: Member, input: Publish) 
   checkSlug(input.slug)
   const maxFiles = config.maxFilesPerArtefact
   const maxBytes = config.maxInlineBytes
-  checkPublishArrayLengths(input, config.maxFilesPerCall)
-  if (input.files.length > maxFiles) throw tooLarge('File count', maxFiles)
+  checkPublishArrayLengths(input, maxFiles)
 
   const deletes = new Set(input.delete)
   for (const path of deletes) checkPath(path)
@@ -321,7 +317,14 @@ export async function publish(runtime: Runtime, member: Member, input: Publish) 
     if (count > maxFiles) throw tooLarge('File count', maxFiles)
 
     if (pending.length > 0) {
-      const hashes = await storeBlobs(db, blobs, pending)
+      const limit = config.maxBlobWritesPerCall
+      const hashes = await storeBlobs(db, blobs, pending, limit)
+      if (!hashes) {
+        throw new ArtefactError(
+          'too_large',
+          `More than ${limit} new blobs would be written; split into several merge publishes`,
+        )
+      }
       for (const [index, { path, type, bytes }] of pending.entries()) {
         newFiles.push({ path, type, size: bytes.length, sha256: hashes[index] })
       }
@@ -434,6 +437,15 @@ export async function editFile(
     at = text.indexOf(input.oldText, at + input.oldText.length)
   )
     matches++
+  if (matches > 10_000) {
+    throw new ArtefactError(
+      'invalid_input',
+      `Found ${matches} matches; edit_file allows at most 10,000. Use publish instead`,
+      {
+        matches,
+      },
+    )
+  }
   if (matches === 0 || (matches > 1 && !input.replaceAll)) {
     throw new ArtefactError(
       'invalid_input',

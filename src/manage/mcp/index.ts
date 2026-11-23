@@ -5,6 +5,8 @@ import { isJsonContentType } from '@modelcontextprotocol/sdk/shared/mediaType.js
 import {
   CallToolRequestSchema,
   ErrorCode,
+  isInitializeRequest,
+  LATEST_PROTOCOL_VERSION,
   ListToolsRequestSchema,
   McpError,
   type Tool,
@@ -91,12 +93,7 @@ export async function handleMcp(request: Request, runtime: Runtime, member: Memb
     accept.includes('text/event-stream') &&
     isJsonContentType(request.headers.get('content-type'))
   ) {
-    // Allow worst-case JSON string escaping (which also covers base64 expansion),
-    // both path arrays, and envelope metadata, without exceeding the Worker memory budget.
-    const maxBody = Math.min(
-      32 * 1024 * 1024,
-      65_536 + config.maxInlineBytes * 6 + config.maxFilesPerCall * 12_544,
-    )
+    const maxBody = Math.ceil((config.maxInlineBytes * 4) / 3) + 512 * 1024
     try {
       const body = await readRequestBody(request, maxBody)
       if (body.tooLarge) {
@@ -113,6 +110,9 @@ export async function handleMcp(request: Request, runtime: Runtime, member: Memb
         'MCP does not accept JSON-RPC batches',
         'invalid_request',
       )
+    }
+    if (isInitializeRequest(parsedBody) && parsedBody.params.protocolVersion < '2025-06-18') {
+      parsedBody.params.protocolVersion = LATEST_PROTOCOL_VERSION
     }
   }
 
@@ -165,16 +165,17 @@ export async function handleMcp(request: Request, runtime: Runtime, member: Memb
       z.strictObject({
         slug,
         title: z.string().max(200).optional(),
-        files: z.array(inlineFile).max(config.maxFilesPerCall),
+        files: z.array(inlineFile).max(config.maxFilesPerArtefact),
         mode: z.enum(['merge', 'replace']),
-        delete: z.array(path).max(config.maxFilesPerCall).optional(),
+        delete: z.array(path).max(config.maxFilesPerArtefact).optional(),
         expectedRevision: z.int().nonnegative().optional().describe('Use 0 to require a new slug'),
         message: z.string().max(1_000).optional(),
       }),
       (input) => publish(runtime, member, input),
       false,
       (args) => {
-        if (typeof args === 'object' && args !== null) checkPublishArrayLengths(args, config.maxFilesPerCall)
+        if (typeof args === 'object' && args !== null)
+          checkPublishArrayLengths(args, config.maxFilesPerArtefact)
       },
     ),
     tool(

@@ -4,7 +4,7 @@ Forge is a self-hosted service for publishing HTML artefacts at stable URLs, con
 
 **Phase 1:** this build supports publishing, editing and reading artefacts over MCP, as well as sign-in and member and bot administration. Read-host delivery is not part of this build. See [the specification](docs/spec.md).
 
-Runtime: 3,022 lines under `src/`.
+Runtime: 3,041 lines under `src/`.
 
 ## Configure sign-in
 
