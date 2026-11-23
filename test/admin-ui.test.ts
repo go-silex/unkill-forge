@@ -227,6 +227,26 @@ it('shows a personal token exactly once, stores its hash, records use and enforc
   expect(overloaded.status).toBe(400)
 })
 
+it('refuses direct token revocation by its owner after a publisher is downgraded to viewer', async () => {
+  const send = runtime()
+  const idp = mockProvider()
+  const owner = await idp.signedIn(send, admin)
+  const publisher = await idp.signedIn(send, 'publisher')
+  const member = await listedId(owner, members, 'publisher@example.test')
+  await post(owner, members, { action: 'role', id: member, role: 'publisher' })
+  await issueToken(publisher, 'Downgrade fixture')
+  const id = await db
+    .prepare('SELECT id FROM api_tokens WHERE member_id = ?')
+    .bind(member)
+    .first<string>('id')
+  if (!id) throw new Error('Expected publisher token')
+  await post(owner, members, { action: 'role', id: member, role: 'viewer' })
+  expect(await revokeOwnToken(db, member, id, Date.now())).toBe(false)
+  expect(await db.prepare('SELECT revoked_at FROM api_tokens WHERE id = ?').bind(id).first()).toEqual({
+    revoked_at: null,
+  })
+})
+
 it('searches by slug or title prefix with visibility and keeps a stable pagination cursor', async () => {
   const send = runtime()
   const owner = await mockProvider().signedIn(send, admin)
@@ -261,6 +281,37 @@ it('searches by slug or title prefix with visibility and keeps a stable paginati
   expect(first).not.toContain('quarterly-fixture-49')
   expect(second).toContain('quarterly-fixture-49')
   expect(second).not.toContain('quarterly-fixture-48')
+})
+
+it('keeps modified seek cursors inside the prefix and explains duplicate-only pages with more matches', async () => {
+  const send = runtime()
+  const owner = await mockProvider().signedIn(send, admin)
+  const token = await issueToken(owner, 'Catalogue duplicate fixture')
+  await publish(send, token, 'aardvark', 'Aardvark')
+  await publish(send, token, 'late-title', 'Report ZZ Late title')
+  await db
+    .prepare(`WITH RECURSIVE numbers(n) AS (SELECT 1 UNION ALL SELECT n + 1 FROM numbers WHERE n < 120)
+    INSERT INTO artefacts (id, slug, title, visibility, current_revision, created_by, created_at, updated_at)
+    SELECT printf('10000000-0000-4000-8000-%012d', n), printf('report-%03d', n), 'Report duplicate', 'private',
+    current_revision, created_by, created_at, updated_at FROM artefacts, numbers WHERE slug = 'aardvark'`)
+    .run()
+  const catalogue = '/artefacts?q=report'
+  let page = await html(owner, catalogue)
+  const first = page
+  let duplicatePages = 0
+  for (let i = 0; i < 5; i++) {
+    const next = /href="([^"]+)"[^>]*>Next page<\/a>/.exec(page)?.[1]?.replaceAll('&amp;', '&')
+    if (!next) break
+    page = await html(owner, next)
+    expect(page).not.toContain('No results.')
+    if (page.includes('No new matches on this page.')) duplicatePages++
+  }
+  expect(duplicatePages).toBeGreaterThan(0)
+  expect(page).toContain('Report ZZ Late title')
+  expect(page).not.toContain('Next page')
+  const tampered = new URL(catalogue, manage)
+  tampered.searchParams.set('cursor', base64url.encode(JSON.stringify(['report', null, 'slug', '', ''])))
+  expect(await html(owner, tampered)).toBe(first)
 })
 
 it('uses bounded index seeks for missing and sparse matches in a large catalogue', async () => {
@@ -439,6 +490,9 @@ it.each(['en', 'fr'] as const)(
     const invalidInvite = await html(anonymous, '/invite/invalid', 404)
     expect(invalidInvite).toContain(french ? 'Invitation invalide ou expirée' : 'Invite invalid or expired')
     const connect = await html(owner, '/connect')
+    expect(connect).toContain(
+      french ? 'Point d’accès MCP (Streamable HTTP) :' : 'MCP endpoint (Streamable HTTP):',
+    )
     for (const [client, command] of [
       ['claude.ai', 'CIMD'],
       ['Claude Desktop', 'JSON'],
@@ -468,7 +522,6 @@ it.each(['en', 'fr'] as const)(
     const publicIndex = await html(new Browser(publicSend), `${read}/`)
     expect(publicIndex).toContain(french ? 'Artefacts publics' : 'Public artefacts')
     expect(publicIndex).toContain('Quarterly report')
-    await post(owner, detail, { action: 'visibility', visibility: 'private', ...identity })
     const css = await send('/style.css')
     expect(await css.text()).toContain('--brand-accent:#123a6f')
     for (const origin of [read, manage]) {
@@ -479,7 +532,31 @@ it.each(['en', 'fr'] as const)(
     const landing = await html(anonymous, `${read}/`)
     expect(landing).toContain('Ember landing')
     expect(landing).toContain('href="/favicon.svg"')
-    expect(await html(anonymous, `${read}/missing`, 404)).toContain(french ? 'Page introuvable' : 'Not found')
+    const missingUrl = `${read}/a/${slug}/missing.html`
+    const notFound = await html(anonymous, missingUrl, 404)
+    expect(notFound).toContain(`lang="${locale}"`)
+    expect(notFound).toContain(french ? '<title>Page introuvable</title>' : '<title>Not found</title>')
+    await post(owner, detail, { action: 'visibility', visibility: 'private', ...identity })
+    const unavailable = runtime({
+      LOCALE: locale,
+      PUBLIC_INDEX: 'true',
+      DB: new Proxy(db, {
+        get(target, key) {
+          if (key === 'prepare')
+            return () => {
+              throw new Error('D1 unavailable')
+            }
+          return Reflect.get(target, key, target)
+        },
+      }),
+    })
+    const failed = await unavailable(`${read}/`)
+    expect(failed.status).toBe(503)
+    const errorPage = await failed.text()
+    expect(errorPage).toContain(`lang="${locale}"`)
+    expect(errorPage).toContain(
+      french ? '<title>Forge est indisponible</title>' : '<title>Forge is unavailable</title>',
+    )
 
     const privateUrl = `${read}/a/${slug}/`
     const reader = new Browser(send)

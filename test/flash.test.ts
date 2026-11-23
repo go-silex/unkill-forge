@@ -1,11 +1,12 @@
 import { createHash } from 'node:crypto'
-import { expect, it } from 'vitest'
+import { expect, it, vi } from 'vitest'
 import {
   admin,
   type Browser,
   flashNavigation,
   listedId,
   location,
+  provider,
   runtime,
   setupStorage,
   whoami,
@@ -35,7 +36,7 @@ async function mint(owner: Browser, id: string) {
   return destination
 }
 
-it('keeps the exact copied continuation unconsumed without same-origin document navigation or the issuing session', async () => {
+it('keeps the continuation unconsumed without a document navigation or the issuing session', async () => {
   const send = runtime()
   const idp = mockProvider()
   const owner = await idp.signedIn(send, admin)
@@ -46,9 +47,7 @@ it('keeps the exact copied continuation unconsumed without same-origin document 
 
   for (const headers of [
     undefined,
-    { ...flashNavigation, 'Sec-Fetch-Site': 'none' },
-    { ...flashNavigation, 'Sec-Fetch-Site': 'same-site' },
-    { ...flashNavigation, 'Sec-Fetch-Site': 'cross-site' },
+    { ...flashNavigation, 'Sec-Fetch-Mode': 'cors' },
     { ...flashNavigation, 'Sec-Fetch-Dest': 'empty' },
   ]) {
     const response = await owner.request(url, { headers })
@@ -62,6 +61,7 @@ it('keeps the exact copied continuation unconsumed without same-origin document 
   const response = await owner.request(url, { headers: flashNavigation })
   expect(response.status).toBe(200)
   expect(response.headers.get('Cache-Control')).toBe('no-store')
+  expect(response.headers.get('Referrer-Policy')).toBe('same-origin')
   const html = await response.text()
   const token = tokenPattern.exec(html)?.[1]
   if (!token) throw new Error('Expected a one-time bot token')
@@ -75,6 +75,36 @@ it('keeps the exact copied continuation unconsumed without same-origin document 
   expect(response.headers.get('Content-Security-Policy')).toContain(`'sha256-${hash}'`)
   expect(await whoami(send, token)).toMatchObject({ id, name })
   expect(await (await owner.request(url, { headers: flashNavigation })).text()).not.toMatch(tokenPattern)
+})
+
+it('displays the flash once after a cross-site silent OIDC revalidation redirect', async () => {
+  const send = runtime()
+  const idp = mockProvider()
+  vi.useFakeTimers({ toFake: ['Date'] })
+  const signedInAt = Date.now()
+  const owner = await idp.signedIn(send, admin)
+  const id = await createBot(owner, 'Revalidated bot')
+  const deadline = signedInAt + provider.revalidateAfterMinutes * 60_000
+  vi.setSystemTime(deadline - 1_000)
+  const destination = await mint(owner, id)
+  vi.setSystemTime(deadline + 1_000)
+
+  const challenge = await owner.request(destination, { headers: flashNavigation })
+  expect(challenge.status).toBe(302)
+  const authorization = location(challenge)
+  expect(authorization.searchParams.get('prompt')).toBe('none')
+  expect(authorization.href).not.toContain('flash-id')
+  const headers = { ...flashNavigation, 'Sec-Fetch-Site': 'cross-site' }
+  const callback = await owner.request(await idp.issue(authorization, admin), { headers })
+  expect(callback.status).toBe(302)
+  expect(location(callback).href).toBe(destination.href)
+  const page = await owner.request(location(callback), { headers })
+  expect(page.status).toBe(200)
+  expect(page.headers.get('Referrer-Policy')).toBe('same-origin')
+  const token = tokenPattern.exec(await page.text())?.[1]
+  if (!token) throw new Error('Expected the same flash after revalidation')
+  expect(await whoami(send, token)).toMatchObject({ id })
+  expect(await (await owner.request(destination, { headers })).text()).not.toMatch(tokenPattern)
 })
 
 it('isolates simultaneous bot flashes and rejects another bot or extra query parameters', async () => {

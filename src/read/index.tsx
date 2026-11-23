@@ -40,9 +40,11 @@ function redirect(location: string, status = 302, cookies: string[] = []) {
 }
 
 function notFound(config: Config, head = false) {
-  const headers = readHeaders()
-  headers.set('Content-Type', 'text/plain; charset=utf-8')
-  return new Response(head ? null : messages(config).notFound, { status: 404, headers })
+  return statusPage(config, messages(config).notFound, 404, head)
+}
+
+function statusPage(config: Config, title: string, status: number, head: boolean) {
+  return page(config, title, <h1>{title}</h1>, head, status)
 }
 
 function page(config: Config, title: string, children: Child, head: boolean, status = 200) {
@@ -201,6 +203,6 @@ export async function read(
     return notFound(config, head)
   } catch (error) {
     console.error('Forge read failed', error instanceof Error ? error.name : 'unknown')
-    return new Response(head ? null : messages(config).unavailable, { status: 503, headers: readHeaders() })
+    return statusPage(config, common.unavailable, 503, head)
   }
 }

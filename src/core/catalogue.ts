@@ -93,15 +93,15 @@ export async function searchArtefacts(
   const end = `${start}G`
   const phase = after?.[2] === 'title' ? 'title' : 'slug'
   const seek = async (column: 'slug' | 'title', limit: number, resume: boolean) => {
-    const statement = db.prepare(
-      column === 'slug'
-        ? `SELECT id, slug, title, visibility, current_revision AS revision, updated_at AS updatedAt, hex(lower(slug)) || '!' || id AS term
-        FROM artefacts WHERE deleted_at IS NULL AND visibility = ? AND term > ? AND term < ? ORDER BY term LIMIT ?`
-        : `SELECT id, slug, title, visibility, current_revision AS revision, updated_at AS updatedAt, hex(lower(title)) || '!' || id AS term
-        FROM artefacts WHERE deleted_at IS NULL AND visibility = ? AND term > ? AND term < ? ORDER BY term LIMIT ?`,
-    )
+    // The identifier is the closed, internal union of the two indexed columns, never request data.
+    const statement =
+      db.prepare(`SELECT id, slug, title, visibility, current_revision AS revision, updated_at AS updatedAt,
+      hex(lower(${column})) || '!' || id AS term FROM artefacts
+      WHERE deleted_at IS NULL AND visibility = ? AND term > ? AND term < ? ORDER BY term LIMIT ?`)
+    const cursorTerm = resume ? after?.[3] : null
+    const lower = typeof cursorTerm === 'string' && cursorTerm > start ? cursorTerm : start
     const rows = await merge<Row & { term: string }>(
-      scopes.map((scope) => statement.bind(scope, resume ? after?.[3] : start, end, limit)),
+      scopes.map((scope) => statement.bind(scope, lower, end, limit)),
       limit,
       (a, b) => compare(a.term, b.term),
     )

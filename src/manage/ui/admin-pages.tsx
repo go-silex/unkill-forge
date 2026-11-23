@@ -28,6 +28,7 @@ import { shareKeyMax } from '../../core/share-keys'
 import { readForm } from '../../http'
 import { type AdminMessage, type AdminTranslate, adminMessages } from '../../i18n'
 import { requireBrowserSession } from '../login'
+import { localClientPath } from '../oauth'
 import { flash, page, time, type UiContext } from './page'
 
 export const adminPages = new Hono<{ Bindings: Runtime }>({
@@ -176,8 +177,8 @@ function VisibilityOptions({
   )
 }
 
-function table(headers: string[], rows: Child[], t: AdminTranslate) {
-  if (rows.length === 0) return <p>{t('noResults')}</p>
+function table(headers: string[], rows: Child[], t: AdminTranslate, empty: AdminMessage = 'noResults') {
+  if (rows.length === 0) return <p>{t(empty)}</p>
   return (
     <table>
       <thead>
@@ -254,6 +255,7 @@ adminPages.get(
             </tr>
           )),
           t,
+          nextCursor ? 'noNewMatches' : 'noResults',
         )}
         {nextPage(cataloguePath, nextCursor, t('next'), params)}
       </>,
@@ -659,7 +661,7 @@ adminPages.get(
       type: 'http',
       url,
       oauth: {
-        clientId: `${origin}/oauth/clients/local.json`,
+        clientId: origin + localClientPath,
         redirectUri: 'http://127.0.0.1:3000/callback',
       },
     }
@@ -670,7 +672,7 @@ adminPages.get(
       t('connect'),
       <>
         <p>
-          {t('endpoint')}: <code>{url}</code>
+          {t('endpoint')} <code>{url}</code>
         </p>
         <h2>claude.ai</h2>
         <p>{t('claudeAi')}</p>

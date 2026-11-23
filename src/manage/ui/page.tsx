@@ -97,7 +97,7 @@ async function navigationFlash(c: UiContext, session: BrowserSession) {
   const request = c.req.raw
   if (
     request.method !== 'GET' ||
-    request.headers.get('Sec-Fetch-Site') !== 'same-origin' ||
+    request.headers.get('Sec-Fetch-Mode') !== 'navigate' ||
     request.headers.get('Sec-Fetch-Dest') !== 'document'
   )
     return null

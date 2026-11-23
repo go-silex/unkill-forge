@@ -169,7 +169,7 @@ const en = {
     toPrefix: 'Destination prefix',
     addRedirect: 'Save redirect',
     removeRedirect: 'Remove redirect',
-    endpoint: 'MCP endpoint (Streamable HTTP)',
+    endpoint: 'MCP endpoint (Streamable HTTP):',
     verifyAgent: 'After connecting, run the whoami tool to check the instance and your role.',
     claudeAi:
       'Individual accounts: in Customize → Connectors, choose + Add → Add custom connector. Team and Enterprise: have an organization owner add it under Organization settings → Connectors → Add → Custom → Web; members then select it under Customize → Connectors and click Connect. Enter a name and the MCP URL, choose “Use Claude’s published identity” (CIMD), then sign in to Forge and approve access.',
@@ -182,6 +182,7 @@ const en = {
     hermes:
       'Ask an administrator to create a bot and token under Bots and API tokens. Set the environment variable shown below in ~/.hermes/.env, then add this block to ~/.hermes/config.yaml.',
     noResults: 'No results.',
+    noNewMatches: 'No new matches on this page. Continue to the next page.',
     next: 'Next page',
     nextFiles: 'More files',
     nextRevisions: 'Older revisions',
@@ -376,7 +377,7 @@ const fr: typeof en = {
     toPrefix: 'Préfixe de destination',
     addRedirect: 'Enregistrer la redirection',
     removeRedirect: 'Supprimer la redirection',
-    endpoint: 'Point d’accès MCP (Streamable HTTP)',
+    endpoint: 'Point d’accès MCP (Streamable HTTP) :',
     verifyAgent: 'Une fois connecté, lancez l’outil whoami pour vérifier l’instance et votre rôle.',
     claudeAi:
       'Compte individuel : dans Personnaliser → Connecteurs, sélectionnez + Ajouter → Ajouter un connecteur personnalisé. Team et Enterprise : le propriétaire de l’organisation l’ajoute dans Paramètres de l’organisation → Connecteurs → Ajouter → Personnalisé → Web. Les membres le sélectionnent ensuite dans Personnaliser → Connecteurs et cliquent sur Connecter. Saisissez un nom et l’URL MCP, choisissez « Utiliser l’identité publiée de Claude » (CIMD), puis connectez-vous à Forge et autorisez l’accès.',
@@ -390,6 +391,7 @@ const fr: typeof en = {
     hermes:
       'Demandez à un administrateur de créer un bot et un jeton dans Bots et jetons API. Définissez la variable indiquée ci-dessous dans ~/.hermes/.env, puis ajoutez ce bloc à ~/.hermes/config.yaml.',
     noResults: 'Aucun résultat.',
+    noNewMatches: 'Aucun nouveau résultat sur cette page. Poursuivez à la page suivante.',
     next: 'Page suivante',
     nextFiles: 'Plus de fichiers',
     nextRevisions: 'Versions précédentes',

@@ -4,7 +4,7 @@ Forge is a self-hosted service for publishing HTML artefacts at stable URLs, con
 
 **Phase 1:** Forge publishes public and private artefacts with share links, revision history, rename redirects and soft deletion. MCP supports publishing, editing, reading and streamed binary uploads. The English/French manage UI covers artefact management, member and bot administration, personal API tokens, admin restoration and purge, and redirects. See [the specification](docs/spec.md).
 
-The runtime is 7,010 lines under `src/`.
+The runtime is 7,016 lines under `src/`.
 
 ## Configure sign-in
 
