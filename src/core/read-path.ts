@@ -1,3 +1,5 @@
+import { base64url } from 'jose'
+
 // The URL path encodes each published POSIX segment independently.
 export function artefactPath(pathname: string) {
   const match = /^\/a\/([a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?)(?:\/(.*))?$/.exec(pathname)
@@ -20,6 +22,17 @@ export function artefactPath(pathname: string) {
 }
 
 export const maxReadReturnLength = 8_192
+const maxEncodedReturnLength = Math.ceil((maxReadReturnLength * 4) / 3)
+const returnDecoder = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true })
+
+export function decodeReadReturnPath(encoded: string | null, origin: string): string | null {
+  if (!encoded || encoded.length > maxEncodedReturnLength || !/^[A-Za-z0-9_-]+$/.test(encoded)) return null
+  try {
+    return readReturnPath(returnDecoder.decode(base64url.decode(encoded)), origin)
+  } catch {
+    return null
+  }
+}
 
 export function readReturnPath(raw: string | null, origin: string): string | null {
   if (!raw?.startsWith('/a/') || /[\\\p{Cc}]/u.test(raw)) return null

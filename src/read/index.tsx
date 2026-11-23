@@ -1,4 +1,5 @@
 import type { Child } from 'hono/jsx'
+import { base64url } from 'jose'
 import type { Runtime } from '../config'
 import { canonicalRead, publicArtefacts } from '../core/artefacts'
 import { handoffChallenge, readBoundSession, redeemHandoff, validHandoffState } from '../core/handoffs'
@@ -65,8 +66,9 @@ async function startHandoff(request: Request, url: URL, runtime: Runtime) {
   const nonce = randomSecret()
   const target = new URL('/auth/handoff', runtime.config.manageOrigin)
   const { pathname, search } = url
+  const returnPath = pathname.length + search.length <= maxReadReturnLength ? pathname + search : pathname
   target.search = new URLSearchParams({
-    return: pathname.length + search.length <= maxReadReturnLength ? pathname + search : pathname,
+    return: base64url.encode(returnPath),
     state: await handoffChallenge(browser, nonce),
     nonce,
   }).toString()

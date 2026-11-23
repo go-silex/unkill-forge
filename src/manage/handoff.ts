@@ -1,7 +1,7 @@
 import { html } from 'hono/html'
 import type { Runtime } from '../config'
 import { issueHandoff, validHandoffState } from '../core/handoffs'
-import { readReturnPath } from '../core/read-path'
+import { decodeReadReturnPath } from '../core/read-path'
 import { requireBrowserSession } from './login'
 
 const submitForm = 'document.getElementById("handoff").submit()'
@@ -20,7 +20,7 @@ export async function manageHandoff(request: Request, url: URL, runtime: Runtime
   }
   const state = url.searchParams.get('state')
   const nonce = url.searchParams.get('nonce')
-  const path = readReturnPath(url.searchParams.get('return'), runtime.config.readOrigin)
+  const path = decodeReadReturnPath(url.searchParams.get('return'), runtime.config.readOrigin)
   if (!validHandoffState(state) || !validHandoffState(nonce) || !path) {
     return new Response('Not found', { status: 404 })
   }

@@ -1,3 +1,4 @@
+import { base64url } from 'jose'
 import { expect, it, vi } from 'vitest'
 import {
   admin,
@@ -241,23 +242,31 @@ it('distinguishes anonymous, pending, viewer, publisher and removed canonical re
   }
 })
 
-it('signs in on manage and resumes the handoff to the original read path and query', async () => {
+it('signs in and returns to a punctuation-heavy URL at the handoff limit without oversized redirects', async () => {
   const { send, idp } = await fixture()
-  const readBrowser = new Browser(send)
-  const manageBrowser = new Browser(send)
-  const handoff = await start(readBrowser, `${privateUrl}?tab=summary`)
+  const checked: Handle = async (path, init) => {
+    const response = await send(path, init)
+    const redirect = response.headers.get('Location')
+    if (redirect !== null) expect(redirect.length).toBeLessThan(16_384)
+    return response
+  }
+  const readBrowser = new Browser(checked)
+  const manageBrowser = new Browser(checked)
+  const returnPath = '/a/private/?q='.padEnd(8192, '!')
+  const handoff = await start(readBrowser, read + returnPath)
   const login = location(await manageBrowser.request(handoff, { headers: navigation }))
   expect(login.pathname).toBe('/login')
   const loginPage = await (await manageBrowser.request(login)).text()
   const providerHref = /href="([^"]*\/login\/team\?[^"]+)"/.exec(loginPage)?.[1]
   if (!providerHref) throw new Error('Expected the sign-in provider link')
+  expect(providerHref.length).toBeLessThan(16_384)
   const upstream = location(await manageBrowser.request(providerHref))
   const signedIn = await manageBrowser.request(await idp.issue(upstream, 'new-reader'))
   expect(location(signedIn).href).toBe(handoff.href)
   const done = await submit(readBrowser, await issue(manageBrowser, handoff))
   expect(done.status).toBe(303)
-  expect(done.headers.get('Location')).toBe('/a/private/?tab=summary')
-  expect(await (await readBrowser.request(`${privateUrl}?tab=summary`)).text()).toBe('<h1>Private</h1>')
+  expect(done.headers.get('Location')).toBe(returnPath)
+  expect(await (await readBrowser.request(read + returnPath)).text()).toBe('<h1>Private</h1>')
 })
 
 it('completes handoffs for a maximal Unicode filename and encoded queries at the return URL limit', async () => {
@@ -280,7 +289,7 @@ it('completes handoffs for a maximal Unicode filename and encoded queries at the
   ]) {
     const browser = new Browser(send)
     const handoff = await start(browser, url)
-    expect(handoff.searchParams.get('return')).toBe(expectedPath)
+    expect(handoff.searchParams.get('return')).toBe(base64url.encode(expectedPath))
     const result = await submit(browser, await issue(owner, handoff))
     expect(result.status).toBe(303)
     expect(result.headers.get('Location')).toBe(expectedPath)
@@ -289,7 +298,7 @@ it('completes handoffs for a maximal Unicode filename and encoded queries at the
   const browser = new Browser(send)
   const handoff = await start(browser)
   const callback = await issue(owner, handoff)
-  handoff.searchParams.set('return', `${nearLimit}x`)
+  handoff.searchParams.set('return', base64url.encode(`${nearLimit}x`))
   expect((await owner.request(handoff, { headers: navigation })).status).toBe(404)
   callback.fields.set('return', `${nearLimit}x`)
   callback.fields.delete('state')
@@ -389,14 +398,15 @@ it('offers a manual retry when two first-time navigations race to set browser st
   const html = await retry.text()
   expect(html).toContain('Sign-in did not complete')
   const href = /<a href="([^"]+)">Try signing in again<\/a>/.exec(html)?.[1]
-  expect(href).toBe(displaced.searchParams.get('return'))
+  expect(href).toBe(displacedCallback.fields.get('return'))
   if (!href) throw new Error('Expected a retry link')
   const nextHandoff = await start(browser, new URL(href, read).href)
   expect((await submit(browser, await issue(owner, nextHandoff))).headers.get('Location')).toBe(href)
+  const boundPath = currentCallback.fields.get('return')
   currentCallback.fields.set('return', '/a/public/?tab=unbound')
   const completed = await submit(browser, currentCallback)
   expect(completed.status).toBe(303)
-  expect(completed.headers.get('Location')).toBe(current.searchParams.get('return'))
+  expect(completed.headers.get('Location')).toBe(boundPath)
 })
 
 it('starts anonymous HTML navigation without Fetch Metadata but not image requests', async () => {
@@ -503,7 +513,7 @@ it('accepts only read artefact return paths and preserves manage origin checks',
     '/a/private/#fragment',
   ]) {
     const invalid = new URL(handoff)
-    invalid.searchParams.set('return', path)
+    invalid.searchParams.set('return', base64url.encode(path))
     expect((await owner.request(invalid, { headers: navigation })).status).toBe(404)
   }
   for (const path of ['/authorize', '/logout', members, '/admin/bots', '/mcp', '/register', '/token']) {
