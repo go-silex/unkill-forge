@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## v2.6.0 — 2026-11-25
 
 - Return the publishing workflow as MCP server instructions on `initialize`, so agents follow the same audience-approval and verification steps without a plugin skill.
 - Ask for confirmation before deleting an artefact or starting an irreversible purge. A purge that's already underway can still be continued directly.
