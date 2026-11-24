@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- Fold metadata under row names on narrow screens in the artefact share, personal token, member and deleted artefact tables.
+
 ## v2.1.0 — 2026-11-24
 
 - Restyle Forge-authored pages with light and dark defaults, a responsive manage menu and tables, a configurable short brand label, and optional same-origin theme assets; read pages gain a restrictive CSP and the sign-in handoff permits same-origin styles and fonts without changing artefact delivery.

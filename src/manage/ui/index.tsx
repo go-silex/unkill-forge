@@ -16,7 +16,7 @@ import { readForm } from '../../http'
 import { messages } from '../../i18n'
 import { openInvite, requireBrowserSession, returnPath } from '../login'
 import { adminPages } from './admin-pages'
-import { Action, flash, Page, page, pageLink, Table, time, type UiContext } from './page'
+import { Action, Fold, flash, Page, page, pageLink, Table, time, type UiContext } from './page'
 
 const pageSize = 50
 
@@ -181,29 +181,33 @@ app.get('/admin/members', async (c) => {
       <Table
         columns={[
           text.member,
-          text.provider,
-          { secondary: text.email },
+          { folded: text.provider },
+          { folded: text.email },
           text.status,
-          text.role,
+          { folded: text.role },
           common.admin.actions,
         ]}
       >
         {members.map((member) => (
           <tr key={member.id}>
             <td title={member.name}>
-              {member.name}
+              <span>{member.name}</span>
               {member.email && (
-                <span class="forge-member-email" title={member.email} hidden>
+                <span class="forge-fold forge-member-email" title={member.email} hidden>
                   {member.email}
                 </span>
               )}
+              <Fold label={text.provider}>{member.provider ?? text.bot}</Fold>
+              <Fold label={text.role}>{common.roles[member.role]}</Fold>
             </td>
-            <td title={member.provider ?? text.bot}>{member.provider ?? text.bot}</td>
-            <td class="forge-col--secondary" title={member.email ?? undefined}>
+            <td class="forge-col--folded" title={member.provider ?? text.bot}>
+              {member.provider ?? text.bot}
+            </td>
+            <td class="forge-col--folded" title={member.email ?? undefined}>
               {member.email ?? '—'}
             </td>
             <td>{text[member.status]}</td>
-            <td>{common.roles[member.role]}</td>
+            <td class="forge-col--folded">{common.roles[member.role]}</td>
             <td>
               {member.status !== 'removed' && (
                 <Action

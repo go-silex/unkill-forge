@@ -204,13 +204,16 @@ These classes and the custom properties above are the supported theme contract. 
 | `.forge-panel--landing`, `.forge-panel--pending`, `.forge-panel--error`                           | Read landing, approval-pending, and error panels (including missing files and handoff retry)               |
 | `.forge-table-scroll`, `.forge-table`                                                             | Horizontal scroll container and dense data table                                                           |
 | `.forge-col--secondary`                                                                           | Marks both the heading and its data cells as secondary metadata; hidden by default at widths up to `45rem` |
-| `.forge-member-email`                                                                             | Narrow-screen email next to the member name; on wider screens email has its own column                     |
+| `.forge-col--folded`, `.forge-fold`                                                               | Paired original column (heading and cells) and folded copies inside the primary cell                       |
+| `.forge-member-email`                                                                             | Member email's additional styling hook; the copy also uses `.forge-fold`                                   |
 | `.forge-action`, `.forge-button`                                                                  | Form actions and styled action controls                                                                    |
 | `.forge-button--primary`, `.forge-button--danger`                                                 | Primary and destructive control variants                                                                   |
 | `.forge-notice`, `.forge-secret`, `.forge-empty`                                                  | Flash notice, one-use secret and copy action group, and empty-state text                                   |
 | `.forge-link-list`                                                                                | Sign-in provider links or public artefact list                                                             |
 
 On narrow screens, opening the native drawer pushes the page down. Keep row identifiers and actions visible when hiding secondary table metadata. Dense table buttons use the compact height only when the primary pointer is fine and no coarse pointer is available.
+
+Artefact shares fold both timestamps, personal tokens fold last use and revocation, members fold email, provider and role, and deleted artefacts fold slug, deletion time and state. At widths up to `45rem`, the built-in stylesheet displays `.forge-fold` and hides `.forge-col--folded` with `display: none`. On wider screens and without CSS, the columns are visible and the folded copies stay `hidden`. Preserve this swap when styling folds so each value is visible and exposed to assistive technology only once.
 
 ## Upgrades, maintenance and backups
 

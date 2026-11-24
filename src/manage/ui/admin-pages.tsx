@@ -29,7 +29,7 @@ import { readForm } from '../../http'
 import { type AdminMessage, type AdminTranslate, adminMessages } from '../../i18n'
 import { requireBrowserSession } from '../login'
 import { localClientPath } from '../oauth'
-import { Action, flash, page, pageLink, Table, type TableColumn, time, type UiContext } from './page'
+import { Action, Fold, flash, page, pageLink, Table, type TableColumn, time, type UiContext } from './page'
 
 export const adminPages = new Hono<{ Bindings: Runtime }>({
   getPath: (request) => new URL(request.url).pathname,
@@ -352,18 +352,27 @@ adminPages.get(
               )}
             </Action>
             {table(
-              [t('shareLabel'), t('created'), t('lastUsed'), t('actions')],
-              artefact.shareLinks.map((share) => (
-                <tr>
-                  <td title={share.label || t('unlabeled')}>{share.label || t('unlabeled')}</td>
-                  <td>{time(c.env.config.locale, share.createdAt)}</td>
-                  <td>{time(c.env.config.locale, share.lastUsedAt)}</td>
-                  <td>
-                    <Action action="reveal-share" label={t('showShare')} fields={{ id: share.id }} />
-                    <Action action="revoke-share" label={t('revokeShare')} fields={{ id: share.id }} />
-                  </td>
-                </tr>
-              )),
+              [t('shareLabel'), { folded: t('created') }, { folded: t('lastUsed') }, t('actions')],
+              artefact.shareLinks.map((share) => {
+                const label = share.label || t('unlabeled')
+                const created = time(c.env.config.locale, share.createdAt)
+                const lastUsed = time(c.env.config.locale, share.lastUsedAt)
+                return (
+                  <tr>
+                    <td title={label}>
+                      <span>{label}</span>
+                      <Fold label={t('created')}>{created}</Fold>
+                      <Fold label={t('lastUsed')}>{lastUsed}</Fold>
+                    </td>
+                    <td class="forge-col--folded">{created}</td>
+                    <td class="forge-col--folded">{lastUsed}</td>
+                    <td>
+                      <Action action="reveal-share" label={t('showShare')} fields={{ id: share.id }} />
+                      <Action action="revoke-share" label={t('revokeShare')} fields={{ id: share.id }} />
+                    </td>
+                  </tr>
+                )
+              }),
               t,
             )}
             <h2>{t('rename')}</h2>
@@ -447,32 +456,49 @@ adminPages.get(
       <>
         <p>{t('purgeHelp')}</p>
         {table(
-          [t('title'), t('slug'), { secondary: t('deletedAt') }, t('status'), t('actions')],
-          artefacts.map((entry) => (
-            <tr>
-              <td title={entry.title ?? undefined}>{entry.title}</td>
-              <td title={entry.slug}>
-                <code>{entry.slug}</code>
-              </td>
-              <td class="forge-col--secondary">{time(c.env.config.locale, entry.deletedAt)}</td>
-              <td>{t(entry.purging ? 'purging' : entry.restorable ? 'restorable' : 'expired')}</td>
-              <td>
-                {entry.restorable && (
+          [
+            t('title'),
+            { folded: t('slug') },
+            { folded: t('deletedAt') },
+            { folded: t('status') },
+            t('actions'),
+          ],
+          artefacts.map((entry) => {
+            const deletedAt = time(c.env.config.locale, entry.deletedAt)
+            const status = t(entry.purging ? 'purging' : entry.restorable ? 'restorable' : 'expired')
+            return (
+              <tr>
+                <td title={entry.title ?? undefined}>
+                  <span>{entry.title}</span>
+                  <Fold>
+                    <code>{entry.slug}</code>
+                  </Fold>
+                  <Fold label={t('deletedAt')}>{deletedAt}</Fold>
+                  <Fold>{status}</Fold>
+                </td>
+                <td class="forge-col--folded" title={entry.slug}>
+                  <code>{entry.slug}</code>
+                </td>
+                <td class="forge-col--folded">{deletedAt}</td>
+                <td class="forge-col--folded">{status}</td>
+                <td>
+                  {entry.restorable && (
+                    <Action
+                      action="restore"
+                      label={t('restoreDeleted')}
+                      fields={{ slug: entry.slug, artefactId: entry.id }}
+                    />
+                  )}
                   <Action
-                    action="restore"
-                    label={t('restoreDeleted')}
-                    fields={{ slug: entry.slug, artefactId: entry.id }}
+                    action="purge"
+                    variant="danger"
+                    label={t(entry.purging ? 'resumePurge' : 'purge')}
+                    fields={{ id: entry.id, slug: entry.slug }}
                   />
-                )}
-                <Action
-                  action="purge"
-                  variant="danger"
-                  label={t(entry.purging ? 'resumePurge' : 'purge')}
-                  fields={{ id: entry.id, slug: entry.slug }}
-                />
-              </td>
-            </tr>
-          )),
+                </td>
+              </tr>
+            )
+          }),
           t,
         )}
         {nextPage(deletedPath, nextCursor, t('next'))}
@@ -516,25 +542,33 @@ adminPages.get(
           [
             t('ownCredentialName'),
             t('ownCredentialPrefix'),
-            { secondary: t('lastUsed') },
-            t('revokedAt'),
+            { folded: t('lastUsed') },
+            { folded: t('revokedAt') },
             t('actions'),
           ],
-          tokens.map((token) => (
-            <tr>
-              <td title={token.name}>{token.name}</td>
-              <td title={token.prefix}>
-                <code>{token.prefix}</code>
-              </td>
-              <td class="forge-col--secondary">{time(c.env.config.locale, token.lastUsedAt)}</td>
-              <td>{time(c.env.config.locale, token.revokedAt)}</td>
-              <td>
-                {token.revokedAt === null && (
-                  <Action action="revoke" label={t('revokeCredential')} fields={{ id: token.id }} />
-                )}
-              </td>
-            </tr>
-          )),
+          tokens.map((token) => {
+            const lastUsed = time(c.env.config.locale, token.lastUsedAt)
+            const revoked = time(c.env.config.locale, token.revokedAt)
+            return (
+              <tr>
+                <td title={token.name}>
+                  <span>{token.name}</span>
+                  <Fold label={t('lastUsed')}>{lastUsed}</Fold>
+                  <Fold label={t('revokedAt')}>{revoked}</Fold>
+                </td>
+                <td title={token.prefix}>
+                  <code>{token.prefix}</code>
+                </td>
+                <td class="forge-col--folded">{lastUsed}</td>
+                <td class="forge-col--folded">{revoked}</td>
+                <td>
+                  {token.revokedAt === null && (
+                    <Action action="revoke" label={t('revokeCredential')} fields={{ id: token.id }} />
+                  )}
+                </td>
+              </tr>
+            )
+          }),
           t,
         )}
         {nextPage(tokensPath, nextCursor, t('next'))}

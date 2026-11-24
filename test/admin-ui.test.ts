@@ -472,8 +472,9 @@ it('continues an interrupted purge after its artefact row has already been remov
   const id = formValue(await html(owner, deleted), 'id')
   const intermediate = await post(owner, deleted, { action: 'purge', id, slug })
   expect(intermediate).toContain('Continue purge')
-  expect(intermediate).toContain('<th scope="col">Slug</th>')
-  expect(intermediate).toContain(`<td title="${slug}"><code>${slug}</code></td>`)
+  expect(intermediate).toContain('<th scope="col" class="forge-col--folded">Slug</th>')
+  expect(intermediate).toContain(`<td class="forge-col--folded" title="${slug}"><code>${slug}</code></td>`)
+  expect(intermediate).toContain(`<span class="forge-fold" hidden=""><code>${slug}</code></span>`)
   expect(intermediate).not.toContain('Restore artefact')
   expect((await blobs.list({ prefix: 'blobs/' })).objects).toHaveLength(1)
   const finished = await post(owner, deleted, { action: 'purge', id, slug })
@@ -497,6 +498,81 @@ it('keeps expiry dates in the primary cells of same-role invite rows', async () 
   expect(rows.map((row) => row[1])).toContain('02/01/2099, 03:04 UTC')
   expect(new Set(rows.map((row) => row[1])).size).toBe(2)
   for (const [row] of rows) expect(row).toContain('value="revoke-invite"')
+})
+
+it('folds localized metadata into the primary cells while keeping one column copy without CSS', async () => {
+  const send = runtime({ LOCALE: 'fr' })
+  const owner = await mockProvider().signedIn(send, admin)
+  const token = await issueToken(owner, 'Jeton de publication')
+  const title = 'Rapport trimestriel'
+  const label = 'Partage pour les lecteurs'
+  await publish(send, token, slug, title)
+  const artefactIdValue = await artefactId(owner)
+  await post(owner, detail, { action: 'create-share', label, artefactId: artefactIdValue })
+  const createdAt = Date.UTC(2025, 1, 3, 4, 5)
+  const lastUsedAt = Date.UTC(2025, 2, 4, 5, 6)
+  await db.batch([
+    db.prepare('UPDATE share_links SET created_at = ?, last_used_at = ?').bind(createdAt, lastUsedAt),
+    db.prepare('UPDATE api_tokens SET last_used_at = ?, revoked_at = ?').bind(lastUsedAt, createdAt),
+  ])
+
+  const created = '03/02/2025 04:05 UTC'
+  const lastUsed = '04/03/2025 05:06 UTC'
+  const fold = (value: string, label?: string) => `${label ? `<strong>${label}: </strong>` : ''}${value}`
+  function expectRow(document: string, name: string, headings: string[], copies: string[], cells: string[]) {
+    for (const heading of headings) {
+      expect(document).toContain(`<th scope="col" class="forge-col--folded">${heading}</th>`)
+    }
+    const row = [...document.matchAll(/<tr\b[^>]*>(.*?)<\/tr>/gs)]
+      .map((match) => match[1] ?? '')
+      .find((entry) => entry.startsWith(`<td title="${name}"><span>${name}</span>`))
+    if (!row) throw new Error(`No row for ${name}`)
+    const hidden =
+      /<span class="forge-fold(?: forge-member-email)?"(?: title="[^"]*")? hidden="">(.*?)<\/span>/g
+    expect([...row.matchAll(hidden)].map((match) => match[1])).toEqual(copies)
+    // Without CSS these hidden spans do not render, but the heading and column cells do.
+    expect(row.replace(hidden, '')).toBe(
+      `<td title="${name}"><span>${name}</span></td>${cells.join('')}${row.slice(row.lastIndexOf('<td>'))}`,
+    )
+  }
+  const column = (value: string, title?: string) =>
+    `<td class="forge-col--folded"${title ? ` title="${title}"` : ''}>${value}</td>`
+
+  expectRow(
+    await html(owner, detail),
+    label,
+    ['Créé le', 'Dernière utilisation'],
+    [fold(created, 'Créé le'), fold(lastUsed, 'Dernière utilisation')],
+    [column(created), column(lastUsed)],
+  )
+  const prefix = token.slice(0, 12)
+  expectRow(
+    await html(owner, tokens),
+    'Jeton de publication',
+    ['Dernière utilisation', 'Révoqué le'],
+    [fold(lastUsed, 'Dernière utilisation'), fold(created, 'Révoqué le')],
+    [`<td title="${prefix}"><code>${prefix}</code></td>`, column(lastUsed), column(created)],
+  )
+  const email = `${admin}@example.test`
+  expectRow(
+    await html(owner, members),
+    admin,
+    ['Fournisseur', 'E-mail', 'Rôle'],
+    [email, fold('team', 'Fournisseur'), fold('administrateur', 'Rôle')],
+    [column('team', 'team'), column(email, email), '<td>Actif</td>', column('administrateur')],
+  )
+
+  await post(owner, detail, { action: 'delete', artefactId: artefactIdValue })
+  await db.prepare('UPDATE artefacts SET deleted_at = ? WHERE id = ?').bind(createdAt, artefactIdValue).run()
+  const code = `<code>${slug}</code>`
+  const status = 'Délai de restauration expiré'
+  expectRow(
+    await html(owner, deleted),
+    title,
+    ['Identifiant', 'Supprimé le', 'État'],
+    [code, fold(created, 'Supprimé le'), status],
+    [column(code, slug), column(created), column(status)],
+  )
 })
 
 it.each(['en', 'fr'] as const)(
