@@ -86,26 +86,81 @@ export async function createBot(
   return result.meta.changes === 1
 }
 
+export const botCredentialSummaryLimit = adminCountLimit + 1
+
+export async function summarizeBotCredentials(db: D1Database, botIds: string[]) {
+  if (botIds.length === 0)
+    return new Map<string, [active: number, lastUsedAt: number | null, sampled: number]>()
+  // The member_id index bounds the work even when a bot has a long history of revoked credentials.
+  const { results } = await db
+    .prepare(`SELECT bot.value AS id, (SELECT json_array(
+      COUNT(*) FILTER (WHERE revoked_at IS NULL), MAX(last_used_at), COUNT(*)
+    ) FROM (
+      SELECT revoked_at, last_used_at FROM api_tokens INDEXED BY api_tokens_member
+      WHERE member_id = bot.value LIMIT ?
+    )) AS summary FROM json_each(?) bot`)
+    .bind(botCredentialSummaryLimit, JSON.stringify(botIds))
+    .all<{ id: string; summary: string }>()
+  return new Map(
+    results.map(({ id, summary }) => [id, JSON.parse(summary) as [number, number | null, number]]),
+  )
+}
+
 type TokenSummary = {
   id: string
   name: string
   prefix: string
+  createdAt: number
   revokedAt: number | null
   lastUsedAt: number | null
 }
 async function tokenPage(db: D1Database, memberId: string, after: string, limit: number) {
   const { results } = await db
-    .prepare(`SELECT id, name, prefix, revoked_at AS revokedAt, last_used_at AS lastUsedAt
+    .prepare(`SELECT id, name, prefix, created_at AS createdAt, revoked_at AS revokedAt, last_used_at AS lastUsedAt
       FROM api_tokens WHERE member_id = ? AND id > ? ORDER BY id LIMIT ?`)
     .bind(memberId, after, limit)
     .all<TokenSummary>()
   return results
 }
 
-export async function listTokens(db: D1Database, actor: string, memberId: string, after = '') {
+export type BotDetails = {
+  bot: Pick<Member, 'id' | 'name' | 'role' | 'status'> & { createdAt: number }
+  tokens: TokenSummary[]
+  nextCursor: string | undefined
+}
+
+function findBot(db: D1Database, id: string) {
+  return db
+    .prepare(
+      "SELECT id, name, role, status, created_at AS createdAt FROM members WHERE id = ? AND kind = 'bot'",
+    )
+    .bind(id)
+    .first<BotDetails['bot']>()
+}
+
+export async function changeBot(
+  db: D1Database,
+  actor: string,
+  id: string,
+  action: 'role' | 'remove' | 'reinstate',
+  role: 'viewer' | 'publisher' | undefined,
+  now: number,
+) {
+  // Member kind is immutable; changeMember rechecks actor privilege and target state at write time.
+  return (await findBot(db, id)) !== null && changeMember(db, actor, id, action, role, now)
+}
+
+export async function getBotDetails(
+  db: D1Database,
+  actor: string,
+  memberId: string,
+  after = '',
+): Promise<BotDetails | null> {
   await uiActor(db, actor, 'admin')
-  const bot = await db.prepare("SELECT id FROM members WHERE id = ? AND kind = 'bot'").bind(memberId).first()
-  return bot ? tokenPage(db, memberId, after, 50) : []
+  const bot = await findBot(db, memberId)
+  if (!bot) return null
+  const tokens = await tokenPage(db, memberId, after, adminPageSize + 1)
+  return { bot, tokens, nextCursor: trimLookahead(tokens, adminPageSize)?.id }
 }
 
 export async function listOwnTokens(db: D1Database, actor: string, after = '') {

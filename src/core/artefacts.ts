@@ -1172,11 +1172,13 @@ export async function listRedirects({ env: { DB: db } }: Runtime, member: Member
   requireAdmin(member)
   const { results: redirects } = await db
     .prepare(`SELECT r.from_prefix AS fromPrefix,
-      substr(r.from_prefix, 1, 3) || a.slug || '/' || r.target_path AS toPrefix
+      substr(r.from_prefix, 1, 3) || a.slug || '/' || r.target_path AS toPrefix,
+      r.created_at AS createdAt, creator.name AS creatorName
     FROM redirects r JOIN artefacts a ON a.id = r.target_artefact_id
+    LEFT JOIN members creator ON creator.id = r.created_by
     WHERE r.from_prefix > ? ORDER BY r.from_prefix LIMIT 51`)
     .bind(after)
-    .all<{ fromPrefix: string; toPrefix: string }>()
+    .all<{ fromPrefix: string; toPrefix: string; createdAt: number; creatorName: string | null }>()
   return { redirects, nextCursor: trimLookahead(redirects, 50)?.fromPrefix }
 }
 

@@ -4,17 +4,21 @@ import { z } from 'zod'
 import type { Config, Runtime } from '../../config'
 import type { Member, Role } from '../../core'
 import {
+  type BotDetails as BotDetailsData,
+  botCredentialSummaryLimit,
+  changeBot,
   changeMember,
   countHumanMembers,
   createApiToken,
   createBot,
+  getBotDetails,
   isAdmin,
   listMembers,
-  listTokens,
   revokeApiToken,
+  summarizeBotCredentials,
 } from '../../core/admin'
 import { countInvites, createInvite, inviteKey, listInvites, revokeInvite } from '../../core/invites'
-import { adminCountLimit, adminPageSize } from '../../core/pagination'
+import { adminCountLimit } from '../../core/pagination'
 import { readForm } from '../../http'
 import { messages } from '../../i18n'
 import { openInvite, requireBrowserSession, returnPath } from '../login'
@@ -49,6 +53,8 @@ const botAction = z.discriminatedUnion('action', [
   z.object({ action: z.literal('create'), name: labelSchema, role: z.enum(['viewer', 'publisher']) }),
   z.object({ action: z.literal('token'), id: idSchema, name: labelSchema }),
   z.object({ action: z.literal('revoke'), id: idSchema }),
+  z.object({ action: z.literal('role'), id: idSchema, role: z.enum(['viewer', 'publisher']) }),
+  z.object({ action: z.enum(['remove', 'reinstate']), id: idSchema }),
 ])
 
 function RoleSelect({
@@ -439,85 +445,240 @@ app.post(membersPath, async (c) => {
   return flash(c, session, membersPath, changed ? notices[data.action] : text.memberNotAllowed)
 })
 
-app.get('/admin/bots', async (c) => {
+const botsPath = '/admin/bots'
+
+function BotStatus({ config, status }: { config: Config; status: Member['status'] }) {
+  const { legacy } = messages(config)
+  return <Badge variant={status === 'active' ? 'ok' : 'muted'}>{legacy[status]}</Badge>
+}
+
+function BotDetails({
+  config,
+  details: { bot, tokens, nextCursor },
+  after,
+  tokenAfter,
+}: {
+  config: Config
+  details: BotDetailsData
+  after?: string
+  tokenAfter?: string
+}) {
+  const { admin, confirmation, legacy, robots, roles } = messages(config)
+  const path = withQuery(botsPath, { after, bot: bot.id, tokenAfter })
+  return (
+    <aside class="forge-admin-panel" id="bot-tokens" aria-labelledby="robot-name">
+      <div class="forge-member-identity">
+        <Avatar name={bot.name} />
+        <h2 id="robot-name">{bot.name}</h2>
+      </div>
+      <p>
+        {roles[bot.role]} · <BotStatus config={config} status={bot.status} /> · {admin.created}{' '}
+        {time(config, bot.createdAt)}
+      </p>
+      <h3>{robots.credentials}</h3>
+      {tokens.length ? (
+        <ul class="forge-credentials">
+          {tokens.map((token) => (
+            <li key={token.id}>
+              <div>
+                <strong>{token.revokedAt === null ? token.name : <s>{token.name}</s>}</strong>{' '}
+                <code>{token.prefix}…</code>
+                <div class="forge-admin-meta">
+                  {token.lastUsedAt === null ? admin.neverUsed : time(config, token.lastUsedAt)}
+                </div>
+              </div>
+              <div class="forge-row-actions">
+                <Badge variant={token.revokedAt === null ? 'ok' : 'muted'}>
+                  {token.revokedAt === null ? legacy.active : legacy.revoked}
+                </Badge>
+                {token.revokedAt === null && (
+                  <Action
+                    path={path}
+                    action="revoke"
+                    variant="danger"
+                    label={legacy.revoke}
+                    fields={{ id: token.id }}
+                    confirm={{
+                      title: robots.revokeTitle(token.name),
+                      body: robots.revokeBody,
+                      label: legacy.revoke,
+                      cancel: confirmation.cancel,
+                    }}
+                  />
+                )}
+              </div>
+            </li>
+          ))}
+        </ul>
+      ) : (
+        <p class="forge-empty">{legacy.emptyCredentials}</p>
+      )}
+      {nextCursor &&
+        pageLink(
+          `${withQuery(botsPath, { after, bot: bot.id, tokenAfter: nextCursor })}#bot-tokens`,
+          legacy.nextCredentials,
+        )}
+      {bot.status === 'active' && (
+        <>
+          <h3>{robots.newCredential}</h3>
+          <Action path={path} action="token" label={robots.createCredential} fields={{ id: bot.id }}>
+            <label>
+              {robots.credentialName} <input name="name" required maxlength={120} />
+            </label>
+          </Action>
+          <div class="forge-row-actions">
+            <Action
+              path={path}
+              action="role"
+              label={legacy.changeRole}
+              fields={{ id: bot.id }}
+              sheet={{
+                title: robots.changeRoleTitle(bot.name),
+                label: legacy.changeRole,
+                cancel: confirmation.cancel,
+              }}
+            >
+              <RoleSelect config={config} value={bot.role} />
+            </Action>
+            <Action
+              path={path}
+              action="remove"
+              label={robots.deactivate}
+              variant="danger"
+              fields={{ id: bot.id }}
+              confirm={{
+                title: robots.deactivateTitle(bot.name),
+                body: robots.deactivateBody,
+                label: robots.deactivate,
+                cancel: confirmation.cancel,
+              }}
+            />
+          </div>
+        </>
+      )}
+      {bot.status === 'removed' && (
+        <Action path={path} action="reinstate" label={robots.reactivate} fields={{ id: bot.id }} />
+      )}
+    </aside>
+  )
+}
+
+app.get(botsPath, async (c) => {
   const admin = await memberAdmin(c)
   if (admin instanceof Response) return admin
   const { session, config, db, common, text, actor } = admin
-  const { createCredential, ownCredentialName } = common.admin
+  const { robots, confirmation } = common
   const after = idSchema.safeParse(c.req.query('after')).data
   const botId = idSchema.safeParse(c.req.query('bot')).data
   const tokenAfter = idSchema.safeParse(c.req.query('tokenAfter')).data
-  const [{ members: bots, nextCursor: nextBot }, tokens] = await Promise.all([
+  const [{ members: bots, nextCursor }, details] = await Promise.all([
     listMembers(db, actor, { kind: 'bot', after }),
-    botId ? listTokens(db, actor, botId, tokenAfter) : null,
+    botId ? getBotDetails(db, actor, botId, tokenAfter) : null,
   ])
-  const selectedBot = bots.find((bot) => bot.id === botId)
-  const focusedPath = withQuery('/admin/bots', { after, bot: botId, tokenAfter })
+  const summaries = await summarizeBotCredentials(
+    db,
+    bots.map(({ id }) => id),
+  )
+  const botList = (
+    <section aria-label={common.bots}>
+      {bots.length ? (
+        <Table
+          columns={[
+            text.botName,
+            { folded: text.role },
+            { folded: common.admin.status },
+            robots.activeCredentials,
+            { folded: common.admin.lastUsed },
+          ]}
+        >
+          {bots.map((bot) => {
+            const [active, lastUsedAt, sampled] = summaries.get(bot.id) ?? [0, null, 0]
+            const capped = sampled === botCredentialSummaryLimit
+            const lastUse =
+              lastUsedAt === null ? (
+                capped ? (
+                  robots.unavailable
+                ) : (
+                  common.admin.neverUsed
+                )
+              ) : (
+                <>
+                  {time(config, lastUsedAt)}
+                  {capped && <small class="forge-admin-meta">{robots.sampled}</small>}
+                </>
+              )
+            const status = <BotStatus config={config} status={bot.status} />
+            const selected = bot.id === details?.bot.id
+            return (
+              <tr key={bot.id}>
+                <td>
+                  <a
+                    href={`${withQuery(botsPath, { after, bot: bot.id })}#bot-tokens`}
+                    aria-current={selected ? 'true' : undefined}
+                  >
+                    {bot.name}
+                  </a>
+                  <Fold label={text.role}>{common.roles[bot.role]}</Fold>
+                  <Fold>{status}</Fold>
+                  <Fold label={common.admin.lastUsed}>{lastUse}</Fold>
+                </td>
+                <td class="forge-col--folded">{common.roles[bot.role]}</td>
+                <td class="forge-col--folded">{status}</td>
+                <td>{capped ? `${Math.min(active, adminCountLimit)}+` : active}</td>
+                <td class="forge-col--folded">{lastUse}</td>
+              </tr>
+            )
+          })}
+        </Table>
+      ) : (
+        <p class="forge-empty">{robots.empty}</p>
+      )}
+      {nextCursor &&
+        pageLink(withQuery(botsPath, { after: nextCursor, bot: details?.bot.id, tokenAfter }), text.nextBots)}
+    </section>
+  )
   return page(
     c,
     session,
     common.bots,
-    <>
-      <Action path="/admin/bots" action="create" variant="primary" label={text.createBot}>
-        <label>
-          {text.botName} <input name="name" required maxlength={120} />
-        </label>
-        <RoleSelect config={config} />
-      </Action>
-      {bots.map((bot) => {
-        const path = withQuery('/admin/bots', { after, bot: bot.id })
-        return (
-          <section key={bot.id}>
-            <h2>{bot.name}</h2>
-            <p>
-              {common.roles[bot.role]} · {text[bot.status]}
-            </p>
-            {bot.status === 'active' && (
-              <Action path={path} action="token" label={createCredential} fields={{ id: bot.id }}>
-                <label>
-                  {ownCredentialName} <input name="name" required maxlength={120} />
-                </label>
-              </Action>
-            )}
-            <a href={`${path}#bot-tokens`}>{text.viewCredentials}</a>
-          </section>
-        )
-      })}
-      {nextBot && pageLink(withQuery('/admin/bots', { after: nextBot }), text.nextBots)}
-      {tokens && (
-        <section id="bot-tokens">
-          <h2>
-            {common.tokens}
-            {selectedBot && ` · ${selectedBot.name}`}
-          </h2>
-          {tokens.length === 0 && <p class="forge-empty">{text.emptyCredentials}</p>}
-          <ul>
-            {tokens.map((token) => (
-              <li key={token.id}>
-                {token.name} <code>{token.prefix}…</code>{' '}
-                {token.revokedAt !== null ? (
-                  text.revoked
-                ) : (
-                  <Action path={focusedPath} action="revoke" label={text.revoke} fields={{ id: token.id }} />
-                )}
-              </li>
-            ))}
-          </ul>
-          {tokens.length === adminPageSize &&
-            pageLink(
-              `${withQuery('/admin/bots', { after, bot: botId, tokenAfter: tokens.at(-1)?.id })}#bot-tokens`,
-              text.nextCredentials,
-            )}
-        </section>
-      )}
-    </>,
+    details ? (
+      <div class="forge-admin-split">
+        {botList}
+        <BotDetails config={config} details={details} after={after} tokenAfter={tokenAfter} />
+      </div>
+    ) : (
+      botList
+    ),
+    {
+      lead: robots.lead,
+      actions: (
+        <Action
+          path={botsPath}
+          action="create"
+          variant="primary"
+          label={text.createBot}
+          sheet={{ title: text.createBot, label: text.createBot, cancel: confirmation.cancel }}
+        >
+          <label>
+            {text.botName} <input name="name" required maxlength={120} />
+          </label>
+          <RoleSelect config={config} />
+        </Action>
+      ),
+    },
   )
 })
 
-app.post('/admin/bots', async (c) => {
+app.post(botsPath, async (c) => {
   const admin = await memberAdmin(c)
   if (admin instanceof Response) return admin
-  const { session, db, text, actor } = admin
+  const {
+    session,
+    db,
+    text,
+    actor,
+    common: { robots },
+  } = admin
   const fields = await readForm(c.req.raw)
   const form = botAction.safeParse(fields ? Object.fromEntries(fields) : null)
   if (!form.success) return c.text(text.invalidBotAction, 400)
@@ -526,7 +687,7 @@ app.post('/admin/bots', async (c) => {
   const now = Date.now()
   if (data.action === 'token') {
     const issued = await createApiToken(db, actor, data.id, data.name, now)
-    const path = withQuery('/admin/bots', { after, bot: data.id })
+    const path = withQuery(botsPath, { after, bot: data.id })
     return issued
       ? flash(
           c,
@@ -539,12 +700,29 @@ app.post('/admin/bots', async (c) => {
   }
   if (data.action === 'create') {
     const created = await createBot(db, actor, data.name, data.role, now)
-    return flash(c, session, '/admin/bots', created ? text.botCreated : text.botNotAllowed)
+    return flash(c, session, botsPath, created ? text.botCreated : text.botNotAllowed)
+  }
+  if (data.action !== 'revoke') {
+    const changed = await changeBot(
+      db,
+      actor,
+      data.id,
+      data.action,
+      'role' in data ? data.role : undefined,
+      now,
+    )
+    const path = withQuery(botsPath, { after, bot: data.id })
+    return flash(
+      c,
+      session,
+      path,
+      changed ? (data.action === 'role' ? text.roleDone : robots[data.action]) : text.botNotAllowed,
+    )
   }
   const revoked = await revokeApiToken(db, actor, data.id, now)
   const bot = idSchema.safeParse(c.req.query('bot')).data
   const tokenAfter = idSchema.safeParse(c.req.query('tokenAfter')).data
-  const path = withQuery('/admin/bots', { after, bot, tokenAfter })
+  const path = withQuery(botsPath, { after, bot, tokenAfter })
   return flash(c, session, path, revoked ? text.credentialRevoked : text.botNotAllowed)
 })
 
