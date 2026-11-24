@@ -7,7 +7,8 @@ import { hashSecret } from '../src/core'
 import { createOwnToken, revokeOwnToken } from '../src/core/admin'
 import { deletedRetentionMs } from '../src/core/artefacts'
 import { catalogueCountLimit } from '../src/core/catalogue'
-import { Action, Avatar, absoluteTime, time } from '../src/manage/ui/page'
+import { absoluteTime, time } from '../src/dates'
+import { Action, Avatar } from '../src/manage/ui/page'
 import {
   admin,
   Browser,
@@ -1977,15 +1978,69 @@ it.each(['en', 'fr'] as const)(
     const hash = createHash('sha256').update(script).digest('base64')
     const policy = connection.headers.get('Content-Security-Policy')?.split('; ')
     expect(policy?.find((rule) => rule.startsWith('script-src '))).toBe(`script-src 'sha256-${hash}'`)
-    for (const [client, command] of [
-      ['claude.ai', 'CIMD'],
-      ['Claude Desktop', 'JSON'],
-      ['Claude Code', 'claude mcp add'],
-      ['Codex', 'codex mcp login'],
-      ['OMP', '/mcp reauth forge'],
-      ['Hermes', 'FORGE_API_TOKEN'],
+    const panels = Array.from(
+      connect.matchAll(
+        /<details class="forge-connect-client" name="forge-client"( open="")?><summary>([^<]+) <small>([^<]+)<\/small><\/summary><ol class="forge-steps">([\s\S]*?)<\/ol><\/details>/g,
+      ),
+    )
+    expect(panels.map(([, , client]) => client)).toEqual([
+      'claude.ai',
+      'Claude Desktop',
+      'Claude Code',
+      'Codex',
+      'OMP',
+      'Hermes',
     ])
-      expect(connect).toMatch(new RegExp(`<h2>${client}</h2>(?:(?!<h2>)[^])*?${command}`))
+    expect(panels.filter(([, open]) => open).map(([, , client]) => client)).toEqual(['Claude Code'])
+    expect(panels.map(([, , , , steps]) => steps.match(/<li>/g)?.length)).toEqual([3, 1, 2, 1, 3, 3])
+    expect(panels.map(([, , , kind]) => kind)).toEqual([
+      french ? 'Application web' : 'Web app',
+      french ? 'Application de bureau' : 'Desktop app',
+      'Terminal',
+      'Terminal',
+      'Terminal',
+      'Robot',
+    ])
+    expect(panels[0][4]).toContain('CIMD')
+    expect(panels[1][4]).toContain('JSON')
+    expect(panels[2][4]).toContain(
+      `<pre><code>claude mcp add --transport http forge ${manage}/mcp</code></pre>`,
+    )
+    expect(panels[2][4]).toMatch(/<\/li><li>[^<]*\/mcp[^<]*<\/li>$/)
+    expect(panels[3][4]).toContain(
+      `<pre><code>codex mcp add forge --url ${manage}/mcp\ncodex mcp login forge</code></pre>`,
+    )
+    expect(panels[4][4]).toContain('/mcp reload,')
+    expect(panels[4][4]).toContain('/mcp reauth forge.')
+    expect(panels[4][4]).toContain(
+      `<pre><code>${JSON.stringify(
+        {
+          mcpServers: {
+            forge: {
+              type: 'http',
+              url: `${manage}/mcp`,
+              oauth: {
+                clientId: `${manage}/oauth/clients/local.json`,
+                redirectUri: 'http://127.0.0.1:3000/callback',
+              },
+            },
+          },
+        },
+        null,
+        2,
+      ).replaceAll('"', '&quot;')}</code></pre>`,
+    )
+    expect(panels[5][4]).toContain('<pre><code>FORGE_API_TOKEN=…</code></pre>')
+    expect(panels[5][4]).toContain(
+      `<pre><code>mcp_servers:\n  forge:\n    url: &quot;${manage}/mcp&quot;\n    headers:\n      Authorization: &quot;Bearer \${FORGE_API_TOKEN}&quot;</code></pre>`,
+    )
+    expect(connect).toContain(
+      french ? 'Utilisez cette adresse pour tous les clients.' : 'Use this address for every client.',
+    )
+    expect(connect).toContain(
+      `<div class="forge-notice forge-notice--info" role="status"><span class="forge-sr-only">Information: </span><strong>${french ? 'Vérifier la connexion' : 'Verify the connection'}</strong>`,
+    )
+    expect(connect).toContain(french ? 'lancez l’outil whoami' : 'run the whoami tool')
     const sample = await html(owner, detail)
     expect(sample).toContain('src="/logo.svg"')
     expect(sample).toContain('href="/favicon.svg"')
@@ -2033,7 +2088,8 @@ it.each(['en', 'fr'] as const)(
     expect(landing).toContain('Ember landing')
     expect(landing).toContain('href="/favicon.svg"')
     expect(landing).toContain('<title>Ember Studio</title>')
-    expect(landing).toContain('Ember &amp; Co</h1>')
+    expect(landing).toContain('Ember &amp; Co</div>')
+    expect(landing).toContain('<h1 class="forge-title">Ember Studio</h1>')
     const missingUrl = `${read}/a/${slug}/missing.html`
     const notFound = await html(anonymous, missingUrl, 404)
     expect(notFound).toContain(`lang="${locale}"`)

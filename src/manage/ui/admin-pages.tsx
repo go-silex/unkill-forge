@@ -29,6 +29,7 @@ import type { BrowserSession, Member, Role } from '../../core/index'
 import { purgeArtefact } from '../../core/purge'
 import { artefactPath, maxRedirectPrefix } from '../../core/read-path'
 import { shareKeyMax } from '../../core/share-keys'
+import { absoluteTime, time } from '../../dates'
 import { Gallery, GalleryViews, galleryView } from '../../gallery'
 import { readForm } from '../../http'
 import { type AdminMessage, type AdminTranslate, adminMessages, type CopyLabels, messages } from '../../i18n'
@@ -38,16 +39,15 @@ import { localClientPath } from '../oauth'
 import {
   AccessBadge,
   Action,
-  absoluteTime,
   Badge,
   CopyField,
   Fold,
   flash,
+  Notice,
   page,
   pageLink,
   Table,
   type TableColumn,
-  time,
   type UiContext,
 } from './page'
 
@@ -1032,15 +1032,33 @@ adminPages.post(
   ),
 )
 
-function connectSection(labels: CopyLabels, name: string, instructions: string, ...snippets: string[]) {
+function ConnectClient({
+  labels,
+  name,
+  kind,
+  steps,
+  open,
+}: {
+  labels: CopyLabels
+  name: string
+  kind: string
+  steps: readonly (readonly [instruction: string, snippet?: string])[]
+  open?: boolean
+}) {
   return (
-    <>
-      <h2>{name}</h2>
-      <p>{instructions}</p>
-      {snippets.map((snippet) => (
-        <CopyField value={snippet} labels={labels} block />
-      ))}
-    </>
+    <details class="forge-connect-client" name="forge-client" open={open}>
+      <summary>
+        {name} <small>{kind}</small>
+      </summary>
+      <ol class="forge-steps">
+        {steps.map(([instruction, snippet]) => (
+          <li>
+            {instruction}
+            {snippet && <CopyField value={snippet} labels={labels} block />}
+          </li>
+        ))}
+      </ol>
+    </details>
   )
 }
 
@@ -1064,31 +1082,68 @@ adminPages.get(
       session,
       t('connect'),
       <>
-        <p>{t('endpoint')}</p>
-        <CopyField value={url} labels={labels} />
-        {connectSection(labels, 'claude.ai', t('claudeAi'))}
-        {connectSection(labels, 'Claude Desktop', t('claudeDesktop'))}
-        {connectSection(
-          labels,
-          'Claude Code',
-          t('claudeCode'),
-          `claude mcp add --transport http forge ${url}`,
-        )}
-        {connectSection(
-          labels,
-          'Codex',
-          t('codex'),
-          `codex mcp add forge --url ${url}\ncodex mcp login forge`,
-        )}
-        {connectSection(labels, 'OMP', t('omp'), JSON.stringify({ mcpServers: { forge: omp } }, null, 2))}
-        {connectSection(
-          labels,
-          'Hermes',
-          t('hermes'),
-          `${variable}=…`,
-          `mcp_servers:\n  forge:\n    url: ${JSON.stringify(url)}\n    headers:\n      Authorization: "Bearer \${${variable}}"`,
-        )}
-        <p>{t('verifyAgent')}</p>
+        <section class="forge-connect-endpoint" aria-labelledby="connect-endpoint">
+          <h2 id="connect-endpoint">{t('endpoint')}</h2>
+          <CopyField value={url} labels={labels} />
+          <p>{t('endpointNote')}</p>
+        </section>
+        <section aria-labelledby="connect-clients">
+          <h2 id="connect-clients">{t('yourClient')}</h2>
+          <ConnectClient
+            labels={labels}
+            name="claude.ai"
+            kind={t('clientWeb')}
+            steps={[[t('claudeAiIndividual')], [t('claudeAiTeam')], [t('claudeAiAuthorize')]]}
+          />
+          <ConnectClient
+            labels={labels}
+            name="Claude Desktop"
+            kind={t('clientDesktop')}
+            steps={[[t('claudeDesktop')]]}
+          />
+          <ConnectClient
+            labels={labels}
+            name="Claude Code"
+            kind={t('clientTerminal')}
+            steps={[
+              [t('claudeCodeRun'), `claude mcp add --transport http forge ${url}`],
+              [t('claudeCodeAuthorize')],
+            ]}
+            open
+          />
+          <ConnectClient
+            labels={labels}
+            name="Codex"
+            kind={t('clientTerminal')}
+            steps={[[t('codex'), `codex mcp add forge --url ${url}\ncodex mcp login forge`]]}
+          />
+          <ConnectClient
+            labels={labels}
+            name="OMP"
+            kind={t('clientTerminal')}
+            steps={[
+              [t('ompConfig'), JSON.stringify({ mcpServers: { forge: omp } }, null, 2)],
+              [t('ompReload')],
+              [t('ompAuthorize')],
+            ]}
+          />
+          <ConnectClient
+            labels={labels}
+            name="Hermes"
+            kind={t('clientRobot')}
+            steps={[
+              [t('hermesCredentials')],
+              [t('hermesEnv'), `${variable}=…`],
+              [
+                t('hermesConfig'),
+                `mcp_servers:\n  forge:\n    url: ${JSON.stringify(url)}\n    headers:\n      Authorization: "Bearer \${${variable}}"`,
+              ],
+            ]}
+          />
+        </section>
+        <Notice config={c.env.config} tone="info" title={t('verifyConnection')}>
+          <p>{t('verifyAgent')}</p>
+        </Notice>
       </>,
     )
   }),

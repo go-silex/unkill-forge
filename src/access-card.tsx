@@ -17,7 +17,7 @@ export function AccessCard({
   homeLink,
 }: {
   config: Config
-  variant: 'sign-in' | 'invite' | 'pending' | 'consent' | 'error'
+  variant: 'sign-in' | 'invite' | 'pending' | 'consent' | 'error' | 'landing'
   title: string
   lead?: string
   facts?: readonly (readonly [label: string, value: Child])[]
@@ -29,7 +29,7 @@ export function AccessCard({
 }) {
   return (
     <html lang={config.locale}>
-      <DocumentHead config={config} title={`${title} · ${config.name}`} />
+      <DocumentHead config={config} title={variant === 'landing' ? title : `${title} · ${config.name}`} />
       <body>
         <main class={`forge-panel forge-panel--${variant}`}>
           <header class="forge-panel__header">

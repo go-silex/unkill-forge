@@ -9,6 +9,7 @@ import { galleryPreviewSlugs } from '../core/gallery-previews'
 import { handoffChallenge, readBoundSession, redeemHandoff, validHandoffState } from '../core/handoffs'
 import { randomSecret } from '../core/index'
 import { artefactPath, maxReadReturnLength, readReturnPath, sharePath } from '../core/read-path'
+import { time } from '../dates'
 import { Gallery, GalleryViews, galleryView } from '../gallery'
 import { DocumentHead } from '../head'
 import { isDocumentNavigation, readBoundedBody, readCookie, writeCookie } from '../http'
@@ -54,35 +55,31 @@ function statusPage(config: Config, lead: string, status: 404 | 503, head: boole
   )
 }
 
-function handoffStatus(config: Config, title: string, status: 404 | 503, head = false) {
-  return page(config, title, 'error', <h1 class="forge-title">{title}</h1>, head, status)
-}
-
-function page(
+function handoffStatus(
   config: Config,
   title: string,
-  panel: 'landing' | 'error',
-  children: Child,
-  head: boolean,
-  status = 200,
-  actions?: Child,
+  status: 400 | 404 | 503,
+  head = false,
+  children?: Child,
 ) {
-  const wide = panel === 'landing' && config.publicIndex ? ' forge-panel--gallery' : ''
-  const html = (
+  return documentResponse(
     <html lang={config.locale}>
       <DocumentHead config={config} title={title} />
       <body>
-        <main class={`forge-panel forge-panel--${panel}${wide}`}>
+        <main class="forge-panel forge-panel--error">
           <header class="forge-panel__header">
-            <BrandBlock config={config} variant={panel === 'landing' ? 'heading' : undefined} />
-            {actions}
+            <BrandBlock config={config} />
           </header>
-          <div class="forge-panel__body">{children}</div>
+          <div class="forge-panel__body">
+            <h1 class="forge-title">{title}</h1>
+            {children}
+          </div>
         </main>
       </body>
-    </html>
+    </html>,
+    head,
+    status,
   )
-  return documentResponse(html, head, status)
 }
 
 function documentResponse(html: Child, head: boolean, status = 200) {
@@ -93,6 +90,126 @@ function documentResponse(html: Child, head: boolean, status = 200) {
     `default-src 'none'; ${forgePageSources}; base-uri 'none'; frame-ancestors 'none'`,
   )
   return new Response(head ? null : `<!doctype html>${html}`, { status, headers })
+}
+
+async function home(runtime: Runtime, params: URLSearchParams, head: boolean, ctx: ExecutionContext) {
+  const { config } = runtime
+  const { name, publicIndex, brand } = config
+  const t = messages(config)
+  const signIn = new URL('/artefacts', config.manageOrigin).href
+  if (!publicIndex) {
+    return documentResponse(
+      <AccessCard
+        config={config}
+        variant="landing"
+        title={name}
+        lead={brand.landingText}
+        actions={
+          <CardLink href={signIn} primary>
+            {t.signIn}
+          </CardLink>
+        }
+      />,
+      head,
+    )
+  }
+
+  const queryLimit = 100
+  const q = (params.get('q') ?? '')
+    .trim()
+    .slice(0, queryLimit)
+    .replace(/[\uD800-\uDBFF]$/, '')
+    .trimEnd()
+  const needle = q.toLowerCase()
+  const view = galleryView(params.get('view'))
+  const entries = await publicArtefacts(runtime, ctx)
+  // Keep preview discovery on the same bounded set (and SQL path) for both indexed views and search.
+  const previews = await galleryPreviewSlugs(
+    runtime,
+    entries.map(({ slug }) => slug),
+    'public',
+  )
+  const matches = q
+    ? entries.filter(
+        ({ title, slug }) => slug.toLowerCase().includes(needle) || title.toLowerCase().includes(needle),
+      )
+    : entries
+  const viewParams = q ? new URLSearchParams({ q }) : undefined
+  const clear = view === 'list' ? '/?view=list' : '/'
+  return documentResponse(
+    <html lang={config.locale}>
+      <DocumentHead config={config} title={name} />
+      <body>
+        <main class="forge-panel forge-panel--landing forge-panel--gallery">
+          <header class="forge-panel__header">
+            <BrandBlock config={config} />
+            <CardLink href={signIn} primary>
+              {t.signIn}
+            </CardLink>
+          </header>
+          <div class="forge-panel__body">
+            <div class="forge-public-intro">
+              <h1 class="forge-title">{name}</h1>
+              <p class="forge-lead">{brand.landingText ?? t.read.landingLead}</p>
+            </div>
+            <div class="forge-toolbar">
+              <search class="forge-public-search">
+                <form action="/" method="get">
+                  <label class="forge-sr-only" for="public-query">
+                    {t.read.searchLabel}
+                  </label>
+                  <input
+                    id="public-query"
+                    name="q"
+                    type="search"
+                    value={q}
+                    maxlength={queryLimit}
+                    placeholder={t.read.searchLabel}
+                  />
+                  {view === 'list' && <input name="view" type="hidden" value={view} />}
+                  <button class="forge-button" type="submit">
+                    {t.read.search}
+                  </button>
+                  {q && (
+                    <a class="forge-button" href={clear}>
+                      {t.read.clear}
+                    </a>
+                  )}
+                </form>
+              </search>
+              <p class="forge-public-count">
+                {t.read.documents(entries.length, q ? matches.length : undefined)}
+              </p>
+              <GalleryViews path="/" params={viewParams} view={view} labels={t.views} />
+            </div>
+            {entries.length === 0 ? (
+              <p class="forge-empty">{t.read.noArtefacts}</p>
+            ) : matches.length === 0 ? (
+              <p class="forge-empty">
+                {t.read.noMatches} <a href={clear}>{t.read.clear}</a>
+              </p>
+            ) : (
+              <Gallery
+                label={t.artefacts}
+                view={view}
+                items={matches.map(({ url, title, slug, updatedAt }) => ({
+                  href: url,
+                  title,
+                  preview: previews.has(slug) ? slug : undefined,
+                  meta: time(config, updatedAt),
+                }))}
+              />
+            )}
+          </div>
+          <footer class="forge-public-footer">
+            <span>{name}</span>
+            <a href={signIn}>{t.signIn}</a>
+          </footer>
+        </main>
+      </body>
+    </html>,
+    head,
+  )
 }
 
 async function startHandoff(request: Request, url: URL, runtime: Runtime) {
@@ -129,20 +246,16 @@ async function completeHandoff(request: Request, runtime: Runtime) {
   if (result.kind === 'retry') {
     const path = readReturnPath(fields.get('return'), config.readOrigin)
     const text = messages(config).read
-    return page(
+    return handoffStatus(
       config,
       text.incomplete,
-      'error',
-      <>
-        <h1 class="forge-title">{text.incomplete}</h1>
-        {path && (
-          <p>
-            <a href={path}>{text.retry}</a>
-          </p>
-        )}
-      </>,
-      false,
       400,
+      false,
+      path && (
+        <p>
+          <a href={path}>{text.retry}</a>
+        </p>
+      ),
     )
   }
   return redirect(result.path, 303, [writeCookie(readSessionCookie, result.cookie, result.maxAge)])
@@ -211,56 +324,7 @@ export async function read(
       case 'not-found':
         return notFound(config, head)
     }
-    if (url.pathname === '/') {
-      const { name, publicIndex, brand } = config
-      const entries = publicIndex ? await publicArtefacts(runtime, ctx) : null
-      const previews = entries
-        ? await galleryPreviewSlugs(
-            runtime,
-            entries.map(({ slug }) => slug),
-            'public',
-          )
-        : undefined
-      const signIn = (
-        <a class="forge-button forge-button--primary" href={new URL('/artefacts', config.manageOrigin).href}>
-          {common.signIn}
-        </a>
-      )
-      const view = galleryView(url.searchParams.get('view'))
-      return page(
-        config,
-        name,
-        'landing',
-        entries ? (
-          <>
-            <div class="forge-toolbar">
-              <GalleryViews path="/" view={view} labels={common.views} />
-            </div>
-            {entries.length === 0 ? (
-              <p class="forge-empty">{common.read.noArtefacts}</p>
-            ) : (
-              <Gallery
-                label={common.artefacts}
-                view={view}
-                items={entries.map(({ url, title, slug }) => ({
-                  href: url,
-                  title,
-                  preview: previews?.has(slug) ? slug : undefined,
-                }))}
-              />
-            )}
-          </>
-        ) : (
-          <>
-            {brand.landingText && <p>{brand.landingText}</p>}
-            {signIn}
-          </>
-        ),
-        head,
-        200,
-        entries && signIn,
-      )
-    }
+    if (url.pathname === '/') return await home(runtime, url.searchParams, head, ctx)
     return notFound(config, head)
   } catch (error) {
     console.error('Forge read failed', error instanceof Error ? error.name : 'unknown')

@@ -87,6 +87,14 @@ const style = `
   .forge-panel.forge-panel--gallery { width: 100% }
   .forge-panel--gallery > :is(.forge-panel__header, .forge-panel__body) { width: min(100%, 76rem); margin-inline: auto }
   .forge-panel--gallery .forge-panel__header { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: var(--forge-space); overflow-wrap: anywhere }
+  .forge-public-intro { padding-block: var(--forge-space) clamp(1.5rem, 4vw, 3rem) }
+  :where(.forge-public-intro) .forge-title { margin: 0; font-size: calc(1.4 * var(--forge-text-title)) }
+  .forge-public-search { flex: 1 1 24rem; min-inline-size: 0 }
+  :where(.forge-public-search) form { display: flex; flex-wrap: wrap; gap: var(--forge-space) }
+  :where(.forge-public-search) input[type="search"] { flex: 1 1 11rem; min-inline-size: 0; max-inline-size: 24rem }
+  .forge-public-count { align-self: center; margin: 0 0 0 auto; color: var(--forge-muted); font-size: var(--forge-text-small) }
+  .forge-public-footer { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: var(--forge-space); width: min(100%, 76rem); margin: calc(3 * var(--forge-space)) auto 0; color: var(--forge-muted); font-size: var(--forge-text-small); overflow-wrap: anywhere }
+  :where(.forge-public-footer) a { display: inline-flex; align-items: center; min-block-size: var(--forge-control-height) }
   .forge-toolbar { display: flex; flex-wrap: wrap; align-items: end; justify-content: space-between; gap: var(--forge-space) calc(2 * var(--forge-space)); margin-block-end: calc(2 * var(--forge-space)) }
   .forge-toolbar > .forge-views:only-child { margin-inline-start: auto }
   .forge-views { display: inline-flex; flex-wrap: wrap; max-width: 100%; border: 1px solid var(--forge-hairline); border-radius: var(--forge-radius); background: var(--forge-surface) }
@@ -114,6 +122,11 @@ const style = `
   .forge-gallery__preview { display: block; width: 100%; aspect-ratio: 16 / 9; object-fit: contain; background: var(--forge-page); border-radius: var(--forge-radius) var(--forge-radius) 0 0 }
   .forge-gallery__caption { display: block; padding: calc(2 * var(--forge-space)); min-height: var(--forge-control-height) }
   .forge-gallery__title { font-weight: 600 }
+  .forge-gallery__meta { display: block; color: var(--forge-muted); font-size: var(--forge-text-small) }
+  @media (min-width: 45rem) {
+    :where(.forge-gallery--list) .forge-gallery__caption:where(:has(> .forge-gallery__meta)) { display: flex; align-items: baseline; justify-content: space-between; gap: var(--forge-space) }
+    :where(.forge-gallery--list) .forge-gallery__meta { flex: none; text-align: end }
+  }
   .forge-gallery__detail { padding: 0 calc(2 * var(--forge-space)) calc(2 * var(--forge-space)); color: var(--forge-muted); font-size: var(--forge-text-small) }
   .forge-catalogue-meta { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: var(--forge-space) }
   :where(.forge-catalogue-meta > span:first-child) { flex: 1 1 7rem; min-inline-size: 0 }
@@ -197,6 +210,20 @@ const style = `
   :where(.forge-copy--block) > .forge-button { align-self: end }
   .forge-button:where([data-copy][hidden]) { display: none }
   .forge-notice { margin-block: calc(2 * var(--forge-space)); padding: var(--forge-space) calc(2 * var(--forge-space)); background: var(--forge-surface); border-inline-start: .2em solid var(--forge-accent); border-radius: var(--forge-radius) }
+  .forge-notice--info { border-inline-start-color: var(--forge-link) }
+  .forge-notice--success { border-inline-start-color: light-dark(#226446, #9ae6ba) }
+  .forge-notice--warn { border-inline-start-color: light-dark(#845415, #ffd092) }
+  .forge-notice--error { border-inline-start-color: var(--forge-danger) }
+  :where(.forge-notice--info, .forge-notice--success, .forge-notice--warn, .forge-notice--error) > p:last-child { margin-block-end: 0 }
+  .forge-connect-endpoint { padding: calc(2 * var(--forge-space)); background: var(--forge-surface); border: 1px solid var(--forge-hairline); border-radius: var(--forge-radius) }
+  :where(.forge-connect-endpoint) > h2 { margin-block-start: 0 }
+  :where(.forge-connect-endpoint) > p { margin-block-end: 0; color: var(--forge-muted); font-size: var(--forge-text-small) }
+  .forge-connect-client { margin-block: var(--forge-space); background: var(--forge-surface); border: 1px solid var(--forge-hairline); border-radius: var(--forge-radius) }
+  :where(.forge-connect-client) > summary { cursor: pointer; min-block-size: var(--forge-control-height); padding: calc(1.5 * var(--forge-space)); font-weight: 600 }
+  :where(.forge-connect-client summary) small { margin-inline-start: calc(.5 * var(--forge-space)); color: var(--forge-muted); font-weight: normal }
+  .forge-steps { margin-block: 0 calc(2 * var(--forge-space)); padding-inline: calc(5 * var(--forge-space)) calc(2 * var(--forge-space)) }
+  :where(.forge-steps) > li + li { margin-block-start: var(--forge-space) }
+  :where(.forge-steps) .forge-copy--block { margin-block: var(--forge-space) }
   .forge-secret { display: flex; flex-wrap: wrap; align-items: center; gap: var(--forge-space) }
   .forge-empty { color: var(--forge-muted) }
   .forge-link-list { display: grid; gap: var(--forge-space) }

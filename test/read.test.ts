@@ -1,5 +1,7 @@
+import { env } from 'cloudflare:test'
 import { base64url } from 'jose'
 import { expect, it, vi } from 'vitest'
+import type { Env } from '../src/config'
 import {
   admin,
   Browser,
@@ -251,7 +253,12 @@ it('shows the public index only when enabled, without listing private artefacts'
   })
   await call('set_visibility', { slug: 'no-index', visibility: 'public' })
   const landing = await (await send(read)).text()
-  expect(landing).toContain('Gate 0 Test Forge')
+  expect(landing).toContain('<main class="forge-panel forge-panel--landing">')
+  expect(landing).toContain('<h1 class="forge-title">Gate 0 Test Forge</h1>')
+  expect(landing).toContain(
+    `<div class="forge-card-actions"><a class="forge-button forge-button--primary" href="${manage}/artefacts">Sign in</a></div>`,
+  )
+  expect(landing).not.toContain('forge-public-search')
   expect(landing).not.toContain('Public report')
   const index = await (await runtime({ PUBLIC_INDEX: 'true' })(read)).text()
   expect(index).toContain(`href="${publicUrl}"`)
@@ -260,6 +267,124 @@ it('shows the public index only when enabled, without listing private artefacts'
   expect(index).toContain('Alternate entry')
   expect(index).not.toContain('Private report')
 })
+
+it.each(['en', 'fr'] as const)(
+  'searches the bounded public index in %s without more SQL statements',
+  async (locale) => {
+    const { call } = await fixture()
+    const french = locale === 'fr'
+    const { DB: db } = env as typeof env & Pick<Env, 'DB'>
+    const timeZone = 'America/New_York'
+    const updated = Date.parse('2026-03-08T07:00:00Z')
+    await db.prepare('UPDATE artefacts SET updated_at = ? WHERE slug = ?').bind(updated, 'public').run()
+    const statements: string[] = []
+    const indexed = runtime({
+      PUBLIC_INDEX: 'true',
+      LOCALE: locale,
+      TIMEZONE: timeZone,
+      DB: new Proxy(db, {
+        get(target, key) {
+          if (key === 'prepare')
+            return (sql: string) => {
+              statements.push(sql)
+              return target.prepare(sql)
+            }
+          const value = Reflect.get(target, key, target)
+          return typeof value === 'function' ? value.bind(target) : value
+        },
+      }),
+    })
+    async function home(params?: Record<string, string>) {
+      const url = new URL(read)
+      if (params) url.search = new URLSearchParams(params).toString()
+      const response = await indexed(url)
+      expect(response.status).toBe(200)
+      return response.text()
+    }
+    const mockNow = vi.spyOn(Date, 'now').mockReturnValue(updated + 2 * 3_600_000)
+    try {
+      const single = await home()
+      expect(single).toContain('<p class="forge-public-count">1 document</p>')
+      expect(single).toContain(french ? 'Documents publiés' : 'Published documents')
+      const language = french ? 'fr-FR' : 'en-GB'
+      const absolute = new Intl.DateTimeFormat(language, {
+        timeZone,
+        year: 'numeric',
+        month: 'short',
+        day: 'numeric',
+        hour: '2-digit',
+        minute: '2-digit',
+        hourCycle: 'h23',
+        timeZoneName: 'short',
+      }).format(updated)
+      const relative = new Intl.RelativeTimeFormat(language, { style: 'short' }).format(-2, 'hour')
+      expect(single).toContain(
+        `<span class="forge-gallery__meta"><time datetime="${new Date(updated).toISOString()}" title="${absolute}">${relative}</time></span>`,
+      )
+    } finally {
+      mockNow.mockRestore()
+    }
+    await call('publish', {
+      slug: 'field-guide',
+      title: 'Alternate entry',
+      mode: 'replace',
+      files: [{ path: 'index.html', content: 'entry' }],
+    })
+    await call('set_visibility', { slug: 'field-guide', visibility: 'public' })
+
+    statements.length = 0
+    const unfiltered = await home({ view: 'list' })
+    expect(unfiltered).toContain('<p class="forge-public-count">2 documents</p>')
+    const baseline = statements.splice(0)
+    expect(baseline).toHaveLength(2)
+    const filtered = await home({ q: '  BLIC ReP  ', view: 'list' })
+    expect(statements).toEqual(baseline)
+    expect(filtered).toContain(french ? '1 sur 2 documents' : '1 of 2 documents')
+    expect(filtered).toContain('class="forge-gallery forge-gallery--list"')
+    expect(filtered).toContain('name="view" type="hidden" value="list"')
+    expect(filtered).toContain('value="BLIC ReP"')
+    expect(filtered).toContain('href="/?q=BLIC+ReP"')
+    expect(filtered).toContain('href="/?q=BLIC+ReP&amp;view=list" aria-current="page"')
+    expect(filtered).toContain(`href="/?view=list">${french ? 'Effacer' : 'Clear'}</a>`)
+    expect(filtered).toContain('Public report')
+    expect(filtered).not.toContain('Alternate entry')
+    expect(filtered).not.toContain('Private report')
+    const slugMatch = await home({ q: 'ELD-GU' })
+    expect(slugMatch).toContain('Alternate entry')
+    expect(slugMatch).not.toContain('Public report')
+
+    const long = 'a'.repeat(100)
+    expect(await home({ q: `${long}extra` })).toContain(`value="${long}" maxlength="100"`)
+    const unmatched = await home({ q: `"><b>&`, view: 'list' })
+    expect(unmatched).toContain('value="&quot;&gt;&lt;b&gt;&amp;"')
+    expect(unmatched).not.toContain('<b>')
+    expect(unmatched).toContain(french ? '0 sur 2 documents' : '0 of 2 documents')
+    expect(unmatched).toContain(french ? 'Aucun document ne correspond' : 'No documents match')
+    expect(unmatched).not.toContain('<ul class="forge-gallery')
+    expect(unmatched.match(/href="\/\?view=list">(?:Clear|Effacer)<\/a>/g)).toHaveLength(2)
+  },
+)
+
+it.each(['en', 'fr'] as const)(
+  'distinguishes the empty public catalogue in %s from a failed search',
+  async (locale) => {
+    const index = runtime({ PUBLIC_INDEX: 'true', LOCALE: locale })
+    const page = await (await index(read)).text()
+    expect(page).toContain(locale === 'fr' ? '0 document<' : '0 documents<')
+    expect(page).toContain(
+      locale === 'fr' ? 'Aucun artefact publié pour le moment.' : 'Nothing has been published yet.',
+    )
+    expect(page).not.toContain('<ul class="forge-gallery')
+    expect(page.match(/<h1\b/g)).toHaveLength(1)
+    expect(page).toContain(
+      `<footer class="forge-public-footer"><span>Gate 0 Test Forge</span><a href="${manage}/artefacts">`,
+    )
+    const head = await index(read, { method: 'HEAD' })
+    expect(head.status).toBe(200)
+    expect(head.headers.get('Cache-Control')).toBe('private, no-store')
+    expect(await head.text()).toBe('')
+  },
+)
 
 it('serves current raster previews without exposing private artefacts or active content', async () => {
   const { send, idp, owner, call } = await fixture(

@@ -92,6 +92,19 @@ const en = {
     incomplete: 'Sign-in did not complete',
     retry: 'Try signing in again',
     noArtefacts: 'Nothing has been published yet.',
+    landingLead: 'Published documents',
+    searchLabel: 'Search documents',
+    search: 'Search',
+    clear: 'Clear',
+    noMatches: 'No documents match your search.',
+    documents: (total: number, matches?: number) =>
+      `${matches === undefined ? '' : `${matches} of `}${total} ${total === 1 ? 'document' : 'documents'}`,
+  },
+  noticeTone: {
+    info: 'Information',
+    success: 'Success',
+    warn: 'Warning',
+    error: 'Error',
   },
   login: {
     invalidFlow: 'Invalid login flow',
@@ -301,17 +314,33 @@ const en = {
     newRedirect: 'Add a redirect',
     noRedirects: 'No redirects yet.',
     endpoint: 'MCP endpoint (Streamable HTTP):',
+    endpointNote: 'Use this address for every client.',
+    yourClient: 'Your client',
+    clientWeb: 'Web app',
+    clientDesktop: 'Desktop app',
+    clientTerminal: 'Terminal',
+    clientRobot: 'Robot',
+    verifyConnection: 'Verify the connection',
     verifyAgent: 'After connecting, run the whoami tool to check the instance and your role.',
-    claudeAi:
-      'Individual accounts: in Customize → Connectors, choose + Add → Add custom connector. Team and Enterprise: have an organization owner add it under Organization settings → Connectors → Add → Custom → Web; members then select it under Customize → Connectors and click Connect. Enter a name and the MCP URL, choose “Use Claude’s published identity” (CIMD), then sign in to Forge and approve access.',
+    claudeAiIndividual:
+      'Individual accounts: in Customize → Connectors, choose + Add → Add custom connector.',
+    claudeAiTeam:
+      'Team and Enterprise: have an organization owner add it under Organization settings → Connectors → Add → Custom → Web; members then select it under Customize → Connectors and click Connect.',
+    claudeAiAuthorize:
+      'Enter a name and the MCP URL, choose “Use Claude’s published identity” (CIMD), then sign in to Forge and approve access.',
     claudeDesktop:
-      'Remote connectors use the same setup and account as claude.ai. Follow the steps above, then enable the connector in Claude Desktop. Do not add it to the local Desktop JSON configuration.',
-    claudeCode: 'Run this command. In Claude Code, open /mcp, select forge, and authenticate in the browser.',
+      'Remote connectors use the same setup and account as claude.ai. Follow the claude.ai steps, then enable the connector in Claude Desktop. Do not add it to the local Desktop JSON configuration.',
+    claudeCodeRun: 'Run this command.',
+    claudeCodeAuthorize: 'In Claude Code, open /mcp, select forge, and authenticate in the browser.',
     codex:
       'Add the server and sign in when prompted. If needed, start the sign-in separately with the second command.',
-    omp: 'Merge this configuration into .omp/mcp.json for your project or ~/.omp/agent/mcp.json for your account. Run /mcp reload, then /mcp reauth forge. Sign in and approve the local application in Forge.',
-    hermes:
-      'Ask an administrator to create a bot and token under Bots and API tokens. Set the environment variable shown below in ~/.hermes/.env, then add this block to ~/.hermes/config.yaml.',
+    ompConfig:
+      'Merge this configuration into .omp/mcp.json for your project or ~/.omp/agent/mcp.json for your account.',
+    ompReload: 'Run /mcp reload, then /mcp reauth forge.',
+    ompAuthorize: 'Sign in and approve the local application in Forge.',
+    hermesCredentials: 'Ask an administrator to create a bot and token under Bots and API tokens.',
+    hermesEnv: 'Set this environment variable in ~/.hermes/.env.',
+    hermesConfig: 'Add this block to ~/.hermes/config.yaml.',
     noResults: 'No results.',
     noNewMatches: 'No new matches on this page. Continue to the next page.',
     noMoreResults: 'No more results.',
@@ -432,6 +461,19 @@ const fr: typeof en = {
     incomplete: 'La connexion n’a pas abouti',
     retry: 'Réessayer de se connecter',
     noArtefacts: 'Aucun artefact publié pour le moment.',
+    landingLead: 'Documents publiés',
+    searchLabel: 'Rechercher des documents',
+    search: 'Rechercher',
+    clear: 'Effacer',
+    noMatches: 'Aucun document ne correspond à votre recherche.',
+    documents: (total: number, matches?: number) =>
+      `${matches === undefined ? '' : `${matches} sur `}${total} ${total <= 1 ? 'document' : 'documents'}`,
+  },
+  noticeTone: {
+    info: 'Information',
+    success: 'Succès',
+    warn: 'Avertissement',
+    error: 'Erreur',
   },
   login: {
     invalidFlow: 'Demande de connexion invalide',
@@ -646,18 +688,34 @@ const fr: typeof en = {
     newRedirect: 'Ajouter une redirection',
     noRedirects: 'Aucune redirection pour le moment.',
     endpoint: 'Point d’accès MCP (Streamable HTTP) :',
+    endpointNote: 'Utilisez cette adresse pour tous les clients.',
+    yourClient: 'Votre client',
+    clientWeb: 'Application web',
+    clientDesktop: 'Application de bureau',
+    clientTerminal: 'Terminal',
+    clientRobot: 'Robot',
+    verifyConnection: 'Vérifier la connexion',
     verifyAgent: 'Une fois connecté, lancez l’outil whoami pour vérifier l’instance et votre rôle.',
-    claudeAi:
-      'Compte individuel : dans Personnaliser → Connecteurs, sélectionnez + Ajouter → Ajouter un connecteur personnalisé. Team et Enterprise : le propriétaire de l’organisation l’ajoute dans Paramètres de l’organisation → Connecteurs → Ajouter → Personnalisé → Web. Les membres le sélectionnent ensuite dans Personnaliser → Connecteurs et cliquent sur Connecter. Saisissez un nom et l’URL MCP, choisissez « Utiliser l’identité publiée de Claude » (CIMD), puis connectez-vous à Forge et autorisez l’accès.',
+    claudeAiIndividual:
+      'Compte individuel : dans Personnaliser → Connecteurs, sélectionnez + Ajouter → Ajouter un connecteur personnalisé.',
+    claudeAiTeam:
+      'Team et Enterprise : le propriétaire de l’organisation l’ajoute dans Paramètres de l’organisation → Connecteurs → Ajouter → Personnalisé → Web. Les membres le sélectionnent ensuite dans Personnaliser → Connecteurs et cliquent sur Connecter.',
+    claudeAiAuthorize:
+      'Saisissez un nom et l’URL MCP, choisissez « Utiliser l’identité publiée de Claude » (CIMD), puis connectez-vous à Forge et autorisez l’accès.',
     claudeDesktop:
-      'Les connecteurs distants utilisent la même configuration et le même compte que claude.ai. Suivez les étapes ci-dessus, puis activez le connecteur dans Claude Desktop. Ne l’ajoutez pas au fichier JSON local de Claude Desktop.',
-    claudeCode:
-      'Exécutez cette commande. Dans Claude Code, ouvrez /mcp, sélectionnez forge et identifiez-vous dans le navigateur.',
+      'Les connecteurs distants utilisent la même configuration et le même compte que claude.ai. Suivez les étapes de claude.ai, puis activez le connecteur dans Claude Desktop. Ne l’ajoutez pas au fichier JSON local de Claude Desktop.',
+    claudeCodeRun: 'Exécutez cette commande.',
+    claudeCodeAuthorize:
+      'Dans Claude Code, ouvrez /mcp, sélectionnez forge et identifiez-vous dans le navigateur.',
     codex:
       'Ajoutez le serveur et identifiez-vous à l’invitation. Si nécessaire, lancez l’identification séparément avec la seconde commande.',
-    omp: 'Ajoutez cette configuration à .omp/mcp.json pour le projet ou à ~/.omp/agent/mcp.json pour votre compte. Lancez /mcp reload, puis /mcp reauth forge. Connectez-vous et autorisez l’application locale dans Forge.',
-    hermes:
-      'Demandez à un administrateur de créer un bot et un jeton dans Bots et jetons API. Définissez la variable indiquée ci-dessous dans ~/.hermes/.env, puis ajoutez ce bloc à ~/.hermes/config.yaml.',
+    ompConfig:
+      'Ajoutez cette configuration à .omp/mcp.json pour le projet ou à ~/.omp/agent/mcp.json pour votre compte.',
+    ompReload: 'Lancez /mcp reload, puis /mcp reauth forge.',
+    ompAuthorize: 'Connectez-vous et autorisez l’application locale dans Forge.',
+    hermesCredentials: 'Demandez à un administrateur de créer un bot et un jeton dans Bots et jetons API.',
+    hermesEnv: 'Définissez cette variable dans ~/.hermes/.env.',
+    hermesConfig: 'Ajoutez ce bloc à ~/.hermes/config.yaml.',
     noResults: 'Aucun résultat.',
     noNewMatches: 'Aucun nouveau résultat sur cette page. Poursuivez à la page suivante.',
     noMoreResults: 'Il n’y a plus de résultats.',
