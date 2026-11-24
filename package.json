@@ -9,6 +9,7 @@
     "deploy": "node scripts/deploy.mjs"
   },
   "dependencies": {
+    "@cloudflare/puppeteer": "2.0.1",
     "@cloudflare/workers-oauth-provider": "1.2.4",
     "@modelcontextprotocol/sdk": "1.32.2",
     "hono": "4.13.20",

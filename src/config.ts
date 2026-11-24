@@ -137,7 +137,12 @@ const vars = z
 
 type ProviderVars = z.output<typeof providersSchema>[number]
 export type Provider = ProviderVars & { clientSecret: string }
-export type Env = Record<string, unknown> & { DB: D1Database; BLOBS: R2Bucket; OAUTH_KV: KVNamespace }
+export type Env = Record<string, unknown> & {
+  DB: D1Database
+  BLOBS: R2Bucket
+  OAUTH_KV: KVNamespace
+  COVER_BROWSER?: BrowserRun
+}
 export type Config = {
   name: string
   locale: 'en' | 'fr'
