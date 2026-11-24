@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## v2.4.0 — 2026-11-24
 
 - Offer grid and list views of the public catalogue and the Manage catalogue; the Manage list is a table with slug, visibility, revision and update time. `?view=list` selects the list and is kept across search and pagination.
 - Move the public catalogue's sign-in action into the page header and open the Manage catalogue after sign-in. The catalogue no longer has a "Public artefacts" heading and says so when nothing is public yet.
