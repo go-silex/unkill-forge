@@ -24,7 +24,7 @@ import { adminCountLimit } from '../../core/pagination'
 import { time } from '../../dates'
 import { readForm } from '../../http'
 import { messages } from '../../i18n'
-import { manageError, PendingAccess } from '../access'
+import { isReservedManagePath, manageError, PendingAccess } from '../access'
 import { openInvite, requireBrowserSession, returnPath } from '../login'
 import { adminPages } from './admin-pages'
 import { Action, Avatar, Badge, Fold, flash, page, pageLink, Table, type UiContext } from './page'
@@ -47,16 +47,8 @@ app.onError((error, c) => {
 app.notFound((c) => {
   const { config } = c.env
   const { method } = c.req.raw
-  // These namespaces belong to protocol, handoff or asset handlers, even when routing falls through.
-  const reserved =
-    /^\/(?:oauth|\.well-known|_forge|_theme|mcp|token|register|authorize|logout|upload)(?:\/|$)/.test(
-      c.req.path,
-    ) ||
-    /^\/(?:auth\/handoff|login\/[^/]+\/backchannel-logout|(?:logo|favicon)\.svg|style\.css)(?:\/|$)/.test(
-      c.req.path,
-    )
   const t = messages(config)
-  return (method === 'GET' || method === 'HEAD') && !reserved
+  return (method === 'GET' || method === 'HEAD') && !isReservedManagePath(c.req.path)
     ? manageError(config, 404, t.access.notFoundLead)
     : c.text(t.notFound, 404)
 })

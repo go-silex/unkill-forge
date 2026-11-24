@@ -94,17 +94,46 @@ it('keeps protocol and machine misses plain and serves the browser HEAD without 
   expect(Object.fromEntries(head.headers)).toEqual(browserHeaders)
   expect(await head.text()).toBe('')
 
-  const machine = await send('/_forge/session')
-  expect(machine.status).toBe(404)
-  const machineHeaders = Object.fromEntries(machine.headers)
-  expect(machineHeaders).toEqual({ ...browserHeaders, 'content-type': 'text/plain; charset=UTF-8' })
-  expect(await machine.text()).toBe('Not found')
-  for (const method of ['OPTIONS', 'HEAD']) {
-    const metadata = await send('/oauth/clients/local.json', { method })
-    expect(metadata.status).toBe(404)
-    expect(Object.fromEntries(metadata.headers)).toEqual(machineHeaders)
-    expect(await metadata.text()).toBe(method === 'HEAD' ? '' : 'Not found')
+  const machineHeaders = { ...browserHeaders, 'content-type': 'text/plain; charset=UTF-8' }
+  for (const [path, methods] of [
+    ['/_forge/session', ['GET', 'HEAD']],
+    ['/oauth/clients/local.json', ['OPTIONS', 'HEAD']],
+    ['/OAuth/x', ['GET', 'HEAD']],
+    ['/oauth%2Ftoken', ['GET', 'HEAD']],
+    ['//oauth/token', ['GET', 'HEAD']],
+    ['/LOGIN/team/backchannel-logout', ['GET', 'HEAD']],
+    ['/bad%zz', ['GET', 'HEAD']],
+  ] as const) {
+    for (const method of methods) {
+      const response = await send(`${manage}${path}`, { method })
+      expect(response.status, `${method} ${path}`).toBe(404)
+      expect(Object.fromEntries(response.headers), `${method} ${path}`).toEqual(machineHeaders)
+      expect(await response.text()).toBe(method === 'HEAD' ? '' : 'Not found')
+    }
   }
+  await errorCard(await send('/oauthx'), 404)
+
+  const loginHeaders = {
+    ...browserHeaders,
+    'content-type': 'text/plain;charset=UTF-8',
+    'referrer-policy': 'no-referrer',
+  }
+  for (const path of [
+    '/login/team/backchannel-logout',
+    '/login/team/backchannel-logout/',
+    '/login/TEAM/BACKCHANNEL-LOGOUT',
+    '/login/team%2Fbackchannel-logout',
+    '/login//team//backchannel-logout',
+    '/login/%zz',
+  ]) {
+    for (const method of ['GET', 'HEAD']) {
+      const response = await send(path, { method })
+      expect(response.status, `${method} ${path}`).toBe(404)
+      expect(Object.fromEntries(response.headers), `${method} ${path}`).toEqual(loginHeaders)
+      expect(await response.text()).toBe(method === 'HEAD' ? '' : 'Not found')
+    }
+  }
+  await errorCard(await send('/login/team/backchannel-logoutx'), 404, 'no-referrer')
 })
 
 it('renders login and consent storage outages but leaves the logout failure plain', async () => {

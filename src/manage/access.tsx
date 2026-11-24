@@ -6,6 +6,27 @@ import { messages } from '../i18n'
 import { manageCsp } from './origin'
 import { Avatar } from './ui/page'
 
+// Classify 404 presentation only. Routing and Origin checks must use the original pathname.
+export function isReservedManagePath(path: string): boolean {
+  let normalized: string
+  try {
+    normalized = decodeURIComponent(path)
+      .toLowerCase()
+      .replace(/\/{2,}/g, '/')
+      .replace(/\/$/, '')
+  } catch {
+    return true
+  }
+  return (
+    /^\/(?:oauth|\.well-known|_forge|_theme|mcp|token|register|authorize|logout|upload)(?:\/|$)/.test(
+      normalized,
+    ) ||
+    /^\/(?:auth\/handoff|login\/[^/]+\/backchannel-logout|(?:logo|favicon)\.svg|style\.css)(?:\/|$)/.test(
+      normalized,
+    )
+  )
+}
+
 export function PendingAccess({ config, member }: { config: Config; member: Member }) {
   const t = messages(config)
   return (
