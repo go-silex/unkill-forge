@@ -149,6 +149,48 @@ it('fills a missing gallery cover from the exact committed head without changing
   expect((await send(`${publicUrl}og.jpg`)).status).toBe(404)
 })
 
+it('renders a legacy head with the usual entry selection without caching its entry path', async () => {
+  const { call, core, generate } = await fixture()
+  const entry = 'docs/start.html'
+  const html = '<h1>Legacy report</h1>'
+  const css = 'h1 { color: blue }'
+  await call('publish', {
+    slug,
+    mode: 'replace',
+    files: [
+      { path: entry, content: html },
+      { path: 'a.css', content: css },
+    ],
+  })
+  const { DB: db } = core.env
+  const head = await db
+    .prepare('SELECT id, current_revision AS revision FROM artefacts WHERE slug = ?')
+    .bind(slug)
+    .first<{ id: string; revision: number }>()
+  if (!head) throw new Error('Expected a published head')
+  await db
+    .prepare('UPDATE revisions SET entry_path = NULL WHERE artefact_id = ? AND number = ?')
+    .bind(head.id, head.revision)
+    .run()
+
+  const render = vi.fn<Renderer>(async () => jpeg)
+  await generate(render)
+  expect(render.mock.calls).toEqual([
+    [
+      entry,
+      [
+        { path: 'a.css', size: css.length, type: 'text/css; charset=utf-8', sha256: expect.any(String) },
+        { path: entry, size: html.length, type: 'text/html; charset=utf-8', sha256: expect.any(String) },
+      ],
+    ],
+  ])
+  const revision = await db
+    .prepare('SELECT entry_path FROM revisions WHERE artefact_id = ? AND number = ?')
+    .bind(head.id, head.revision)
+    .first()
+  expect(revision).toEqual({ entry_path: null })
+})
+
 it('keeps a valid supplied raster even if a higher-priority filename has an invalid signature', async () => {
   const { call, generate, send } = await fixture()
   await call('publish', {

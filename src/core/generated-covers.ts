@@ -89,7 +89,7 @@ function settle(
 }
 
 async function renderInput(db: D1Database, job: Job) {
-  const entry = await revisionEntry(db, job.artefactId, job.revision)
+  const entry = await revisionEntry(db, job.artefactId, job.revision, { cache: false })
   if (entry === null) throw new Error('Cover entry unavailable')
   const { results: files } = await db
     .prepare(`SELECT f.path, f.sha256, f.size, f.content_type AS type FROM files AS f
