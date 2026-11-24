@@ -271,7 +271,10 @@ it('serves current raster previews without exposing private artefacts or active 
     await call('publish', {
       slug,
       mode: 'merge',
-      files: [{ path: 'og.png', encoding: 'base64', content: png }],
+      files: [
+        { path: 'og.png', encoding: 'base64', content: png },
+        { path: 'og.jpg', content: 'Not a JPEG despite its filename' },
+      ],
     })
   const viewer = await idp.signedIn(send, 'preview-viewer')
   const viewerId = await listedId(owner, members, 'preview-viewer@example.test')

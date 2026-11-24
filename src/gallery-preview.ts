@@ -1,6 +1,6 @@
 import type { Runtime } from './config'
 import { openBlob } from './core/blobs'
-import { galleryPreviewFile, previewPrefix } from './core/gallery-previews'
+import { galleryPreviewFiles, previewPrefix } from './core/gallery-previews'
 import { artefactPath } from './core/read-path'
 import { requireBrowserSession } from './manage/login'
 import { readHeaders } from './read/headers'
@@ -52,22 +52,24 @@ export async function galleryPreview(
       const session = await requireBrowserSession(request, runtime)
       if (session instanceof Response || session.member.status !== 'active') return notFound()
     }
-    const file = await galleryPreviewFile(runtime, target.slug, scope)
-    if (!file) return notFound()
-    const range = head ? { offset: 0, length: Math.min(file.size, signatureLength) } : undefined
-    const object = await openBlob(runtime.env.BLOBS, file.sha256, range)
-    if (object.size !== file.size) {
-      await object.body.cancel()
-      return notFound()
-    }
-    const body = await object.arrayBuffer()
-    if (!hasRasterSignature(file.type, new Uint8Array(body))) return notFound()
+    const candidates = await galleryPreviewFiles(runtime, target.slug, scope)
+    for (const file of candidates) {
+      const range = head ? { offset: 0, length: Math.min(file.size, signatureLength) } : undefined
+      const object = await openBlob(runtime.env.BLOBS, file.sha256, range)
+      if (object.size !== file.size) {
+        await object.body.cancel()
+        continue
+      }
+      const body = await object.arrayBuffer()
+      if (!hasRasterSignature(file.type, new Uint8Array(body))) continue
 
-    headers.set('Content-Type', file.type)
-    headers.set('Content-Length', String(file.size))
-    // The manage host never opens publisher bytes as a document. Browsers can still embed the raster.
-    if (scope === 'member') headers.set('Content-Disposition', 'attachment')
-    return new Response(head ? null : body, { headers })
+      headers.set('Content-Type', file.type)
+      headers.set('Content-Length', String(file.size))
+      // The manage host never opens publisher bytes as a document. Browsers can still embed the raster.
+      if (scope === 'member') headers.set('Content-Disposition', 'attachment')
+      return new Response(head ? null : body, { headers })
+    }
+    return notFound()
   } catch (error) {
     console.error('Forge preview failed', error instanceof Error ? error.name : 'unknown')
     return new Response(null, { status: 503, headers })

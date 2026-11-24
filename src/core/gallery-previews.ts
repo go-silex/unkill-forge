@@ -7,12 +7,11 @@ type PreviewScope = 'public' | 'member'
 type PreviewFile = { sha256: string; size: number; type: string }
 
 // Start with indexed slug lookups and probe only the five allowed paths in each current revision.
-const rankedPreviews = `WITH preview_paths(path, type, priority) AS (
+const previewCandidates = `WITH preview_paths(path, type, priority) AS (
   VALUES ('og.jpg', 'image/jpeg', 1), ('og.jpeg', 'image/jpeg', 2),
          ('og.png', 'image/png', 3), ('og.webp', 'image/webp', 4), ('index.og.png', 'image/png', 5)
-), ranked_previews AS (
-  SELECT a.slug, f.sha256, f.size, p.type,
-    row_number() OVER (PARTITION BY a.slug ORDER BY p.priority) AS rank
+), candidates AS (
+  SELECT a.slug, f.sha256, f.size, p.type, p.priority
   FROM artefacts AS a
   CROSS JOIN revisions AS r ON r.artefact_id = a.id AND r.number = a.current_revision
   CROSS JOIN preview_paths AS p
@@ -32,20 +31,21 @@ export async function galleryPreviewSlugs(
   const matches = new Set<string>()
   if (slugs.length === 0) return matches
   const { results } = await db
-    .prepare(`${rankedPreviews} SELECT slug FROM ranked_previews WHERE rank = 1`)
+    .prepare(`${previewCandidates} SELECT DISTINCT slug FROM candidates`)
     .bind(JSON.stringify(slugs.length > maxPreviewSlugs ? slugs.slice(0, maxPreviewSlugs) : slugs), scope)
     .all<{ slug: string }>()
   for (const { slug } of results) matches.add(slug)
   return matches
 }
 
-export async function galleryPreviewFile(
+export async function galleryPreviewFiles(
   { env: { DB: db } }: Runtime,
   slug: string,
   scope: PreviewScope,
-): Promise<PreviewFile | null> {
-  return db
-    .prepare(`${rankedPreviews} SELECT sha256, size, type FROM ranked_previews WHERE rank = 1`)
+): Promise<PreviewFile[]> {
+  const { results } = await db
+    .prepare(`${previewCandidates} SELECT sha256, size, type FROM candidates ORDER BY priority`)
     .bind(JSON.stringify([slug]), scope)
-    .first<PreviewFile>()
+    .all<PreviewFile>()
+  return results
 }
