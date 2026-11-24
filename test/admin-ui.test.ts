@@ -77,8 +77,10 @@ function sheets(document: string) {
       }
       expect(document).toMatch(new RegExp(`<button[^>]*type="button"[^>]*popovertarget="${id}">`))
       expect(contents).toContain(`<h2 id="${id}-title" class="forge-sheet__title">`)
-      const form = /<form class="forge-sheet__actions" method="post"[^>]*>(.*?)<\/form>/s.exec(contents)?.[1]
-      if (!form) throw new Error('Expected a sheet POST form')
+      const match =
+        /<form class="forge-sheet__actions" method="post"(?: action="([^"]+)")?>(.*?)<\/form>/s.exec(contents)
+      if (!match) throw new Error('Expected a sheet POST form')
+      const [, path, form] = match
       expect(form).toMatch(
         new RegExp(
           `<button[^>]*type="button"[^>]*popovertarget="${id}"[^>]*popovertargetaction="hide"[^>]* autofocus`,
@@ -89,11 +91,22 @@ function sheets(document: string) {
       expect(form).toContain(
         `class="forge-button forge-button--${kind === 'alertdialog' ? 'danger-solid' : 'primary'}"`,
       )
-      return { id, contents, form, action, kind }
+      return { id, contents, path, form, action, kind }
     },
   )
   expect(new Set(panels.map(({ id }) => id)).size).toBe(panels.length)
   return panels
+}
+
+function openedSheet(scope: string, label: string, path: string) {
+  const opener = Array.from(
+    scope.matchAll(/<button type="button"[^>]*popovertarget="([^"]+)"[^>]*>([^<]+)<\/button>/g),
+  ).filter(([, , name]) => name === label)
+  expect(opener).toHaveLength(1)
+  const panel = sheets(scope).find(({ id }) => id === opener[0][1])
+  if (!panel) throw new Error(`Missing panel for ${label}`)
+  expect(panel.path).toBe(path)
+  return panel
 }
 
 async function issueToken(browser: Browser, name: string) {
@@ -403,9 +416,12 @@ it('selects robots and applies only the submitted lifecycle action and credentia
   expect(page).not.toContain(first)
   expect(page).not.toContain(second)
   const panels = sheets(page)
-  const role = panels.find(({ action }) => action === 'role')
-  const remove = panels.find(({ action }) => action === 'remove')
-  if (!role || !remove) throw new Error('Missing lifecycle sheets')
+  const role = openedSheet(page, 'Change role', selected)
+  const remove = openedSheet(page, 'Deactivate robot', selected)
+  expect(role.action).toBe('role')
+  expect(remove.action).toBe('remove')
+  expect(formValue(role.form, 'expect')).toBe('active')
+  expect(formValue(remove.form, 'expect')).toBe('active')
   expect(role.contents).toContain('Change role for “Build robot”')
   expect(role.form).toContain('value="viewer" selected')
   expect(role.form).not.toContain('value="admin"')
@@ -417,6 +433,7 @@ it('selects robots and applies only the submitted lifecycle action and credentia
     action: role.action,
     id: formValue(role.form, 'id'),
     role: 'publisher',
+    expect: formValue(role.form, 'expect'),
   })
   expect(sheets(changed).find(({ action }) => action === 'role')?.form).toContain(
     'value="publisher" selected',
@@ -447,7 +464,11 @@ it('selects robots and applies only the submitted lifecycle action and credentia
   )
   expect((await mcpCall(send, first)).status).toBe(401)
   expect((await mcpCall(send, second)).status).toBe(200)
-  const removed = await post(owner, selected, { action: remove.action, id: formValue(remove.form, 'id') })
+  const removed = await post(owner, selected, {
+    action: remove.action,
+    id: formValue(remove.form, 'id'),
+    expect: formValue(remove.form, 'expect'),
+  })
   expect(removed).toContain('forge-badge--muted">Removed')
   expect(removed).toContain('<s>Nightly worker</s>')
   expect(removed).toContain('value="reinstate">Reactivate robot</button>')
@@ -1341,9 +1362,12 @@ it('keeps same-role invite rows distinct and binds each revoke trigger to its ow
   const invites = section(await html(owner, members), 'invites')
   const rows = bodyRows(invites)
   expect(rows).toHaveLength(2)
+  const revocations = rows.map((row) => openedSheet(row, 'Revoke', members))
+  expect(revocations.every(({ action }) => action === 'revoke-invite')).toBe(true)
+  expect(new Set(revocations.map(({ form }) => formValue(form, 'id'))).size).toBe(2)
   const row = namedRow(invites, new Date(expires).toISOString())
   expect(row).toContain('By Alice Example')
-  const [sheet] = sheets(row)
+  const sheet = openedSheet(row, 'Revoke', members)
   expect(sheet.action).toBe('revoke-invite')
   expect(sheet.contents).toContain('Alice Example')
   expect(formValue(sheet.form, 'id')).toBe(id)
@@ -1385,6 +1409,12 @@ it('groups only humans and submits each row’s own role and confirmation sheets
       ),
     ),
   )
+  const identities = db.prepare(`INSERT INTO identities
+    (provider, subject, member_id, email_verified, last_login_at) VALUES ('example-idp', ?, ?, 1, ?)`)
+  await db.batch(
+    fixtures.filter(({ kind }) => kind === 'human').map(({ id }) => identities.bind(id, id, now)),
+  )
+  await post(owner, members, { action: 'create-invite', role: 'viewer' })
   const document = await html(owner, members)
   const scopes = ['pending', 'active', 'removed'].map((id) => section(document, id))
   expect(scopes.map((scope) => bodyRows(scope).length)).toEqual([2, 3, 1])
@@ -1392,18 +1422,26 @@ it('groups only humans and submits each row’s own role and confirmation sheets
   const self = namedRow(scopes[1], 'Alice Example')
   expect(self).toContain('>You</span>')
   expect(self).not.toMatch(/<form|<button/)
-  const [inviteSheet] = sheets(/<header class="forge-page-head">(.*?)<\/header>/s.exec(document)?.[1] ?? '')
+  const header = /<header class="forge-page-head">(.*?)<\/header>/s.exec(document)?.[1] ?? ''
+  const inviteSheet = openedSheet(header, 'Invite someone', members)
   expect(inviteSheet.action).toBe('create-invite')
   expect(inviteSheet.form).toMatch(/<select[^>]*name="role".*?<option value="admin">/s)
-  expect(sheets(document)).toHaveLength(9)
+  expect(sheets(document)).toHaveLength(10)
+  const inviteRow = namedRow(section(document, 'invites'), 'Alice Example')
+  const revoke = openedSheet(inviteRow, 'Revoke', members)
+  expect(revoke.action).toBe('revoke-invite')
+  expect(formValue(revoke.form, 'id')).toBe(await listedId(owner, members, 'revoke-invite'))
   for (const { id, kind, name, status } of fixtures) {
     if (kind === 'bot') continue
     const scope = status === 'pending' ? scopes[0] : status === 'active' ? scopes[1] : scopes[2]
     const row = namedRow(scope, `<strong dir="auto">${name}</strong>`)
     expect(row).toContain(`datetime="${new Date(now).toISOString()}"`)
+    expect(row).toContain(`${name.toLowerCase()}@example.test`)
+    expect(row).toContain('>example-idp</td>')
     const stored = db.prepare('SELECT role, status FROM members WHERE id = ?').bind(id)
     if (status === 'removed') {
       expect(sheets(row)).toHaveLength(0)
+      expect(row).toContain('>publisher</td>')
       expect(row).toContain('name="action" value="reinstate"')
       expect(formValue(row, 'id')).toBe(id)
       await post(owner, members, { action: 'admit', role: 'viewer', id })
@@ -1412,7 +1450,8 @@ it('groups only humans and submits each row’s own role and confirmation sheets
       expect(await stored.first()).toEqual({ role: 'publisher', status: 'active' })
       continue
     }
-    const [edit, remove] = sheets(row)
+    const edit = openedSheet(row, status === 'pending' ? 'Approve' : 'Change role', members)
+    const remove = openedSheet(row, status === 'pending' ? 'Refuse' : 'Remove', members)
     expect(edit.kind).toBe('dialog')
     expect(edit.action).toBe(status === 'pending' ? 'admit' : 'role')
     expect(edit.form).toMatch(
@@ -1423,12 +1462,18 @@ it('groups only humans and submits each row’s own role and confirmation sheets
     expect(remove.contents).toContain(name)
     expect(formValue(edit.form, 'id')).toBe(id)
     expect(formValue(remove.form, 'id')).toBe(id)
+    expect(formValue(remove.form, 'expect')).toBe(status)
     if (name === 'Bob') {
       await post(owner, members, { action: 'reinstate', id })
       expect(await stored.first()).toEqual({ role: 'publisher', status: 'pending' })
     }
     if (name === 'Carol' || name === 'Eve') {
-      await post(owner, members, { action: remove.action, id: formValue(remove.form, 'id') })
+      const notice = await post(owner, members, {
+        action: remove.action,
+        id: formValue(remove.form, 'id'),
+        expect: formValue(remove.form, 'expect'),
+      })
+      expect(notice).toContain(status === 'pending' ? 'Request refused.' : 'Member access removed.')
       expect(await stored.first()).toEqual({ role: 'publisher', status: 'removed' })
     } else {
       await post(owner, members, { action: edit.action, id: formValue(edit.form, 'id'), role: 'viewer' })
@@ -1437,28 +1482,91 @@ it('groups only humans and submits each row’s own role and confirmation sheets
   }
 })
 
-it('links form and confirmation sheets for non-UUID values without collisions', () => {
-  const render = (value: string, confirmation: boolean) =>
+it('refuses stale member removal forms without changing access, credentials or audit', async () => {
+  const owner = await mockProvider().signedIn(runtime(), admin)
+  const id = crypto.randomUUID()
+  const now = Date.now()
+  await db
+    .prepare(`INSERT INTO members (id, kind, name, role, status, created_at)
+    VALUES (?, 'human', 'Bob', 'publisher', 'pending', ?)`)
+    .bind(id, now)
+    .run()
+  const refuse = openedSheet(
+    namedRow(section(await html(owner, members), 'pending'), 'Bob'),
+    'Refuse',
+    members,
+  )
+  await post(owner, members, { action: 'admit', id, role: 'publisher' })
+  await db
+    .prepare(`INSERT INTO api_tokens (id, member_id, name, prefix, token_hash, created_at)
+    VALUES (?, ?, 'Synthetic credential', 'synthetic', ?, ?)`)
+    .bind(crypto.randomUUID(), id, id, now)
+    .run()
+  const memberState = db.prepare('SELECT status, removed_at FROM members WHERE id = ?').bind(id)
+  const tokenState = db.prepare('SELECT revoked_at FROM api_tokens WHERE member_id = ?').bind(id)
+  const audit = db
+    .prepare(`SELECT COUNT(*) AS total FROM audit_log
+    WHERE action = 'member.remove' AND json_extract(detail_json, '$.id') = ?`)
+    .bind(id)
+  const submit = (panel: { form: string; action: string }) =>
+    post(owner, members, {
+      action: panel.action,
+      id: formValue(panel.form, 'id'),
+      expect: formValue(panel.form, 'expect'),
+    })
+  expect(await submit(refuse)).toContain('Member action not allowed')
+  expect(await memberState.first()).toEqual({ status: 'active', removed_at: null })
+  expect(await tokenState.first()).toEqual({ revoked_at: null })
+  expect(await audit.first()).toEqual({ total: 0 })
+
+  const remove = openedSheet(
+    namedRow(section(await html(owner, members), 'active'), 'Bob'),
+    'Remove',
+    members,
+  )
+  await post(owner, members, { action: 'remove', id })
+  const removed = await memberState.first()
+  const revoked = await tokenState.first()
+  expect(removed).toEqual({ status: 'removed', removed_at: expect.any(Number) })
+  expect(revoked).toEqual({ revoked_at: expect.any(Number) })
+  expect(await audit.first()).toEqual({ total: 1 })
+  expect(await submit(remove)).toContain('Member action not allowed')
+  expect(await memberState.first()).toEqual(removed)
+  expect(await tokenState.first()).toEqual(revoked)
+  expect(await audit.first()).toEqual({ total: 1 })
+})
+
+it('links each opener independently even for identical fields and non-UUID values', () => {
+  const render = (value: string, label: string, confirmation: boolean) =>
     Action({
+      path: redirects,
       action: 'remove',
-      label: 'Remove',
+      label,
       fields: { fromPrefix: value },
       ...(confirmation
         ? {
             confirm: {
-              title: 'Remove prefix',
+              title: label,
               body: 'This removes the prefix.',
-              label: 'Remove',
+              label,
               cancel: 'Cancel',
             },
           }
-        : { sheet: { title: 'Remove prefix', label: 'Remove', cancel: 'Cancel' } }),
+        : { sheet: { title: label, label, cancel: 'Cancel' } }),
     }).toString()
-  const first = render('/a/old/', true)
-  const second = render('/a/OLD/', false)
-  expect(sheets(first + second)).toHaveLength(2)
-  expect(formValue(sheets(first)[0].form, 'fromPrefix')).toBe('/a/old/')
-  expect(formValue(sheets(second)[0].form, 'fromPrefix')).toBe('/a/OLD/')
+  const document =
+    render('/a/old/', 'First', true) + render('/a/old/', 'Second', true) + render('/a/OLD/', 'Third', false)
+  expect(sheets(document)).toHaveLength(3)
+  for (const [label, value] of [
+    ['First', '/a/old/'],
+    ['Second', '/a/old/'],
+    ['Third', '/a/OLD/'],
+  ]) {
+    const panel = openedSheet(document, label, redirects)
+    expect(panel.contents).toContain(`>${label}</h2>`)
+    expect(panel.action).toBe('remove')
+    expect(formValue(panel.form, 'fromPrefix')).toBe(value)
+  }
   for (const [name, initials] of [
     ['👩🏿‍💻 Example Name', '👩🏿‍💻E'],
     ['ليلى أحمد', 'لأ'],
@@ -1493,44 +1601,37 @@ it('paginates the four sections independently with capped counts and no per-row 
       SELECT printf('%043d', n), 'viewer', ?, ?, ? FROM numbers`)
       .bind(ownerId, now, now + 86_400_000),
   ])
-  const reads: { sql: string; limit: unknown; rows: number; rowsRead: number }[] = []
+  const reads: { limit: unknown; rows: number; rowsRead: number }[] = []
+  const originals = new WeakMap<D1PreparedStatement, D1PreparedStatement>()
+  function instrument(statement: D1PreparedStatement, args: unknown[] = []) {
+    const proxy: D1PreparedStatement = new Proxy(statement, {
+      get(target, key) {
+        if (key === 'bind') return (...values: unknown[]) => instrument(target.bind(...values), values)
+        if (key === 'first' || key === 'all')
+          return async (column?: string) => {
+            const result = await target.all<Record<string, unknown>>()
+            reads.push({ limit: args.at(-1), rows: result.results.length, rowsRead: result.meta.rows_read })
+            return key === 'all'
+              ? result
+              : ((column ? result.results[0]?.[column] : result.results[0]) ?? null)
+          }
+        throw new Error(`Unexpected Members statement method: ${String(key)}`)
+      },
+    })
+    originals.set(proxy, statement)
+    return proxy
+  }
   const measured = new Proxy(db, {
     get(target, key) {
-      if (key === 'prepare')
-        return (sql: string) => {
-          const statement = target.prepare(sql)
-          if (
-            !/\) m LEFT JOIN identities|LEFT JOIN members creator|WITH sections\(status\)|SELECT COUNT\(\*\) AS total FROM/.test(
-              sql,
-            )
-          ) {
-            return statement
-          }
-          return new Proxy(statement, {
-            get(prepared, method) {
-              if (method !== 'bind') throw new Error(`Unexpected list statement method: ${String(method)}`)
-              return (...args: unknown[]) => {
-                const bound = prepared.bind(...args)
-                return new Proxy(bound, {
-                  get(boundStatement, operation) {
-                    if (operation !== 'first' && operation !== 'all')
-                      throw new Error(`Unexpected list read: ${String(operation)}`)
-                    return async (column?: string) => {
-                      const result = await boundStatement.all<Record<string, unknown>>()
-                      reads.push({
-                        sql,
-                        limit: args.at(-1),
-                        rows: result.results.length,
-                        rowsRead: result.meta.rows_read,
-                      })
-                      if (operation === 'all') return result
-                      return (column ? result.results[0]?.[column] : result.results[0]) ?? null
-                    }
-                  },
-                })
-              }
-            },
-          })
+      if (key === 'prepare') return (sql: string) => instrument(target.prepare(sql))
+      if (key === 'batch')
+        return async (statements: D1PreparedStatement[]) => {
+          const results = await target.batch(
+            statements.map((statement) => originals.get(statement) ?? statement),
+          )
+          for (const result of results)
+            reads.push({ limit: undefined, rows: result.results.length, rowsRead: result.meta.rows_read })
+          return results
         }
       const value = Reflect.get(target, key, target)
       return typeof value === 'function' ? value.bind(target) : value
@@ -1542,15 +1643,34 @@ it('paginates the four sections independently with capped counts and no per-row 
     inviteAfter: inviteKey(3),
     removedAfter: memberKey(42),
   }
-  const current = `${members}?${new URLSearchParams(cursors)}`
-  const result = await runtime({ DB: measured })(current, { headers: { Cookie: owner.cookieHeader() } })
+  const request = (keys: typeof cursors) =>
+    runtime({ DB: measured })(`${members}?${new URLSearchParams(keys)}`, {
+      headers: { Cookie: owner.cookieHeader() },
+    })
+  const small = await request({
+    pendingAfter: memberKey(5980),
+    after: memberKey(5981),
+    inviteAfter: inviteKey(598),
+    removedAfter: memberKey(5982),
+  })
+  expect(small.status).toBe(200)
+  const smallPage = await small.text()
+  for (const id of ['pending', 'active', 'removed', 'invites']) {
+    const size = bodyRows(section(smallPage, id)).length
+    expect(size).toBeGreaterThan(0)
+    expect(size).toBeLessThan(4)
+  }
+  const smallReadCount = reads.length
+  reads.length = 0
+  const result = await request(cursors)
   expect(result.status).toBe(200)
   const document = await result.text()
-  expect(reads).toHaveLength(6)
-  expect(reads.every(({ rowsRead }) => rowsRead > 0)).toBe(true)
-  const pages = reads.filter(({ sql }) => sql.includes('LEFT JOIN'))
-  expect(pages.map(({ limit, rows }) => [limit, rows])).toEqual(Array.from({ length: 4 }, () => [51, 51]))
-  const counts = reads.filter(({ sql }) => !sql.includes('LEFT JOIN')).sort((a, b) => a.rows - b.rows)
+  expect(reads).toHaveLength(smallReadCount)
+  const pages = reads.filter(({ limit }) => limit === 51)
+  expect(pages.map(({ rows, rowsRead }) => [rows, rowsRead > 0])).toEqual(
+    Array.from({ length: 4 }, () => [51, true]),
+  )
+  const counts = reads.filter(({ limit }) => limit === 101).sort((a, b) => a.rows - b.rows)
   expect(counts.map(({ limit, rows }) => [limit, rows])).toEqual([
     [101, 1],
     [101, 3],

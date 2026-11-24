@@ -52,6 +52,7 @@ export async function changeMember(
   action: 'admit' | 'role' | 'remove' | 'reinstate',
   role: Role | undefined,
   now: number,
+  expected?: 'pending' | 'active',
 ): Promise<boolean> {
   const [result] = await db.batch([
     db
@@ -60,8 +61,22 @@ export async function changeMember(
       WHERE id = ? AND EXISTS (SELECT 1 FROM members actor WHERE actor.id = ? AND actor.status = 'active' AND actor.role = 'admin')
       AND (? = 'role' AND status = 'active' OR ? = 'admit' AND status = 'pending'
         OR ? = 'remove' AND status <> 'removed' OR ? = 'reinstate' AND status = 'removed')
-      AND (kind = 'human' OR COALESCE(?, role) <> 'admin') RETURNING id`)
-      .bind(action, role ?? null, action, now, id, actor, action, action, action, action, role ?? null),
+      AND (kind = 'human' OR COALESCE(?, role) <> 'admin')
+      AND (?12 IS NULL OR status = ?12) RETURNING id`)
+      .bind(
+        action,
+        role ?? null,
+        action,
+        now,
+        id,
+        actor,
+        action,
+        action,
+        action,
+        action,
+        role ?? null,
+        expected ?? null,
+      ),
     auditChange(db, now, actor, `member.${action}`, { id, role }),
   ])
   // D1's change count also includes credential revocations from the removal trigger.
@@ -145,9 +160,10 @@ export async function changeBot(
   action: 'role' | 'remove' | 'reinstate',
   role: 'viewer' | 'publisher' | undefined,
   now: number,
+  expected?: 'active',
 ) {
   // Member kind is immutable; changeMember rechecks actor privilege and target state at write time.
-  return (await findBot(db, id)) !== null && changeMember(db, actor, id, action, role, now)
+  return (await findBot(db, id)) !== null && changeMember(db, actor, id, action, role, now, expected)
 }
 
 export async function getBotDetails(

@@ -348,6 +348,8 @@ On an **artefact detail** page, Public makes the canonical URL readable by anyon
 
 **Members** groups humans into Awaiting approval, Members and Removed, with a separate Invitation links section for unused, unexpired links. The signed-in member's row has no action controls. Each section lists up to 50 rows and shows a total capped at `100+`. The independent cursors `pendingAfter`, `after`, `inviteAfter` and `removedAfter` are carried across pagination links. Limits bound matching rows before joins and counts; a sparse section can still examine non-matching rows.
 
+Refuse applies only while the request is pending; Remove applies only while the member is active. Submitting either sheet after the status has changed leaves access and credentials unchanged.
+
 An invitation is valid for seven days and one admission. Admins choose a role in the invitation form and see the copyable URL only in the one-use notice. The list shows who created each invitation and when, plus its expiry. Invite creation, consumption and revocation are audited. All mutation forms require the manage origin.
 
 **Robots** uses `after` for the 50-row list, `bot` to select a robot by ID and `tokenAfter` for its 50-row credential list. The list examines at most 101 credential records per robot (including revoked credentials). For a robot at that bound, `N+` is the lower bound for its active credentials (at most `100+`) and last use is labelled as sampled or unknown. A robot can be a viewer or publisher, never an administrator. Deactivation revokes all its credentials; reactivation does not restore them. New personal and robot tokens are shown only in the one-use notice.

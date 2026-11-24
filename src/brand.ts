@@ -116,9 +116,18 @@ const style = `
   :where(.forge-table th) { color: var(--forge-muted) }
   :where(.forge-table td:has(.forge-action)) { white-space: nowrap }
   .forge-row-actions { display: flex; flex-wrap: wrap; justify-content: end; gap: var(--forge-space) }
+  .forge-row-actions > :where(.forge-action) > :where(.forge-button) { white-space: nowrap }
+  :where(.forge-table td) > .forge-row-actions { flex-wrap: nowrap }
+  .forge-bot-controls { display: flex; flex-wrap: wrap; align-items: end; justify-content: space-between; gap: var(--forge-space) }
+  :where(.forge-bot-controls) > .forge-action { display: grid; flex: 1; min-inline-size: min(100%, 10rem) }
+  :where(.forge-bot-controls > .forge-action) > .forge-button { justify-self: start }
+  :where(.forge-bot-controls) > .forge-row-actions { margin-inline-start: auto }
   :where(.forge-table td:has(.forge-row-actions)) { white-space: normal }
   :where(.forge-table:has(.forge-row-actions) th:last-child) { text-align: end }
   .forge-admin-split { display: grid; grid-template-columns: minmax(0, 1fr) minmax(18rem, 34%); align-items: start; gap: calc(3 * var(--forge-space)); margin-block-start: calc(2 * var(--forge-space)) }
+  @media (min-width: 76rem) {
+    .forge-admin-split:where(:has(.forge-bot-controls)) { grid-template-columns: minmax(0, 1fr) minmax(18rem, 44%) }
+  }
   .forge-admin-panel { min-inline-size: 0; padding: calc(2 * var(--forge-space)); border: 1px solid var(--forge-hairline); border-radius: var(--forge-radius); background: var(--forge-surface); overflow-wrap: anywhere }
   :where(.forge-admin-panel) > h2 { margin-block-start: 0 }
   :where(.forge-admin-panel .forge-member-identity) > h2 { margin-block: 0 }
@@ -239,6 +248,7 @@ const style = `
     .forge-fold { display: block; color: var(--forge-muted); overflow-wrap: anywhere }
     :where(.forge-table td[title], .forge-table td > span:has(+ .forge-fold)) { overflow-wrap: anywhere }
     :where(.forge-table td:has(.forge-action)) { white-space: normal }
+    :where(.forge-table td) > .forge-row-actions { flex-wrap: wrap }
   }
   @media (max-width: 30rem) {
     .forge-copy { flex-direction: column }

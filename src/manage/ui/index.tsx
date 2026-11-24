@@ -45,7 +45,8 @@ const idSchema = z.uuid()
 const labelSchema = z.string().trim().min(1).max(120)
 const memberAction = z.discriminatedUnion('action', [
   z.object({ action: z.enum(['admit', 'role']), id: idSchema, role: roleSchema }),
-  z.object({ action: z.enum(['remove', 'reinstate']), id: idSchema }),
+  z.object({ action: z.literal('remove'), id: idSchema, expect: z.enum(['pending', 'active']).optional() }),
+  z.object({ action: z.literal('reinstate'), id: idSchema }),
   z.object({ action: z.literal('create-invite'), role: roleSchema }),
   z.object({ action: z.literal('revoke-invite'), id: z.string().regex(inviteKey) }),
 ])
@@ -53,8 +54,14 @@ const botAction = z.discriminatedUnion('action', [
   z.object({ action: z.literal('create'), name: labelSchema, role: z.enum(['viewer', 'publisher']) }),
   z.object({ action: z.literal('token'), id: idSchema, name: labelSchema }),
   z.object({ action: z.literal('revoke'), id: idSchema }),
-  z.object({ action: z.literal('role'), id: idSchema, role: z.enum(['viewer', 'publisher']) }),
-  z.object({ action: z.enum(['remove', 'reinstate']), id: idSchema }),
+  z.object({
+    action: z.literal('role'),
+    id: idSchema,
+    role: z.enum(['viewer', 'publisher']),
+    expect: z.literal('active').optional(),
+  }),
+  z.object({ action: z.literal('remove'), id: idSchema, expect: z.literal('active').optional() }),
+  z.object({ action: z.literal('reinstate'), id: idSchema }),
 ])
 
 function RoleSelect({
@@ -216,11 +223,13 @@ app.get(membersPath, async (c) => {
     if (list.length === 0) return null
     const awaiting = status === 'pending'
     const current = status === 'active'
-    const dateLabel = awaiting ? copy.requested : current ? copy.since : copy.removedOn
+    const dateLabel = awaiting ? copy.requested : current ? copy.accountCreated : copy.removedOn
     const columns = [
       text.member,
-      ...(current || awaiting ? [{ folded: text.email }] : []),
-      ...(current ? [{ folded: text.provider }, { folded: text.role }, { folded: text.status }] : []),
+      { folded: text.email },
+      { folded: text.provider },
+      ...(!awaiting ? [{ folded: text.role }] : []),
+      ...(current ? [{ folded: text.status }] : []),
       { folded: dateLabel },
       actionColumn,
     ]
@@ -241,28 +250,20 @@ app.get(membersPath, async (c) => {
                   {awaiting && <Badge variant="warn">{text.pending}</Badge>}
                   {self && <Badge variant="muted">{copy.you}</Badge>}
                 </div>
-                {(current || awaiting) && member.email && (
+                {member.email && (
                   <span class="forge-fold forge-member-email" title={member.email} hidden>
                     {member.email}
                   </span>
                 )}
-                {current && (
-                  <>
-                    {member.provider && <Fold label={text.provider}>{member.provider}</Fold>}
-                    <Fold label={text.role}>{roles[member.role]}</Fold>
-                    <Fold>{badge}</Fold>
-                  </>
-                )}
+                {member.provider && <Fold label={text.provider}>{member.provider}</Fold>}
+                {!awaiting && <Fold label={text.role}>{roles[member.role]}</Fold>}
+                {current && <Fold>{badge}</Fold>}
                 <Fold label={dateLabel}>{date}</Fold>
               </td>
-              {(current || awaiting) && <td class="forge-col--folded">{member.email ?? '—'}</td>}
-              {current && (
-                <>
-                  <td class="forge-col--folded">{member.provider ?? '—'}</td>
-                  <td class="forge-col--folded">{roles[member.role]}</td>
-                  <td class="forge-col--folded">{badge}</td>
-                </>
-              )}
+              <td class="forge-col--folded">{member.email ?? '—'}</td>
+              <td class="forge-col--folded">{member.provider ?? '—'}</td>
+              {!awaiting && <td class="forge-col--folded">{roles[member.role]}</td>}
+              {current && <td class="forge-col--folded">{badge}</td>}
               <td class="forge-col--folded">{date}</td>
               <td>
                 {!self && (
@@ -295,7 +296,7 @@ app.get(membersPath, async (c) => {
                           path={membersPath}
                           action="remove"
                           label={removeLabel}
-                          fields={{ id: member.id }}
+                          fields={{ id: member.id, expect: awaiting ? 'pending' : 'active' }}
                           variant="danger"
                           confirm={{
                             title: awaiting ? copy.refuseTitle(member.name) : copy.removeTitle(member.name),
@@ -434,11 +435,19 @@ app.post(membersPath, async (c) => {
   const changed =
     data.action === 'revoke-invite'
       ? await revokeInvite(db, actor, data.id, now)
-      : await changeMember(db, actor, data.id, data.action, 'role' in data ? data.role : undefined, now)
+      : await changeMember(
+          db,
+          actor,
+          data.id,
+          data.action,
+          'role' in data ? data.role : undefined,
+          now,
+          data.action === 'remove' ? data.expect : undefined,
+        )
   const notices = {
     admit: text.admitDone,
     role: text.roleDone,
-    remove: text.removeDone,
+    remove: data.action === 'remove' && data.expect === 'pending' ? text.refuseDone : text.removeDone,
     reinstate: text.reinstateDone,
     'revoke-invite': text.inviteRevoked,
   }
@@ -521,38 +530,40 @@ function BotDetails({
       {bot.status === 'active' && (
         <>
           <h3>{robots.newCredential}</h3>
-          <Action path={path} action="token" label={robots.createCredential} fields={{ id: bot.id }}>
-            <label>
-              {robots.credentialName} <input name="name" required maxlength={120} />
-            </label>
-          </Action>
-          <div class="forge-row-actions">
-            <Action
-              path={path}
-              action="role"
-              label={legacy.changeRole}
-              fields={{ id: bot.id }}
-              sheet={{
-                title: robots.changeRoleTitle(bot.name),
-                label: legacy.changeRole,
-                cancel: confirmation.cancel,
-              }}
-            >
-              <RoleSelect config={config} value={bot.role} />
+          <div class="forge-bot-controls">
+            <Action path={path} action="token" label={robots.createCredential} fields={{ id: bot.id }}>
+              <label>
+                {robots.credentialName} <input name="name" required maxlength={120} />
+              </label>
             </Action>
-            <Action
-              path={path}
-              action="remove"
-              label={robots.deactivate}
-              variant="danger"
-              fields={{ id: bot.id }}
-              confirm={{
-                title: robots.deactivateTitle(bot.name),
-                body: robots.deactivateBody,
-                label: robots.deactivate,
-                cancel: confirmation.cancel,
-              }}
-            />
+            <div class="forge-row-actions">
+              <Action
+                path={path}
+                action="role"
+                label={legacy.changeRole}
+                fields={{ id: bot.id, expect: 'active' }}
+                sheet={{
+                  title: robots.changeRoleTitle(bot.name),
+                  label: legacy.changeRole,
+                  cancel: confirmation.cancel,
+                }}
+              >
+                <RoleSelect config={config} value={bot.role} />
+              </Action>
+              <Action
+                path={path}
+                action="remove"
+                label={robots.deactivate}
+                variant="danger"
+                fields={{ id: bot.id, expect: 'active' }}
+                confirm={{
+                  title: robots.deactivateTitle(bot.name),
+                  body: robots.deactivateBody,
+                  label: robots.deactivate,
+                  cancel: confirmation.cancel,
+                }}
+              />
+            </div>
           </div>
         </>
       )}
@@ -710,6 +721,7 @@ app.post(botsPath, async (c) => {
       data.action,
       'role' in data ? data.role : undefined,
       now,
+      'expect' in data ? data.expect : undefined,
     )
     const path = withQuery(botsPath, { after, bot: data.id })
     return flash(
