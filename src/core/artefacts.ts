@@ -168,7 +168,7 @@ async function cacheRevisionEntries(
   else await update
 }
 
-async function revisionEntry(db: D1Database, id: string, revision: number, ctx?: ExecutionContext) {
+export async function revisionEntry(db: D1Database, id: string, revision: number, ctx?: ExecutionContext) {
   const cached = await selectRevisionEntry(db, id, revision).first<string>('path')
   if (cached !== null) return cached
   const path = await computeRevisionEntry(db, id, revision).first<string>('path')

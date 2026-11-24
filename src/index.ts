@@ -1,7 +1,9 @@
 import { brandAsset, themeAsset, themePrefix } from './brand'
 import { configuration, type Env } from './config'
 import { previewPrefix } from './core/gallery-previews'
+import { coverCron, generateCovers } from './core/generated-covers'
 import { maintain } from './core/maintenance'
+import { renderCover } from './cover-renderer'
 import { galleryPreview } from './gallery-preview'
 import { messages } from './i18n'
 import { manageHandoff } from './manage/handoff'
@@ -67,6 +69,23 @@ export default {
   },
   async scheduled(controller: ScheduledController, env: Env): Promise<void> {
     const config = configuration(env)
-    if (config) await maintain({ config, env }, Math.min(controller.scheduledTime, Date.now()))
+    if (!config) return
+    const runtime = { config, env }
+    if (controller.cron === coverCron) {
+      const binding = env.COVER_BROWSER
+      if (binding) {
+        try {
+          await generateCovers(
+            runtime,
+            (entryPath, files) => renderCover(binding, env.BLOBS, entryPath, files),
+            Date.now(),
+          )
+        } catch {
+          throw new Error('Forge cover maintenance failed')
+        }
+      }
+    } else if (controller.cron === '0 3 * * *') {
+      await maintain(runtime, Math.min(controller.scheduledTime, Date.now()))
+    }
   },
 }

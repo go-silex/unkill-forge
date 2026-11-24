@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+- On instances with Browser Run enabled, generate missing HTML catalogue covers in the background, including for already-published artefacts. A valid supplied cover takes precedence; no extra revision is created.
+- Upgrade: deploy additive D1 migration `0012`. Opt in with the Browser Run binding and five-minute cover trigger described in the [self-hosting guide](docs/self-hosting.md).
+
 ## v2.2.0 — 2026-11-24
 
 - Add a sign-in action to the read home page that opens the management host.
