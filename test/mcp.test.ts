@@ -4,6 +4,7 @@ import { describe, expect, it, vi } from 'vitest'
 import {
   admin,
   Browser,
+  createdBotId,
   flashNavigation,
   formValue,
   type Handle,
@@ -294,7 +295,7 @@ describe('MCP discovery and bot credentials', () => {
     const path = '/admin/bots'
     const name = 'Gate 0 Publisher Bot'
     expect((await owner.post(path, { action: 'create', name, role: 'publisher' })).status).toBe(303)
-    const memberId = await listedId(owner, '/admin/members', name)
+    const memberId = await createdBotId(name)
 
     async function mint(label: string) {
       const response = await owner.post(path, { action: 'token', id: memberId, name: label })

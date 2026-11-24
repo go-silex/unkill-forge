@@ -6,7 +6,7 @@ import type { Env } from '../src/config'
 import { hashSecret } from '../src/core'
 import { createOwnToken, revokeOwnToken } from '../src/core/admin'
 import { catalogueCountLimit } from '../src/core/catalogue'
-import { time } from '../src/manage/ui/page'
+import { Action, Avatar, time } from '../src/manage/ui/page'
 import {
   admin,
   Browser,
@@ -61,28 +61,33 @@ async function artefactId(browser: Browser, path = detail) {
 
 function sheets(document: string) {
   const panels = Array.from(
-    document.matchAll(/<div id="(forge-sheet-[a-z0-9_-]+)" class="forge-sheet"([^>]*)>(.*?)<\/div>/gs),
+    document.matchAll(
+      /<div id="(forge-sheet-[a-z0-9_-]+)" class="forge-sheet"([^>]*)>(.*?<\/form>)<\/div>/gs,
+    ),
     ([, id, attributes, contents]) => {
       expect(attributes).toMatch(/\bpopover(?:="(?:auto)?")?(?=\s|$)/)
-      expect(attributes).toContain('role="alertdialog"')
+      const kind = /role="(alertdialog|dialog)"/.exec(attributes)?.[1]
+      expect(kind).toBeDefined()
       expect(attributes).toContain(`aria-labelledby="${id}-title"`)
-      expect(attributes).toContain(`aria-describedby="${id}-body"`)
-      expect(contents).toContain(`<p id="${id}-body" class="forge-sheet__body">`)
+      if (kind === 'alertdialog' || attributes.includes('aria-describedby')) {
+        expect(attributes).toContain(`aria-describedby="${id}-body"`)
+        expect(contents).toContain(`<p id="${id}-body" class="forge-sheet__body">`)
+      }
       expect(document).toMatch(new RegExp(`<button[^>]*type="button"[^>]*popovertarget="${id}">`))
       expect(contents).toContain(`<h2 id="${id}-title" class="forge-sheet__title">`)
       const form = /<form class="forge-sheet__actions" method="post"[^>]*>(.*?)<\/form>/s.exec(contents)?.[1]
-      if (!form) throw new Error('Expected a confirmation POST form')
+      if (!form) throw new Error('Expected a sheet POST form')
       expect(form).toMatch(
         new RegExp(
           `<button[^>]*type="button"[^>]*popovertarget="${id}"[^>]*popovertargetaction="hide"[^>]* autofocus`,
         ),
       )
-      const action =
-        /<button[^>]*type="submit"[^>]*class="forge-button forge-button--danger-solid"[^>]*name="action" value="([^"]+)"/.exec(
-          form,
-        )?.[1]
-      if (!action) throw new Error('Expected a confirm submit button')
-      return { id, contents, form, action }
+      const action = /<button[^>]*type="submit"[^>]*name="action" value="([^"]+)"/.exec(form)?.[1]
+      if (!action) throw new Error('Expected a sheet submit button')
+      expect(form).toContain(
+        `class="forge-button forge-button--${kind === 'alertdialog' ? 'danger-solid' : 'primary'}"`,
+      )
+      return { id, contents, form, action, kind }
     },
   )
   expect(new Set(panels.map(({ id }) => id)).size).toBe(panels.length)
@@ -287,7 +292,11 @@ it('shows a personal token exactly once, stores its hash, records use and enforc
     .first<{ id: string; hash: string; used: number | null }>()
   expect(row).toEqual({ id: expect.any(String), hash: await hashSecret(token), used: null })
   if (!row) throw new Error('Expected a persisted token hash')
-  const ownerId = await listedId(owner, members, 'owner@example.test')
+  const ownerId = await db
+    .prepare('SELECT id FROM members WHERE email = ?')
+    .bind(`${admin}@example.test`)
+    .first<string>('id')
+  if (!ownerId) throw new Error('Expected an authenticated administrator')
   expect(await revokeOwnToken(db, ownerId, row.id, Date.now())).toBe(false)
   expect(await db.prepare('SELECT revoked_at FROM api_tokens WHERE id = ?').bind(row.id).first()).toEqual({
     revoked_at: null,
@@ -974,20 +983,20 @@ it('confirms deletion and purge with separate forms for each deleted artefact', 
     await post(owner, path, { action: sheet.action, artefactId: formValue(sheet.form, 'artefactId') })
     expect((await owner.request(path)).status).toBe(404)
   }
-  const panels = sheets(await html(owner, deleted))
-  expect(panels).toHaveLength(3)
-  const names = []
-  for (const { contents, form, action } of panels) {
-    const name = formValue(form, 'slug')
-    names.push(name)
-    expect(action).toBe('purge')
-    expect(contents).toContain(`Purger « ${name} » ?`)
-    expect(contents).toContain('La purge est irréversible')
-    expect(form).toContain('>Purger définitivement</button>')
-    await post(owner, deleted, { action, slug: name, id: formValue(form, 'id') })
+  const document = await html(owner, deleted)
+  expect(sheets(document)).toHaveLength(3)
+  for (const name of ['confirm-blank', 'confirm-first', 'confirm-second']) {
+    const row = bodyRows(document).find((entry) => entry.includes(`<code>${name}</code>`))
+    if (!row) throw new Error(`Missing row for ${name}`)
+    const [panel] = sheets(row)
+    expect(panel.action).toBe('purge')
+    expect(panel.contents).toContain(`Purger « ${name} » ?`)
+    expect(panel.contents).toContain('La purge est irréversible')
+    expect(panel.form).toContain('>Purger définitivement</button>')
+    expect(formValue(panel.form, 'slug')).toBe(name)
+    await post(owner, deleted, { action: panel.action, slug: name, id: formValue(panel.form, 'id') })
     expect(await html(owner, deleted)).not.toContain(name)
   }
-  expect(names.sort()).toEqual(['confirm-blank', 'confirm-first', 'confirm-second'])
 })
 
 it('continues an interrupted purge after its artefact row has already been removed', async () => {
@@ -1016,25 +1025,274 @@ it('continues an interrupted purge after its artefact row has already been remov
   expect((await blobs.list({ prefix: 'blobs/' })).objects).toHaveLength(0)
 })
 
-it('keeps expiry dates in the primary cells of same-role invite rows', async () => {
-  const send = runtime()
-  const owner = await mockProvider().signedIn(send, admin)
+function section(document: string, id: string) {
+  const match = new RegExp(`<section id="${id}"[^>]*>(.*?)</section>`, 's').exec(document)?.[1]
+  if (!match) throw new Error(`No ${id} section`)
+  return match
+}
+
+function bodyRows(markup: string) {
+  return Array.from(markup.matchAll(/<tr><td(?:\s|>).*?<\/tr>/gs), ([row]) => row)
+}
+
+function namedRow(markup: string, value: string) {
+  const row = bodyRows(markup).find((entry) => entry.includes(value))
+  if (!row) throw new Error(`No row for ${value}`)
+  return row
+}
+
+it('keeps same-role invite rows distinct and binds each revoke trigger to its own record', async () => {
+  const owner = await mockProvider().signedIn(runtime(), admin, { userinfo: { name: 'Alice Example' } })
+  const expires = Date.UTC(2099, 0, 2, 3, 4)
+  const first = /<code>[^<]+\/invite\/([^<]+)<\/code>/.exec(
+    await post(owner, members, { action: 'create-invite', role: 'viewer' }),
+  )?.[1]
+  if (!first) throw new Error('Expected the first invite secret in its flash')
+  const id = await hashSecret(first)
+  await db.prepare('UPDATE invites SET expires_at = ? WHERE token_hash = ?').bind(expires, id).run()
   await post(owner, members, { action: 'create-invite', role: 'viewer' })
-  await db
-    .prepare('UPDATE invites SET expires_at = ?')
-    .bind(Date.UTC(2099, 0, 2, 3, 4))
-    .run()
-  const page = await post(owner, members, { action: 'create-invite', role: 'viewer' })
-  expect(page).toContain('<th scope="col">Expires</th>')
-  const rows = [
-    ...page.matchAll(
-      /<tr><td>viewer<\/td><td><time datetime="([^"]+)"[^>]+>[^<]+<\/time><\/td><td>.*?<\/tr>/gs,
-    ),
-  ]
+  const invites = section(await html(owner, members), 'invites')
+  const rows = bodyRows(invites)
   expect(rows).toHaveLength(2)
-  expect(rows.map((row) => row[1])).toContain('2099-01-02T03:04:00.000Z')
-  expect(new Set(rows.map((row) => row[1])).size).toBe(2)
-  for (const [row] of rows) expect(row).toContain('value="revoke-invite"')
+  const row = namedRow(invites, new Date(expires).toISOString())
+  expect(row).toContain('By Alice Example')
+  const [sheet] = sheets(row)
+  expect(sheet.action).toBe('revoke-invite')
+  expect(sheet.contents).toContain('Alice Example')
+  expect(formValue(sheet.form, 'id')).toBe(id)
+  const updated = section(await post(owner, members, { action: sheet.action, id }), 'invites')
+  expect(bodyRows(updated)).toHaveLength(1)
+  expect(updated).not.toContain(new Date(expires).toISOString())
+  expect(updated).not.toContain(first)
+})
+
+it('groups only humans and submits each row’s own role and confirmation sheets', async () => {
+  const owner = await mockProvider().signedIn(runtime(), admin, { userinfo: { name: 'Alice Example' } })
+  const initial = await html(owner, members)
+  for (const id of ['pending', 'invites', 'removed']) {
+    const empty = section(initial, id)
+    expect(empty).toContain('class="forge-empty"')
+    expect(empty).not.toContain('<table')
+  }
+  const now = Date.now()
+  const seed = db.prepare(`INSERT INTO members (id, kind, name, email, role, status, created_at, removed_at)
+    VALUES (?, ?, ?, ?, 'publisher', ?, ?, ?)`)
+  const fixtures = [
+    ['human', 'Bob', 'pending'],
+    ['human', 'Carol', 'pending'],
+    ['human', 'Dave', 'active'],
+    ['human', 'Eve', 'active'],
+    ['human', 'Fran', 'removed'],
+    ['bot', 'Synthetic bot', 'active'],
+  ].map(([kind, name, status]) => ({ id: crypto.randomUUID(), kind, name, status }))
+  await db.batch(
+    fixtures.map(({ id, kind, name, status }) =>
+      seed.bind(
+        id,
+        kind,
+        name,
+        `${name.toLowerCase().replace(' ', '-')}@example.test`,
+        status,
+        now,
+        status === 'removed' ? now : null,
+      ),
+    ),
+  )
+  const document = await html(owner, members)
+  const scopes = ['pending', 'active', 'removed'].map((id) => section(document, id))
+  expect(scopes.map((scope) => bodyRows(scope).length)).toEqual([2, 3, 1])
+  expect(document).not.toContain('Synthetic bot')
+  const self = namedRow(scopes[1], 'Alice Example')
+  expect(self).toContain('>You</span>')
+  expect(self).not.toMatch(/<form|<button/)
+  const [inviteSheet] = sheets(/<header class="forge-page-head">(.*?)<\/header>/s.exec(document)?.[1] ?? '')
+  expect(inviteSheet.action).toBe('create-invite')
+  expect(inviteSheet.form).toMatch(/<select[^>]*name="role".*?<option value="admin">/s)
+  expect(sheets(document)).toHaveLength(9)
+  for (const { id, kind, name, status } of fixtures) {
+    if (kind === 'bot') continue
+    const scope = status === 'pending' ? scopes[0] : status === 'active' ? scopes[1] : scopes[2]
+    const row = namedRow(scope, `<strong dir="auto">${name}</strong>`)
+    expect(row).toContain(`datetime="${new Date(now).toISOString()}"`)
+    const stored = db.prepare('SELECT role, status FROM members WHERE id = ?').bind(id)
+    if (status === 'removed') {
+      expect(sheets(row)).toHaveLength(0)
+      expect(row).toContain('name="action" value="reinstate"')
+      expect(formValue(row, 'id')).toBe(id)
+      await post(owner, members, { action: 'admit', role: 'viewer', id })
+      expect(await stored.first()).toEqual({ role: 'publisher', status: 'removed' })
+      await post(owner, members, { action: 'reinstate', id })
+      expect(await stored.first()).toEqual({ role: 'publisher', status: 'active' })
+      continue
+    }
+    const [edit, remove] = sheets(row)
+    expect(edit.kind).toBe('dialog')
+    expect(edit.action).toBe(status === 'pending' ? 'admit' : 'role')
+    expect(edit.form).toMatch(
+      new RegExp(`<option value="${status === 'pending' ? 'viewer' : 'publisher'}" selected[^>]*>`),
+    )
+    expect(remove.kind).toBe('alertdialog')
+    expect(remove.action).toBe('remove')
+    expect(remove.contents).toContain(name)
+    expect(formValue(edit.form, 'id')).toBe(id)
+    expect(formValue(remove.form, 'id')).toBe(id)
+    if (name === 'Bob') {
+      await post(owner, members, { action: 'reinstate', id })
+      expect(await stored.first()).toEqual({ role: 'publisher', status: 'pending' })
+    }
+    if (name === 'Carol' || name === 'Eve') {
+      await post(owner, members, { action: remove.action, id: formValue(remove.form, 'id') })
+      expect(await stored.first()).toEqual({ role: 'publisher', status: 'removed' })
+    } else {
+      await post(owner, members, { action: edit.action, id: formValue(edit.form, 'id'), role: 'viewer' })
+      expect(await stored.first()).toEqual({ role: 'viewer', status: 'active' })
+    }
+  }
+})
+
+it('links form and confirmation sheets for non-UUID values without collisions', () => {
+  const render = (value: string, confirmation: boolean) =>
+    Action({
+      action: 'remove',
+      label: 'Remove',
+      fields: { fromPrefix: value },
+      ...(confirmation
+        ? {
+            confirm: {
+              title: 'Remove prefix',
+              body: 'This removes the prefix.',
+              label: 'Remove',
+              cancel: 'Cancel',
+            },
+          }
+        : { sheet: { title: 'Remove prefix', label: 'Remove', cancel: 'Cancel' } }),
+    }).toString()
+  const first = render('/a/old/', true)
+  const second = render('/a/OLD/', false)
+  expect(sheets(first + second)).toHaveLength(2)
+  expect(formValue(sheets(first)[0].form, 'fromPrefix')).toBe('/a/old/')
+  expect(formValue(sheets(second)[0].form, 'fromPrefix')).toBe('/a/OLD/')
+  for (const [name, initials] of [
+    ['👩🏿‍💻 Example Name', '👩🏿‍💻E'],
+    ['ليلى أحمد', 'لأ'],
+    ['  ', '—'],
+  ]) {
+    expect(Avatar({ name }).toString()).toContain(`aria-hidden="true" dir="auto">${initials}</span>`)
+  }
+})
+
+it('paginates the four sections independently with capped counts and no per-row queries', async () => {
+  const owner = await mockProvider().signedIn(runtime(), admin)
+  const ownerId = await db
+    .prepare('SELECT id FROM members WHERE email = ?')
+    .bind(`${admin}@example.test`)
+    .first<string>('id')
+  if (!ownerId) throw new Error('Expected an authenticated administrator')
+  const now = Date.now()
+  const memberKey = (index: number) => `00000000-0000-4000-8000-${String(index).padStart(12, '0')}`
+  const inviteKey = (index: number) => String(index).padStart(43, '0')
+  await db.batch([
+    db
+      .prepare(`WITH RECURSIVE numbers(n) AS (SELECT 1 UNION ALL SELECT n + 1 FROM numbers WHERE n < 600),
+      buckets(k, status) AS (VALUES (0, 'pending'), (1, 'active'), (2, 'removed'), (3, 'active'))
+      INSERT INTO members (id, kind, name, role, status, created_at, removed_at)
+      SELECT printf('00000000-0000-4000-8000-%012d', n * 10 + k),
+      CASE k WHEN 3 THEN 'bot' ELSE 'human' END, printf('Person %d-%d', k, n), 'viewer',
+      status, ?1, CASE status WHEN 'removed' THEN ?1 END FROM numbers, buckets`)
+      .bind(now),
+    db
+      .prepare(`WITH RECURSIVE numbers(n) AS (SELECT 1 UNION ALL SELECT n + 1 FROM numbers WHERE n < 600)
+      INSERT INTO invites (token_hash, role, created_by, created_at, expires_at)
+      SELECT printf('%043d', n), 'viewer', ?, ?, ? FROM numbers`)
+      .bind(ownerId, now, now + 86_400_000),
+  ])
+  const reads: { sql: string; limit: unknown; rows: number; rowsRead: number }[] = []
+  const measured = new Proxy(db, {
+    get(target, key) {
+      if (key === 'prepare')
+        return (sql: string) => {
+          const statement = target.prepare(sql)
+          if (
+            !/\) m LEFT JOIN identities|LEFT JOIN members creator|WITH sections\(status\)|SELECT COUNT\(\*\) AS total FROM/.test(
+              sql,
+            )
+          ) {
+            return statement
+          }
+          return new Proxy(statement, {
+            get(prepared, method) {
+              if (method !== 'bind') throw new Error(`Unexpected list statement method: ${String(method)}`)
+              return (...args: unknown[]) => {
+                const bound = prepared.bind(...args)
+                return new Proxy(bound, {
+                  get(boundStatement, operation) {
+                    if (operation !== 'first' && operation !== 'all')
+                      throw new Error(`Unexpected list read: ${String(operation)}`)
+                    return async (column?: string) => {
+                      const result = await boundStatement.all<Record<string, unknown>>()
+                      reads.push({
+                        sql,
+                        limit: args.at(-1),
+                        rows: result.results.length,
+                        rowsRead: result.meta.rows_read,
+                      })
+                      if (operation === 'all') return result
+                      return (column ? result.results[0]?.[column] : result.results[0]) ?? null
+                    }
+                  },
+                })
+              }
+            },
+          })
+        }
+      const value = Reflect.get(target, key, target)
+      return typeof value === 'function' ? value.bind(target) : value
+    },
+  })
+  const cursors = {
+    pendingAfter: memberKey(10),
+    after: memberKey(21),
+    inviteAfter: inviteKey(3),
+    removedAfter: memberKey(42),
+  }
+  const current = `${members}?${new URLSearchParams(cursors)}`
+  const result = await runtime({ DB: measured })(current, { headers: { Cookie: owner.cookieHeader() } })
+  expect(result.status).toBe(200)
+  const document = await result.text()
+  expect(reads).toHaveLength(6)
+  expect(reads.every(({ rowsRead }) => rowsRead > 0)).toBe(true)
+  const pages = reads.filter(({ sql }) => sql.includes('LEFT JOIN'))
+  expect(pages.map(({ limit, rows }) => [limit, rows])).toEqual(Array.from({ length: 4 }, () => [51, 51]))
+  const counts = reads.filter(({ sql }) => !sql.includes('LEFT JOIN')).sort((a, b) => a.rows - b.rows)
+  expect(counts.map(({ limit, rows }) => [limit, rows])).toEqual([
+    [101, 1],
+    [101, 3],
+  ])
+  const sections = [
+    ['pending', 'pendingAfter', memberKey(20), memberKey(510)],
+    ['active', 'after', memberKey(31), memberKey(521)],
+    ['invites', 'inviteAfter', inviteKey(4), inviteKey(53)],
+    ['removed', 'removedAfter', memberKey(52), memberKey(542)],
+  ] as const
+  for (const [name, param, first, last] of sections) {
+    const scope = section(document, name)
+    expect(scope).toMatch(/<h2[^>]*>[^<]+ \(100\+\)<\/h2>/)
+    const rows = bodyRows(scope)
+    expect(rows).toHaveLength(50)
+    expect(formValue(rows[0], 'id')).toBe(first)
+    expect(formValue(rows[49], 'id')).toBe(last)
+    const href = /<a href="([^"]+)"/.exec(scope)?.[1]
+    if (!href) throw new Error(`No next link for ${name}`)
+    const next = new URL(href.replaceAll('&amp;', '&'), manage)
+    expect(next.hash).toBe(`#${name}`)
+    expect(Object.fromEntries(next.searchParams)).toEqual({ ...cursors, [param]: last })
+    const following = await html(owner, next)
+    for (const [other, , otherFirst] of sections) {
+      const nextFirst = formValue(bodyRows(section(following, other))[0], 'id')
+      if (name === other) expect(nextFirst > last).toBe(true)
+      else expect(nextFirst).toBe(otherFirst)
+    }
+  }
 })
 
 it('localizes share creation metadata and keeps one visible copy of folded table metadata', async () => {
@@ -1088,13 +1346,17 @@ it('localizes share creation metadata and keeps one visible copy of folded table
     [`<td title="${prefix}"><code>${prefix}</code></td>`, column(lastUsed), column(created)],
   )
   const email = `${admin}@example.test`
-  expectRow(
-    await html(owner, members),
-    admin,
-    ['Fournisseur', 'E-mail', 'Rôle'],
-    [email, fold('team', 'Fournisseur'), fold('administrateur', 'Rôle')],
-    [column('team', 'team'), column(email, email), '<td>Actif</td>', column('administrateur')],
-  )
+  const member = namedRow(section(await html(owner, members), 'active'), email)
+  for (const [label, value] of [
+    ['E-mail', email],
+    ['Fournisseur', 'team'],
+    ['Rôle', 'administrateur'],
+  ]) {
+    expect(member).toContain(column(value))
+    expect(member).toContain(
+      label === 'E-mail' ? `hidden="">${value}</span>` : `${fold(value, label)}</span>`,
+    )
+  }
 
   await post(owner, detail, { action: 'delete', artefactId: artefactIdValue })
   await db.prepare('UPDATE artefacts SET deleted_at = ? WHERE id = ?').bind(createdAt, artefactIdValue).run()
@@ -1134,7 +1396,7 @@ it.each(['en', 'fr'] as const)(
       [owner, deleted, 'Deleted artefacts', 'Artefacts supprimés'],
       [owner, tokens, 'Last used', 'Dernière utilisation'],
       [owner, redirects, 'Source prefix', 'Préfixe source'],
-      [owner, members, 'Invite links', 'Liens d’invitation'],
+      [owner, members, 'Invitation links', 'Liens d’invitation'],
       [owner, bots, 'Create bot', 'Créer un robot'],
       [owner, '/connect', 'MCP endpoint', 'Point d’accès MCP'],
     ] as const

@@ -1,6 +1,6 @@
 import { ArtefactError, checkMember, requireAdmin } from './artefacts'
 import { activeMember, auditChange, hashSecret, type Member, type Role, randomSecret } from './index'
-import { trimLookahead } from './pagination'
+import { adminCountLimit, adminPageSize, trimLookahead } from './pagination'
 
 export function isAdmin(member: Member): boolean {
   return member.status === 'active' && member.role === 'admin'
@@ -14,15 +14,35 @@ export async function uiActor(db: D1Database, actor: string, minimum: Role): Pro
   return member
 }
 
-export async function listMembers(db: D1Database, actor: string, after = '', botsOnly = false) {
+export async function listMembers(
+  db: D1Database,
+  actor: string,
+  { after = '', kind, status }: { after?: string; kind: Member['kind']; status?: Member['status'] },
+) {
+  await uiActor(db, actor, 'admin')
+  const { results: members } = await db
+    .prepare(`SELECT m.id, m.kind, m.name, COALESCE(i.email, m.email) AS email, m.role, m.status, i.provider,
+      m.created_at AS createdAt, m.removed_at AS removedAt
+    FROM (
+      SELECT id, kind, name, email, role, status, created_at, removed_at FROM members
+      WHERE id > ? AND kind = ? AND (? IS NULL OR status = ?) ORDER BY id LIMIT ?
+    ) m LEFT JOIN identities i ON i.member_id = m.id
+    ORDER BY m.id`)
+    .bind(after, kind, status ?? null, status ?? null, adminPageSize + 1)
+    .all<Member & { provider: string | null; createdAt: number; removedAt: number | null }>()
+  return { members, nextCursor: trimLookahead(members, adminPageSize)?.id }
+}
+
+export async function countHumanMembers(db: D1Database, actor: string) {
   await uiActor(db, actor, 'admin')
   const { results } = await db
-    .prepare(`SELECT m.id, m.kind, m.name, COALESCE(i.email, m.email) AS email, m.role, m.status, i.provider
-    FROM members m LEFT JOIN identities i ON i.member_id = m.id
-    WHERE m.id > ? AND (? = 0 OR m.kind = 'bot') ORDER BY m.id LIMIT 50`)
-    .bind(after, Number(botsOnly))
-    .all<Member & { provider: string | null }>()
-  return results
+    .prepare(`WITH sections(status) AS (VALUES ('pending'), ('active'), ('removed'))
+    SELECT status, (SELECT COUNT(*) FROM (
+      SELECT 1 FROM members WHERE kind = 'human' AND members.status = sections.status LIMIT ?
+    )) AS total FROM sections`)
+    .bind(adminCountLimit + 1)
+    .all<{ status: Member['status']; total: number }>()
+  return Object.fromEntries(results.map(({ status, total }) => [status, total]))
 }
 
 export async function changeMember(

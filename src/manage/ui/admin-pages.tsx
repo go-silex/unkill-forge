@@ -608,11 +608,15 @@ adminPages.get(
           )}
         </div>
       </>,
-      <nav class="forge-breadcrumb" aria-label={labels.breadcrumb}>
-        <a href={cataloguePath}>{t('artefacts')}</a>
-        <span aria-hidden="true"> › </span>
-        <span aria-current="page">{currentSlug}</span>
-      </nav>,
+      {
+        beforeTitle: (
+          <nav class="forge-breadcrumb" aria-label={labels.breadcrumb}>
+            <a href={cataloguePath}>{t('artefacts')}</a>
+            <span aria-hidden="true"> › </span>
+            <span aria-current="page">{currentSlug}</span>
+          </nav>
+        ),
+      },
     )
   }),
 )
@@ -715,29 +719,31 @@ adminPages.get(
                 <td class="forge-col--folded">{deletedAt}</td>
                 <td class="forge-col--folded">{status}</td>
                 <td>
-                  {entry.restorable && (
+                  <div class="forge-row-actions">
+                    {entry.restorable && (
+                      <Action
+                        action="restore"
+                        label={t('restoreDeleted')}
+                        fields={{ slug: entry.slug, artefactId: entry.id }}
+                      />
+                    )}
                     <Action
-                      action="restore"
-                      label={t('restoreDeleted')}
-                      fields={{ slug: entry.slug, artefactId: entry.id }}
+                      action="purge"
+                      variant="danger"
+                      label={t(entry.purging ? 'resumePurge' : 'purge')}
+                      fields={{ id: entry.id, slug: entry.slug }}
+                      confirm={
+                        entry.purging
+                          ? undefined
+                          : {
+                              title: confirmation.purgeTitle(entry.title?.trim() || entry.slug),
+                              body: confirmation.purgeBody,
+                              label: confirmation.purgeLabel,
+                              cancel: confirmation.cancel,
+                            }
+                      }
                     />
-                  )}
-                  <Action
-                    action="purge"
-                    variant="danger"
-                    label={t(entry.purging ? 'resumePurge' : 'purge')}
-                    fields={{ id: entry.id, slug: entry.slug }}
-                    confirm={
-                      entry.purging
-                        ? undefined
-                        : {
-                            title: confirmation.purgeTitle(entry.title?.trim() || entry.slug),
-                            body: confirmation.purgeBody,
-                            label: confirmation.purgeLabel,
-                            cancel: confirmation.cancel,
-                          }
-                    }
-                  />
+                  </div>
                 </td>
               </tr>
             )

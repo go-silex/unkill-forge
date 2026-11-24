@@ -60,6 +60,11 @@ const style = `
   .forge-account__role { display: block; color: var(--forge-muted); font-size: var(--forge-text-small) }
   .forge-content { min-width: 0; width: 100%; max-width: 76rem; padding: calc(5 * var(--forge-space)) clamp(1rem, 4vw, 3rem); overflow-wrap: anywhere }
   .forge-title { margin: 0 0 calc(3 * var(--forge-space)); font-size: var(--forge-text-title); line-height: 1.15 }
+  .forge-page-head { display: flex; flex-wrap: wrap; align-items: start; justify-content: space-between; gap: var(--forge-space) calc(2 * var(--forge-space)); margin-block-end: calc(3 * var(--forge-space)) }
+  :where(.forge-page-head) > div { min-inline-size: 0 }
+  .forge-page-head :where(.forge-title) { margin: 0 }
+  .forge-lead { margin: var(--forge-space) 0 0; color: var(--forge-muted) }
+  .forge-page-actions { display: flex; flex-wrap: wrap; gap: var(--forge-space) }
   .forge-panel { width: min(100%, 42rem); margin: clamp(1rem, 8vh, 5rem) auto; padding: 0 calc(2 * var(--forge-space)) }
   .forge-panel__header { margin-bottom: calc(2 * var(--forge-space)) }
   .forge-panel__body { padding: clamp(1rem, 4vw, 2rem); border: 1px solid var(--forge-hairline); border-radius: var(--forge-radius); background: var(--forge-surface); overflow-wrap: anywhere }
@@ -80,6 +85,10 @@ const style = `
   .forge-badge--private { color: var(--forge-muted) }
   .forge-badge--shared, .forge-badge--current { color: var(--forge-link) }
   .forge-badge--public { color: var(--forge-ink) }
+  .forge-badge--ok { color: light-dark(#226446, #9ae6ba) }
+  .forge-badge--warn { color: light-dark(#845415, #ffd092) }
+  .forge-badge--muted { color: var(--forge-muted) }
+  .forge-avatar { display: inline-grid; place-items: center; flex: none; min-inline-size: 2rem; min-block-size: 2rem; padding-inline: .25em; border-radius: 50%; background: var(--forge-page); border: 1px solid var(--forge-hairline); color: var(--forge-link); font-weight: 600 }
   .forge-gallery { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 16rem), 1fr)); align-items: start; gap: calc(2 * var(--forge-space)); list-style: none; padding: 0 }
   .forge-gallery__item { min-width: 0; border: 1px solid var(--forge-hairline); border-radius: var(--forge-radius); background: var(--forge-surface); overflow-wrap: anywhere }
   .forge-gallery__item:has(> a:hover) { border-color: var(--forge-link) }
@@ -106,6 +115,16 @@ const style = `
   :where(.forge-table th, .forge-table td) { text-align: start; vertical-align: middle; padding: var(--forge-space); border-bottom: 1px solid var(--forge-hairline); overflow-wrap: normal }
   :where(.forge-table th) { color: var(--forge-muted) }
   :where(.forge-table td:has(.forge-action)) { white-space: nowrap }
+  .forge-row-actions { display: flex; flex-wrap: wrap; justify-content: end; gap: var(--forge-space) }
+  :where(.forge-table td:has(.forge-row-actions)) { white-space: normal }
+  :where(.forge-table:has(.forge-row-actions) th:last-child) { text-align: end }
+  .forge-member-section { border-block-start: 1px solid var(--forge-hairline); margin-block-start: calc(3 * var(--forge-space)); padding-block-start: calc(2 * var(--forge-space)) }
+  :where(.forge-member-section) > h2 { margin-block-start: 0 }
+  :where(.forge-member-section#removed) > h2 { color: var(--forge-muted); font-size: var(--forge-text-base) }
+  :where(.forge-member-section .forge-table td) { overflow-wrap: anywhere }
+  .forge-member-identity { display: flex; align-items: center; flex-wrap: wrap; gap: var(--forge-space) }
+  :where(.forge-member-identity) > strong { min-inline-size: 0 }
+  .forge-member-legend { color: var(--forge-muted); font-size: var(--forge-text-small) }
   .forge-action { display: inline-flex; max-width: 100%; flex-wrap: wrap; align-items: end; gap: var(--forge-space); margin-block: calc(.5 * var(--forge-space)) }
   :where(.forge-action label) { display: flex; flex-direction: column; gap: calc(.5 * var(--forge-space)); min-width: 0; font-size: var(--forge-text-small) }
   :where(input:not([type="hidden"]), select, .forge-button) { min-height: var(--forge-control-height); max-width: 100%; padding: var(--forge-space) calc(1.5 * var(--forge-space)); border: 1px solid var(--forge-hairline); border-radius: var(--forge-radius); font: inherit; color: var(--forge-ink); background: var(--forge-surface) }
@@ -123,6 +142,7 @@ const style = `
   .forge-sheet__body { color: var(--forge-muted) }
   .forge-sheet__actions { display: flex; justify-content: end; flex-wrap: wrap; gap: var(--forge-space); margin: 0 }
   :where(.forge-sheet__actions) .forge-button { min-height: var(--forge-control-height); padding-block: var(--forge-space) }
+  .forge-sheet__fields { display: grid; flex: 1 0 100%; min-inline-size: 0; gap: var(--forge-space); margin-block: var(--forge-space) }
   @supports not selector(:popover-open) {
     .forge-sheet { max-width: 100%; margin: var(--forge-space) 0 }
     .forge-button[popovertarget] { display: none }
@@ -176,6 +196,7 @@ const style = `
   }
   @media (prefers-color-scheme: dark) {
     :where(.forge-detail__aside .forge-sheet)::backdrop { background: color-mix(in srgb, var(--forge-page) 72%, transparent) }
+    :where(.forge-sheet:has(.forge-sheet__fields), .forge-member-section .forge-sheet)::backdrop { background: color-mix(in srgb, var(--forge-page) 72%, transparent) }
   }
   @media (max-width: 66rem) {
     .forge-detail { grid-template-columns: minmax(0, 1fr) }
@@ -191,6 +212,7 @@ const style = `
     .forge-drawer__panel { margin-block-start: var(--forge-space); padding: var(--forge-space); border: 1px solid var(--forge-hairline); border-radius: var(--forge-radius); overflow-wrap: anywhere }
     :where(.forge-drawer__panel .forge-nav) { margin-block-end: calc(2 * var(--forge-space)) }
     .forge-content { padding-block: calc(3 * var(--forge-space)) }
+    .forge-page-actions { flex-basis: 100% }
     .forge-col--secondary, .forge-col--folded { display: none }
     .forge-fold { display: block; color: var(--forge-muted); overflow-wrap: anywhere }
     :where(.forge-table td[title], .forge-table td > span:has(+ .forge-fold)) { overflow-wrap: anywhere }

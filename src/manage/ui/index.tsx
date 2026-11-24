@@ -1,9 +1,11 @@
 import { Hono } from 'hono'
+import type { Child } from 'hono/jsx'
 import { z } from 'zod'
 import type { Config, Runtime } from '../../config'
-import type { Role } from '../../core'
+import type { Member, Role } from '../../core'
 import {
   changeMember,
+  countHumanMembers,
   createApiToken,
   createBot,
   isAdmin,
@@ -11,14 +13,13 @@ import {
   listTokens,
   revokeApiToken,
 } from '../../core/admin'
-import { createInvite, inviteKey, listInvites, revokeInvite } from '../../core/invites'
+import { countInvites, createInvite, inviteKey, listInvites, revokeInvite } from '../../core/invites'
+import { adminCountLimit, adminPageSize } from '../../core/pagination'
 import { readForm } from '../../http'
 import { messages } from '../../i18n'
 import { openInvite, requireBrowserSession, returnPath } from '../login'
 import { adminPages } from './admin-pages'
-import { Action, Fold, flash, Page, page, pageLink, Table, time, type UiContext } from './page'
-
-const pageSize = 50
+import { Action, Avatar, Badge, Fold, flash, Page, page, pageLink, Table, time, type UiContext } from './page'
 
 function withQuery(path: string, params: Record<string, string | undefined>) {
   const query = new URLSearchParams()
@@ -61,19 +62,22 @@ function RoleSelect({
 }) {
   const { legacy: text, roles } = messages(config)
   return (
-    <select aria-label={text.role} name="role">
-      <option value="viewer" selected={value === 'viewer'}>
-        {roles.viewer}
-      </option>
-      <option value="publisher" selected={value === 'publisher'}>
-        {roles.publisher}
-      </option>
-      {human && (
-        <option value="admin" selected={value === 'admin'}>
-          {roles.admin}
+    <label>
+      {text.role}
+      <select name="role">
+        <option value="viewer" selected={value === 'viewer'}>
+          {roles.viewer}
         </option>
-      )}
-    </select>
+        <option value="publisher" selected={value === 'publisher'}>
+          {roles.publisher}
+        </option>
+        {human && (
+          <option value="admin" selected={value === 'admin'}>
+            {roles.admin}
+          </option>
+        )}
+      </select>
+    </label>
   )
 }
 
@@ -145,102 +149,269 @@ async function memberAdmin(c: UiContext) {
   return { session, config, db: env.DB, common, text: common.legacy, actor: session.member.id }
 }
 
-app.get('/admin/members', async (c) => {
+const membersPath = '/admin/members'
+
+function MemberSection({
+  id,
+  title,
+  count,
+  empty,
+  next,
+  children,
+}: {
+  id: string
+  title: string
+  count: number
+  empty: string
+  next: Child
+  children: Child
+}) {
+  return (
+    <section id={id} class="forge-member-section" aria-labelledby={`${id}-title`}>
+      <h2 id={`${id}-title`}>
+        {title} ({count > adminCountLimit ? `${adminCountLimit}+` : count})
+      </h2>
+      {children || <p class="forge-empty">{empty}</p>}
+      {next}
+    </section>
+  )
+}
+
+app.get(membersPath, async (c) => {
   const admin = await memberAdmin(c)
   if (admin instanceof Response) return admin
   const { session, config, db, common, text, actor } = admin
-  const after = idSchema.safeParse(c.req.query('after')).data
+  const {
+    membership: copy,
+    roles,
+    confirmation: { cancel },
+  } = common
   const inviteCursor = c.req.query('inviteAfter')
-  const inviteAfter = inviteCursor && inviteKey.test(inviteCursor) ? inviteCursor : undefined
-  const [members, invites] = await Promise.all([
-    listMembers(db, actor, after),
-    listInvites(db, actor, inviteAfter),
-  ])
+  const cursors = {
+    pendingAfter: idSchema.safeParse(c.req.query('pendingAfter')).data,
+    after: idSchema.safeParse(c.req.query('after')).data,
+    inviteAfter: inviteCursor && inviteKey.test(inviteCursor) ? inviteCursor : undefined,
+    removedAfter: idSchema.safeParse(c.req.query('removedAfter')).data,
+  }
+  const [pending, active, removed, { invites, nextCursor: nextInvite }, memberCounts, inviteCount] =
+    await Promise.all([
+      listMembers(db, actor, { kind: 'human', status: 'pending', after: cursors.pendingAfter }),
+      listMembers(db, actor, { kind: 'human', status: 'active', after: cursors.after }),
+      listMembers(db, actor, { kind: 'human', status: 'removed', after: cursors.removedAfter }),
+      listInvites(db, actor, cursors.inviteAfter),
+      countHumanMembers(db, actor),
+      countInvites(db, actor),
+    ])
+  const next = (key: keyof typeof cursors, cursor: string | undefined, section: string, label: string) =>
+    cursor && pageLink(`${withQuery(membersPath, { ...cursors, [key]: cursor })}#${section}`, label)
+  const actionColumn = common.admin.actions
+
+  function humanRows(list: typeof active.members, status: Member['status']) {
+    if (list.length === 0) return null
+    const awaiting = status === 'pending'
+    const current = status === 'active'
+    const dateLabel = awaiting ? copy.requested : current ? copy.since : copy.removedOn
+    const columns = [
+      text.member,
+      ...(current || awaiting ? [{ folded: text.email }] : []),
+      ...(current ? [{ folded: text.provider }, { folded: text.role }, { folded: text.status }] : []),
+      { folded: dateLabel },
+      actionColumn,
+    ]
+    return (
+      <Table columns={columns}>
+        {list.map((member) => {
+          const self = actor === member.id
+          const date = time(config, status === 'removed' ? member.removedAt : member.createdAt)
+          const badge = current ? <Badge variant="ok">{text.active}</Badge> : null
+          const label = awaiting ? copy.approve : text.changeRole
+          const removeLabel = awaiting ? copy.refuse : text.remove
+          return (
+            <tr key={member.id}>
+              <td>
+                <div class="forge-member-identity">
+                  <Avatar name={member.name} />
+                  <strong dir="auto">{member.name}</strong>
+                  {awaiting && <Badge variant="warn">{text.pending}</Badge>}
+                  {self && <Badge variant="muted">{copy.you}</Badge>}
+                </div>
+                {(current || awaiting) && member.email && (
+                  <span class="forge-fold forge-member-email" title={member.email} hidden>
+                    {member.email}
+                  </span>
+                )}
+                {current && (
+                  <>
+                    {member.provider && <Fold label={text.provider}>{member.provider}</Fold>}
+                    <Fold label={text.role}>{roles[member.role]}</Fold>
+                    <Fold>{badge}</Fold>
+                  </>
+                )}
+                <Fold label={dateLabel}>{date}</Fold>
+              </td>
+              {(current || awaiting) && <td class="forge-col--folded">{member.email ?? '—'}</td>}
+              {current && (
+                <>
+                  <td class="forge-col--folded">{member.provider ?? '—'}</td>
+                  <td class="forge-col--folded">{roles[member.role]}</td>
+                  <td class="forge-col--folded">{badge}</td>
+                </>
+              )}
+              <td class="forge-col--folded">{date}</td>
+              <td>
+                {!self && (
+                  <div class="forge-row-actions">
+                    {status === 'removed' ? (
+                      <Action
+                        path={membersPath}
+                        action="reinstate"
+                        label={text.reinstate}
+                        fields={{ id: member.id }}
+                      />
+                    ) : (
+                      <>
+                        <Action
+                          path={membersPath}
+                          action={awaiting ? 'admit' : 'role'}
+                          label={label}
+                          fields={{ id: member.id }}
+                          sheet={{
+                            title: awaiting
+                              ? copy.approveTitle(member.name)
+                              : copy.changeRoleTitle(member.name),
+                            label,
+                            cancel,
+                          }}
+                        >
+                          <RoleSelect config={config} human value={awaiting ? 'viewer' : member.role} />
+                        </Action>
+                        <Action
+                          path={membersPath}
+                          action="remove"
+                          label={removeLabel}
+                          fields={{ id: member.id }}
+                          variant="danger"
+                          confirm={{
+                            title: awaiting ? copy.refuseTitle(member.name) : copy.removeTitle(member.name),
+                            body: awaiting ? copy.refuseBody : copy.removeBody,
+                            label: removeLabel,
+                            cancel,
+                          }}
+                        />
+                      </>
+                    )}
+                  </div>
+                )}
+              </td>
+            </tr>
+          )
+        })}
+      </Table>
+    )
+  }
+
   return page(
     c,
     session,
     common.members,
     <>
-      <Table
-        columns={[
-          text.member,
-          { folded: text.provider },
-          { folded: text.email },
-          text.status,
-          { folded: text.role },
-          common.admin.actions,
-        ]}
+      <MemberSection
+        id="pending"
+        title={copy.awaiting}
+        count={memberCounts.pending}
+        empty={copy.emptyPending}
+        next={next('pendingAfter', pending.nextCursor, 'pending', copy.nextPending)}
       >
-        {members.map((member) => (
-          <tr key={member.id}>
-            <td title={member.name}>
-              <span>{member.name}</span>
-              {member.email && (
-                <span class="forge-fold forge-member-email" title={member.email} hidden>
-                  {member.email}
-                </span>
-              )}
-              <Fold label={text.provider}>{member.provider ?? text.bot}</Fold>
-              <Fold label={text.role}>{common.roles[member.role]}</Fold>
-            </td>
-            <td class="forge-col--folded" title={member.provider ?? text.bot}>
-              {member.provider ?? text.bot}
-            </td>
-            <td class="forge-col--folded" title={member.email ?? undefined}>
-              {member.email ?? '—'}
-            </td>
-            <td>{text[member.status]}</td>
-            <td class="forge-col--folded">{common.roles[member.role]}</td>
-            <td>
-              {member.status !== 'removed' && (
-                <Action
-                  path="/admin/members"
-                  action={member.status === 'pending' ? 'admit' : 'role'}
-                  label={member.status === 'pending' ? text.admit : text.changeRole}
-                  fields={{ id: member.id }}
-                >
-                  <RoleSelect config={config} human={member.kind === 'human'} value={member.role} />
-                </Action>
-              )}
-              <Action
-                path="/admin/members"
-                action={member.status === 'removed' ? 'reinstate' : 'remove'}
-                label={member.status === 'removed' ? text.reinstate : text.remove}
-                fields={{ id: member.id }}
-              />
-            </td>
-          </tr>
-        ))}
-      </Table>
-      {members.length === pageSize &&
-        pageLink(withQuery('/admin/members', { after: members.at(-1)?.id, inviteAfter }), text.nextMembers)}
-      <h2>{text.inviteLinks}</h2>
-      <Action path="/admin/members" action="create-invite" variant="primary" label={text.createInvite}>
-        <RoleSelect config={config} human />
-      </Action>
-      <Table columns={[text.role, text.expires, common.admin.actions]}>
-        {invites.map((invite) => (
-          <tr key={invite.id}>
-            <td>{common.roles[invite.role]}</td>
-            <td>{time(config, invite.expiresAt)}</td>
-            <td>
-              <Action
-                path="/admin/members"
-                action="revoke-invite"
-                label={text.revoke}
-                fields={{ id: invite.id }}
-              />
-            </td>
-          </tr>
-        ))}
-      </Table>
-      {invites.length === pageSize &&
-        pageLink(withQuery('/admin/members', { after, inviteAfter: invites.at(-1)?.id }), text.nextInvites)}
+        {humanRows(pending.members, 'pending')}
+      </MemberSection>
+      <MemberSection
+        id="active"
+        title={common.members}
+        count={memberCounts.active}
+        empty={copy.emptyActive}
+        next={next('after', active.nextCursor, 'active', text.nextMembers)}
+      >
+        {humanRows(active.members, 'active')}
+      </MemberSection>
+      <MemberSection
+        id="invites"
+        title={text.inviteLinks}
+        count={inviteCount}
+        empty={copy.emptyInvites}
+        next={next('inviteAfter', nextInvite, 'invites', text.nextInvites)}
+      >
+        {invites.length > 0 ? (
+          <Table columns={[text.role, { folded: copy.created }, { folded: text.expires }, actionColumn]}>
+            {invites.map((invite) => {
+              const { creatorName } = invite
+              const created = (
+                <>
+                  {creatorName && <>{copy.createdBy(creatorName)} · </>}
+                  {time(config, invite.createdAt)}
+                </>
+              )
+              const expires = time(config, invite.expiresAt)
+              return (
+                <tr key={invite.id}>
+                  <td>
+                    <span>{roles[invite.role]}</span> <Badge variant="ok">{copy.valid}</Badge>
+                    <Fold label={copy.created}>{created}</Fold>
+                    <Fold label={text.expires}>{expires}</Fold>
+                  </td>
+                  <td class="forge-col--folded">{created}</td>
+                  <td class="forge-col--folded">{expires}</td>
+                  <td>
+                    <div class="forge-row-actions">
+                      <Action
+                        path={membersPath}
+                        action="revoke-invite"
+                        label={text.revoke}
+                        fields={{ id: invite.id }}
+                        variant="danger"
+                        confirm={{
+                          title: creatorName ? copy.revokeByTitle(creatorName) : copy.revokeTitle,
+                          body: copy.revokeBody,
+                          label: text.revoke,
+                          cancel,
+                        }}
+                      />
+                    </div>
+                  </td>
+                </tr>
+              )
+            })}
+          </Table>
+        ) : null}
+      </MemberSection>
+      <MemberSection
+        id="removed"
+        title={text.removed}
+        count={memberCounts.removed}
+        empty={copy.emptyRemoved}
+        next={next('removedAfter', removed.nextCursor, 'removed', copy.nextRemoved)}
+      >
+        {humanRows(removed.members, 'removed')}
+      </MemberSection>
+      <p class="forge-member-legend">{copy.legend(roles.viewer, roles.publisher, roles.admin)}</p>
     </>,
+    {
+      lead: copy.lead,
+      actions: (
+        <Action
+          path={membersPath}
+          action="create-invite"
+          variant="primary"
+          label={copy.invite}
+          sheet={{ title: copy.invite, label: text.createInvite, cancel }}
+        >
+          <RoleSelect config={config} human />
+        </Action>
+      ),
+    },
   )
 })
 
-app.post('/admin/members', async (c) => {
+app.post(membersPath, async (c) => {
   const admin = await memberAdmin(c)
   if (admin instanceof Response) return admin
   const { session, config, db, text, actor } = admin
@@ -251,8 +422,8 @@ app.post('/admin/members', async (c) => {
   const now = Date.now()
   if (data.action === 'create-invite') {
     const token = await createInvite(db, actor, data.role, now)
-    if (!token) return flash(c, session, '/admin/members', text.inviteNotAllowed)
-    return flash(c, session, '/admin/members', text.inviteCreated, `${config.manageOrigin}/invite/${token}`)
+    if (!token) return flash(c, session, membersPath, text.inviteNotAllowed)
+    return flash(c, session, membersPath, text.inviteCreated, `${config.manageOrigin}/invite/${token}`)
   }
   const changed =
     data.action === 'revoke-invite'
@@ -265,7 +436,7 @@ app.post('/admin/members', async (c) => {
     reinstate: text.reinstateDone,
     'revoke-invite': text.inviteRevoked,
   }
-  return flash(c, session, '/admin/members', changed ? notices[data.action] : text.memberNotAllowed)
+  return flash(c, session, membersPath, changed ? notices[data.action] : text.memberNotAllowed)
 })
 
 app.get('/admin/bots', async (c) => {
@@ -276,8 +447,8 @@ app.get('/admin/bots', async (c) => {
   const after = idSchema.safeParse(c.req.query('after')).data
   const botId = idSchema.safeParse(c.req.query('bot')).data
   const tokenAfter = idSchema.safeParse(c.req.query('tokenAfter')).data
-  const [bots, tokens] = await Promise.all([
-    listMembers(db, actor, after, true),
+  const [{ members: bots, nextCursor: nextBot }, tokens] = await Promise.all([
+    listMembers(db, actor, { kind: 'bot', after }),
     botId ? listTokens(db, actor, botId, tokenAfter) : null,
   ])
   const selectedBot = bots.find((bot) => bot.id === botId)
@@ -312,8 +483,7 @@ app.get('/admin/bots', async (c) => {
           </section>
         )
       })}
-      {bots.length === pageSize &&
-        pageLink(withQuery('/admin/bots', { after: bots.at(-1)?.id }), text.nextBots)}
+      {nextBot && pageLink(withQuery('/admin/bots', { after: nextBot }), text.nextBots)}
       {tokens && (
         <section id="bot-tokens">
           <h2>
@@ -333,7 +503,7 @@ app.get('/admin/bots', async (c) => {
               </li>
             ))}
           </ul>
-          {tokens.length === pageSize &&
+          {tokens.length === adminPageSize &&
             pageLink(
               `${withQuery('/admin/bots', { after, bot: botId, tokenAfter: tokens.at(-1)?.id })}#bot-tokens`,
               text.nextCredentials,

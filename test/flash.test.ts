@@ -3,8 +3,8 @@ import { expect, it, vi } from 'vitest'
 import {
   admin,
   type Browser,
+  createdBotId,
   flashNavigation,
-  listedId,
   location,
   provider,
   runtime,
@@ -19,9 +19,9 @@ setupOidc()
 const bots = '/admin/bots'
 const tokenPattern = /<code>(fgt_[A-Za-z0-9_-]{43})<\/code>/
 
-async function createBot(owner: Browser, name: string, display = name) {
+async function createBot(owner: Browser, name: string) {
   expect((await owner.post(bots, { action: 'create', name, role: 'publisher' })).status).toBe(303)
-  return listedId(owner, '/admin/members', display)
+  return createdBotId(name)
 }
 
 async function mint(owner: Browser, id: string) {
@@ -42,7 +42,7 @@ it('keeps the continuation unconsumed without a document navigation or the issui
   const owner = await idp.signedIn(send, admin)
   const otherSession = await idp.signedIn(send, admin)
   const name = 'Flash owner $&'
-  const id = await createBot(owner, name, 'Flash owner')
+  const id = await createBot(owner, name)
   const url = await mint(owner, id)
 
   for (const headers of [

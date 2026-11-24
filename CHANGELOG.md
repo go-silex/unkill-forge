@@ -7,6 +7,7 @@
 - Open the artefact catalogue at the Manage home. Filter by access with catalogue-wide totals, see access badges and versions at a glance, and find sign-out in the navigation account block.
 - Show relative dates in Manage with absolute timestamps on hover. Set the optional `TIMEZONE` to change the display zone; it defaults to UTC.
 - Manage Private, Shared and Public access from one control on the artefact detail page. Copy the canonical address, manage individual share links, and browse or restore older versions from a timeline.
+- Separate pending, active and removed people from invitation links on Members. Review each list independently and open role, approval and invitation forms without leaving the page.
 - Upgrade: no D1 migration, binding or required config change.
 
 ## v2.5.1 — 2026-11-24

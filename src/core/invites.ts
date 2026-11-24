@@ -1,4 +1,5 @@
 import { auditChange, hashSecret, type Role, randomSecret } from './index'
+import { adminCountLimit, adminPageSize, trimLookahead } from './pagination'
 
 export const inviteKey = /^[A-Za-z0-9_-]{43}$/
 
@@ -25,14 +26,32 @@ export async function consumeInviteContext(db: D1Database, id: string, browser: 
 }
 
 export async function listInvites(db: D1Database, actor: string, after = '') {
-  const { results } = await db
-    .prepare(`SELECT token_hash AS id, role, expires_at AS expiresAt FROM invites
-      WHERE used_at IS NULL AND expires_at > unixepoch('subsec') * 1000
+  const { results: invites } = await db
+    .prepare(`SELECT i.token_hash AS id, i.role, i.expires_at AS expiresAt,
+      i.created_at AS createdAt, creator.name AS creatorName
+      FROM (
+        SELECT token_hash, role, expires_at, created_at, created_by FROM invites
+        WHERE used_at IS NULL AND expires_at > unixepoch('subsec') * 1000
+        AND EXISTS (SELECT 1 FROM members WHERE id = ? AND status = 'active' AND role = 'admin')
+        AND token_hash > ? ORDER BY token_hash LIMIT ?
+      ) i LEFT JOIN members creator ON creator.id = i.created_by
+      ORDER BY i.token_hash`)
+    .bind(actor, after, adminPageSize + 1)
+    .all<{ id: string; role: Role; expiresAt: number; createdAt: number; creatorName: string | null }>()
+  return { invites, nextCursor: trimLookahead(invites, adminPageSize)?.id }
+}
+
+export async function countInvites(db: D1Database, actor: string) {
+  return (
+    (await db
+      .prepare(`SELECT COUNT(*) AS total FROM (
+      SELECT 1 FROM invites WHERE used_at IS NULL AND expires_at > unixepoch('subsec') * 1000
       AND EXISTS (SELECT 1 FROM members WHERE id = ? AND status = 'active' AND role = 'admin')
-      AND token_hash > ? ORDER BY token_hash LIMIT 50`)
-    .bind(actor, after)
-    .all<{ id: string; role: Role; expiresAt: number }>()
-  return results
+      LIMIT ?
+    )`)
+      .bind(actor, adminCountLimit + 1)
+      .first<number>('total')) ?? 0
+  )
 }
 
 export async function createInvite(
