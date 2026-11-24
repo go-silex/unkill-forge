@@ -32,25 +32,44 @@ export function Action({
     : null
   const buttonClass = variant ? `forge-button forge-button--${variant}` : 'forge-button'
   if (confirm) {
-    const id = `forge-sheet-${[action, ...Object.values(fields ?? {})]
-      .join('-')
-      .toLowerCase()
-      .replace(/[^a-z0-9-]/g, '-')}`
+    const id = `forge-sheet-${[action, ...Object.entries(fields ?? {}).flat()]
+      .map((part) =>
+        String(part)
+          .toLowerCase()
+          .replace(/[^a-z0-9-]/g, '-'),
+      )
+      .join('_')}`
     const titleId = `${id}-title`
+    const bodyId = `${id}-body`
     return (
-      <>
+      <div class="forge-action">
         <button type="button" class={buttonClass} popovertarget={id}>
           {label}
         </button>
-        <div id={id} class="forge-sheet" popover="auto" role="alertdialog" aria-labelledby={titleId}>
+        <div
+          id={id}
+          class="forge-sheet"
+          popover="auto"
+          role="alertdialog"
+          aria-labelledby={titleId}
+          aria-describedby={bodyId}
+        >
           <h2 id={titleId} class="forge-sheet__title">
             {confirm.title}
           </h2>
-          <p class="forge-sheet__body">{confirm.body}</p>
+          <p id={bodyId} class="forge-sheet__body">
+            {confirm.body}
+          </p>
           <form class="forge-sheet__actions" method="post" action={path}>
             {inputs}
             {children}
-            <button type="button" class="forge-button" popovertarget={id} popovertargetaction="hide">
+            <button
+              type="button"
+              class="forge-button"
+              popovertarget={id}
+              popovertargetaction="hide"
+              autofocus
+            >
               {confirm.cancel}
             </button>
             <button
@@ -63,7 +82,7 @@ export function Action({
             </button>
           </form>
         </div>
-      </>
+      </div>
     )
   }
   return (

@@ -481,7 +481,7 @@ adminPages.get(
               label={t('delete')}
               fields={{ artefactId: artefact.id }}
               confirm={{
-                title: confirmation.deleteTitle(artefact.title),
+                title: confirmation.deleteTitle(artefact.title.trim() || artefact.slug),
                 body: confirmation.deleteBody(deletedRetentionMs / (24 * 60 * 60 * 1_000)),
                 label: confirmation.deleteLabel,
                 cancel: confirmation.cancel,
@@ -597,7 +597,7 @@ adminPages.get(
                       entry.purging
                         ? undefined
                         : {
-                            title: confirmation.purgeTitle(entry.title ?? entry.slug),
+                            title: confirmation.purgeTitle(entry.title?.trim() || entry.slug),
                             body: confirmation.purgeBody,
                             label: confirmation.purgeLabel,
                             cancel: confirmation.cancel,

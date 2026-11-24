@@ -229,7 +229,7 @@ These classes and the custom properties above are the supported theme contract. 
 | `.forge-notice`, `.forge-secret`, `.forge-empty`                                                  | Flash notice, one-use secret and copy action group, and empty-state text                                   |
 | `.forge-link-list`                                                                                | Sign-in provider links or public artefact list                                                             |
 
-Confirmation sheets use the native `popover` attribute without JavaScript (Chrome 114+, Safari 17+, Firefox 125+). Older browsers show the confirmation inline. Themes must not set `display` on `.forge-sheet` outside `:popover-open`, or closed sheets may become visible.
+Confirmation sheets use the native `popover` attribute without JavaScript (Chrome 114+, Safari 17+, Firefox 125+). Older browsers show each confirmation inline, with its heading, explanation and confirm button, and hide the opener and cancel controls that cannot work there. Themes must not set `display` on `.forge-sheet` outside `:popover-open`, or closed sheets may become visible. `.forge-button--danger-solid` fills with `--forge-danger` and uses `--forge-surface` for its label, the reverse of the outlined danger button.
 
 On narrow screens, opening the native drawer pushes the page down. Keep row identifiers and actions visible when hiding secondary table metadata. Dense table buttons use the compact height only when the primary pointer is fine and no coarse pointer is available.
 

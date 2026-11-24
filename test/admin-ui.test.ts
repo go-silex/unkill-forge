@@ -59,17 +59,21 @@ async function artefactId(browser: Browser, path = detail) {
 
 function sheets(document: string) {
   const panels = Array.from(
-    document.matchAll(/<div id="(forge-sheet-[a-z0-9-]+)" class="forge-sheet"([^>]*)>(.*?)<\/div>/gs),
+    document.matchAll(/<div id="(forge-sheet-[a-z0-9_-]+)" class="forge-sheet"([^>]*)>(.*?)<\/div>/gs),
     ([, id, attributes, contents]) => {
       expect(attributes).toMatch(/\bpopover(?:="(?:auto)?")?(?=\s|$)/)
       expect(attributes).toContain('role="alertdialog"')
       expect(attributes).toContain(`aria-labelledby="${id}-title"`)
-      expect(document).toMatch(new RegExp(`<button[^>]*type="button"[^>]*popovertarget="${id}"[^>]*>`))
+      expect(attributes).toContain(`aria-describedby="${id}-body"`)
+      expect(contents).toContain(`<p id="${id}-body" class="forge-sheet__body">`)
+      expect(document).toMatch(new RegExp(`<button[^>]*type="button"[^>]*popovertarget="${id}">`))
       expect(contents).toContain(`<h2 id="${id}-title" class="forge-sheet__title">`)
       const form = /<form class="forge-sheet__actions" method="post"[^>]*>(.*?)<\/form>/s.exec(contents)?.[1]
       if (!form) throw new Error('Expected a confirmation POST form')
       expect(form).toMatch(
-        new RegExp(`<button[^>]*type="button"[^>]*popovertarget="${id}"[^>]*popovertargetaction="hide"`),
+        new RegExp(
+          `<button[^>]*type="button"[^>]*popovertarget="${id}"[^>]*popovertargetaction="hide"[^>]* autofocus`,
+        ),
       )
       const action =
         /<button[^>]*type="submit"[^>]*class="forge-button forge-button--danger-solid"[^>]*name="action" value="([^"]+)"/.exec(
@@ -533,7 +537,7 @@ it('restores a revision, reveals and revokes share links, then renames and resto
     first,
   )?.[1]
   if (!url) throw new Error('Expected a share URL in the flash')
-  expect(first).toContain('data-copy')
+  expect(first).toContain(`<p class="forge-secret"><code>${url}</code><button`)
   expect(await html(owner, detail)).not.toContain(url)
   const shareId = await db.prepare('SELECT id FROM share_links').first<string>('id')
   if (!shareId) throw new Error('Expected a share link ID')
@@ -566,9 +570,13 @@ it('confirms deletion and purge with separate forms for each deleted artefact', 
   const send = runtime({ LOCALE: 'fr' })
   const owner = await mockProvider().signedIn(send, admin)
   const token = await issueToken(owner, 'Confirmation fixture')
-  for (const name of ['confirm-first', 'confirm-second']) {
+  for (const [name, title] of [
+    ['confirm-first', 'confirm-first'],
+    ['confirm-second', 'confirm-second'],
+    ['confirm-blank', '  '],
+  ]) {
     const path = `/artefacts/${name}`
-    await publish(send, token, name, name)
+    await publish(send, token, name, title)
     const panels = sheets(await html(owner, path))
     expect(panels).toHaveLength(1)
     const [sheet] = panels
@@ -581,7 +589,7 @@ it('confirms deletion and purge with separate forms for each deleted artefact', 
     expect((await owner.request(path)).status).toBe(404)
   }
   const panels = sheets(await html(owner, deleted))
-  expect(panels).toHaveLength(2)
+  expect(panels).toHaveLength(3)
   const names = []
   for (const { contents, form, action } of panels) {
     const name = formValue(form, 'slug')
@@ -593,7 +601,7 @@ it('confirms deletion and purge with separate forms for each deleted artefact', 
     await post(owner, deleted, { action, slug: name, id: formValue(form, 'id') })
     expect(await html(owner, deleted)).not.toContain(name)
   }
-  expect(names.sort()).toEqual(['confirm-first', 'confirm-second'])
+  expect(names.sort()).toEqual(['confirm-blank', 'confirm-first', 'confirm-second'])
 })
 
 it('continues an interrupted purge after its artefact row has already been removed', async () => {

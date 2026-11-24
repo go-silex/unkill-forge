@@ -100,8 +100,7 @@ const style = `
   .forge-button--primary { color: var(--forge-on-accent); background: var(--forge-accent); border-color: var(--forge-accent) }
   .forge-button--danger { color: var(--forge-danger) }
   @media (pointer: fine) and (not (any-pointer: coarse)) { :where(.forge-table .forge-button) { min-height: 2rem; padding-block: calc(.5 * var(--forge-space)) } }
-  :where(.forge-action) + .forge-button:where([popovertarget]) { margin-inline-start: var(--forge-space) }
-  .forge-button--danger-solid { background: var(--forge-danger); color: var(--forge-page); border-color: var(--forge-danger) }
+  .forge-button--danger-solid { background: var(--forge-danger); color: var(--forge-surface); border-color: var(--forge-danger) }
   .forge-sheet { margin: auto; width: min(28rem, calc(100vw - 2rem)); padding: calc(3 * var(--forge-space)); border: 1px solid var(--forge-hairline); border-radius: calc(1.5 * var(--forge-radius)); background: var(--forge-surface); color: var(--forge-ink); font: inherit; white-space: normal; text-align: start; overflow-wrap: break-word }
   :where(.forge-sheet)::backdrop { background: color-mix(in srgb, var(--forge-ink) 45%, transparent) }
   .forge-sheet__title { margin: 0; font-size: var(--forge-text-heading) }
@@ -110,6 +109,7 @@ const style = `
   :where(.forge-sheet__actions) .forge-button { min-height: var(--forge-control-height); padding-block: var(--forge-space) }
   @supports not selector(:popover-open) {
     .forge-sheet { max-width: 100%; margin: var(--forge-space) 0 }
+    .forge-button[popovertarget] { display: none }
   }
   .forge-copy { display: flex; flex-wrap: wrap; align-items: start; gap: var(--forge-space) }
   :where(.forge-copy) > code { min-width: 0; overflow-wrap: anywhere }
