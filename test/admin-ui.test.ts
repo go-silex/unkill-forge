@@ -2003,8 +2003,13 @@ it.each(['en', 'fr'] as const)(
       'Terminal',
       'Robot',
     ])
-    expect(panels[0][4]).toMatch(
-      /^<li><ul><li>[^<]+<\/li><li>[^<]+<\/li><\/ul><\/li><li>[^<]*CIMD[^<]*<\/li>$/,
+    const claudeAiSteps = /^<li><ul><li>([^<]+)<\/li><li>([^<]+)<\/li><\/ul><\/li><li>([^<]+)<\/li>$/.exec(
+      panels[0][4],
+    )
+    expect(claudeAiSteps?.[1]).toMatch(french ? /^Compte individuel :/ : /^Individual accounts:/)
+    expect(claudeAiSteps?.[2]).toMatch(french ? /^Team et Enterprise :/ : /^Team and Enterprise:/)
+    expect(claudeAiSteps?.[3]).toMatch(
+      french ? /^Saisissez un nom et l’URL MCP.*CIMD/ : /^Enter a name and the MCP URL.*CIMD/,
     )
     expect(panels[1][4]).toContain('JSON')
     expect(panels[2][4]).toContain(

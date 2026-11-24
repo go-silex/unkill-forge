@@ -392,7 +392,7 @@ it.each(['en', 'fr'] as const)(
 it('folds Unicode search without stripping accents or splitting surrogate pairs', async () => {
   const indexed = runtime({ PUBLIC_INDEX: 'true' })
   const { call } = await fixture(indexed)
-  const title = 'ΟΣ Straße Café 🧭'
+  const title = 'ΟΣ Straße Café 🧭 ısparta İzmir ΐ'
   await call('publish', {
     slug: 'field-notes',
     title,
@@ -406,10 +406,12 @@ it('folds Unicode search without stripping accents or splitting surrogate pairs'
     expect(response.status).toBe(200)
     return response.text()
   }
-  for (const q of ['Σ', 'STRASSE', 'STRAẞE', 'CAFE\u0301', '🧭']) {
+  for (const q of ['Σ', 'STRASSE', 'STRAẞE', 'CAFE\u0301', '🧭', 'i\u0307zmir', 'İzmir', 'ısparta', 'ΐ']) {
     expect(await search(q)).toContain(title)
   }
-  expect(await search('CAFE')).not.toContain(title)
+  for (const q of ['CAFE', 'ISPARTA', 'ι']) {
+    expect(await search(q)).not.toContain(title)
+  }
   const prefix = `${'🧭'.repeat(49)}x`
   const clamped = await search(`${prefix}🧭`)
   expect(clamped).toContain(`value="${prefix}" maxlength="100"`)

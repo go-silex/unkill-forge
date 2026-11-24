@@ -114,8 +114,9 @@ async function home(runtime: Runtime, params: URLSearchParams, head: boolean, ct
     )
   }
 
-  // NFC preserves accents; uppercasing unifies sigma and both forms of sharp S expand to SS.
-  const fold = (value: string) => value.normalize('NFC').replaceAll('ẞ', 'SS').toUpperCase()
+  // Folds beyond final sigma and sharp S (such as ligatures) are out of scope.
+  const fold = (value: string) =>
+    value.normalize('NFC').toLowerCase().replaceAll('ς', 'σ').replaceAll('ß', 'ss').normalize('NFC')
   const queryLimit = 100
   const q = (params.get('q') ?? '')
     .trim()
