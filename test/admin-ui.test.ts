@@ -5,11 +5,13 @@ import { expect, it, vi } from 'vitest'
 import type { Env } from '../src/config'
 import { hashSecret } from '../src/core'
 import { createOwnToken, revokeOwnToken } from '../src/core/admin'
+import { deletedRetentionMs } from '../src/core/artefacts'
 import { catalogueCountLimit } from '../src/core/catalogue'
-import { time } from '../src/manage/ui/page'
+import { Action, Avatar, absoluteTime, time } from '../src/manage/ui/page'
 import {
   admin,
   Browser,
+  createdBotId,
   flashNavigation,
   formValue,
   type Handle,
@@ -61,32 +63,60 @@ async function artefactId(browser: Browser, path = detail) {
 
 function sheets(document: string) {
   const panels = Array.from(
-    document.matchAll(/<div id="(forge-sheet-[a-z0-9_-]+)" class="forge-sheet"([^>]*)>(.*?)<\/div>/gs),
+    document.matchAll(
+      /<div id="(forge-sheet-[a-z0-9_-]+)" class="forge-sheet"([^>]*)>(.*?<\/form>)<\/div>/gs,
+    ),
     ([, id, attributes, contents]) => {
       expect(attributes).toMatch(/\bpopover(?:="(?:auto)?")?(?=\s|$)/)
-      expect(attributes).toContain('role="alertdialog"')
+      const kind = /role="(alertdialog|dialog)"/.exec(attributes)?.[1]
+      expect(kind).toBeDefined()
       expect(attributes).toContain(`aria-labelledby="${id}-title"`)
-      expect(attributes).toContain(`aria-describedby="${id}-body"`)
-      expect(contents).toContain(`<p id="${id}-body" class="forge-sheet__body">`)
+      if (kind === 'alertdialog' || attributes.includes('aria-describedby')) {
+        expect(attributes).toContain(`aria-describedby="${id}-body"`)
+        expect(contents).toContain(`<p id="${id}-body" class="forge-sheet__body">`)
+      }
       expect(document).toMatch(new RegExp(`<button[^>]*type="button"[^>]*popovertarget="${id}">`))
       expect(contents).toContain(`<h2 id="${id}-title" class="forge-sheet__title">`)
-      const form = /<form class="forge-sheet__actions" method="post"[^>]*>(.*?)<\/form>/s.exec(contents)?.[1]
-      if (!form) throw new Error('Expected a confirmation POST form')
+      const match =
+        /<form class="forge-sheet__actions" method="post"(?: action="([^"]+)")?>(.*?)<\/form>/s.exec(contents)
+      if (!match) throw new Error('Expected a sheet POST form')
+      const [, path, form] = match
       expect(form).toMatch(
         new RegExp(
           `<button[^>]*type="button"[^>]*popovertarget="${id}"[^>]*popovertargetaction="hide"[^>]* autofocus`,
         ),
       )
-      const action =
-        /<button[^>]*type="submit"[^>]*class="forge-button forge-button--danger-solid"[^>]*name="action" value="([^"]+)"/.exec(
-          form,
-        )?.[1]
-      if (!action) throw new Error('Expected a confirm submit button')
-      return { id, contents, form, action }
+      const action = /<button[^>]*type="submit"[^>]*name="action" value="([^"]+)"/.exec(form)?.[1]
+      if (!action) throw new Error('Expected a sheet submit button')
+      expect(form).toContain(
+        `class="forge-button forge-button--${kind === 'alertdialog' ? 'danger-solid' : 'primary'}"`,
+      )
+      return { id, contents, path, form, action, kind }
     },
   )
   expect(new Set(panels.map(({ id }) => id)).size).toBe(panels.length)
   return panels
+}
+
+function openedSheet(scope: string, label: string, path: string) {
+  const opener = Array.from(
+    scope.matchAll(/<button type="button"[^>]*popovertarget="([^"]+)"[^>]*>([^<]+)<\/button>/g),
+  ).filter(([, , name]) => name === label)
+  expect(opener).toHaveLength(1)
+  const panel = sheets(scope).find(({ id }) => id === opener[0][1])
+  if (!panel) throw new Error(`Missing panel for ${label}`)
+  expect(panel.path).toBe(path)
+  return { ...panel, path }
+}
+
+function directAction(scope: string, action: string, expectedPath: string) {
+  const matches = Array.from(
+    scope.matchAll(/<form class="forge-action" action="([^"]+)" method="post">(.*?)<\/form>/gs),
+  ).filter(([, , form]) => form.includes(`name="action" value="${action}"`))
+  expect(matches).toHaveLength(1)
+  const [, path, form] = matches[0]
+  expect(path).toBe(expectedPath)
+  return { path, form, action }
 }
 
 async function issueToken(browser: Browser, name: string) {
@@ -245,6 +275,10 @@ it('refuses every browser mutation without the manage origin and refuses insuffi
     }
   }
   expect((await viewer.request(tokens)).status).toBe(403)
+  for (const browser of [viewer, publisher]) {
+    for (const path of [bots, redirects, deleted]) expect((await browser.request(path)).status).toBe(403)
+    expect((await browser.post(bots, { action: 'create', name: 'Denied', role: 'viewer' })).status).toBe(403)
+  }
   expect((await viewer.request(detail)).status).toBe(200)
   const publisherDetail = await html(publisher, detail)
   expect(publisherDetail).toContain('forge-detail__aside')
@@ -287,7 +321,11 @@ it('shows a personal token exactly once, stores its hash, records use and enforc
     .first<{ id: string; hash: string; used: number | null }>()
   expect(row).toEqual({ id: expect.any(String), hash: await hashSecret(token), used: null })
   if (!row) throw new Error('Expected a persisted token hash')
-  const ownerId = await listedId(owner, members, 'owner@example.test')
+  const ownerId = await db
+    .prepare('SELECT id FROM members WHERE email = ?')
+    .bind(`${admin}@example.test`)
+    .first<string>('id')
+  if (!ownerId) throw new Error('Expected an authenticated administrator')
   expect(await revokeOwnToken(db, ownerId, row.id, Date.now())).toBe(false)
   expect(await db.prepare('SELECT revoked_at FROM api_tokens WHERE id = ?').bind(row.id).first()).toEqual({
     revoked_at: null,
@@ -304,12 +342,365 @@ it('shows a personal token exactly once, stores its hash, records use and enforc
   await post(owner, tokens, { action: 'revoke', id: row.id })
   await post(owner, bots, { action: 'revoke', id: row.id })
   expect((await mcpCall(send, token)).status).toBe(200)
-  expect(await post(publisher, tokens, { action: 'revoke', id: row.id })).toContain('Token revoked.')
+  const revoke = listTokenSheet(list, 'Terminal token')
+  expect(formValue(revoke.form, 'id')).toBe(row.id)
+  expect(
+    await post(publisher, revoke.path, { action: revoke.action, id: formValue(revoke.form, 'id') }),
+  ).toContain('Token revoked.')
+  expect(await html(publisher, tokens)).toContain('forge-badge--muted">Revoked')
   expect((await mcpCall(send, token)).status).toBe(401)
   const overloaded = await publisher.post(tokens, { action: 'create', name: 'a'.repeat(40_000) })
   expect(overloaded.status).toBe(400)
 })
 
+function listTokenSheet(document: string, name: string) {
+  const sheet = openedSheet(namedRow(document, `<strong>${name}</strong>`), 'Revoke token', tokens)
+  expect(sheet.action).toBe('revoke')
+  expect(sheet.contents).toContain(`Revoke “${name}”?`)
+  return sheet
+}
+
+it('opens separate personal token confirmations and revokes only the submitted row', async () => {
+  const send = runtime()
+  const owner = await mockProvider().signedIn(send, admin)
+  expect(await html(owner, tokens)).toContain('You have no tokens yet.')
+  const first = await issueToken(owner, 'Terminal')
+  const second = await issueToken(owner, 'Pipeline')
+  const document = await html(owner, tokens)
+  const create = openedSheet(document, 'Create a token', tokens)
+  expect(create.action).toBe('create')
+  expect(create.form).toContain('name="name"')
+  expect(document).toContain('without a token. <a href="/connect">')
+  for (const [name, token] of [
+    ['Terminal', first],
+    ['Pipeline', second],
+  ]) {
+    const sheet = listTokenSheet(document, name)
+    expect(document).not.toContain(token)
+    expect(
+      await db
+        .prepare('SELECT name FROM api_tokens WHERE id = ? AND token_hash = ?')
+        .bind(formValue(sheet.form, 'id'), await hashSecret(token))
+        .first('name'),
+    ).toBe(name)
+  }
+  const sheet = listTokenSheet(document, 'Pipeline')
+  await post(owner, sheet.path, { action: sheet.action, id: formValue(sheet.form, 'id') })
+  expect((await mcpCall(send, first)).status).toBe(200)
+  expect((await mcpCall(send, second)).status).toBe(401)
+})
+
+it('selects robots and applies only the submitted lifecycle action and credential id', async () => {
+  const send = runtime()
+  const owner = await mockProvider().signedIn(send, admin)
+  expect(await html(owner, bots)).toContain('No robots yet.')
+  const initial = sheets(await html(owner, bots)).find(({ action }) => action === 'create')
+  expect(initial?.form).toContain('value="viewer" selected')
+  expect(initial?.form).not.toContain('value="admin"')
+  await post(owner, bots, { action: 'create', name: 'Build robot', role: 'viewer' })
+  const id = await createdBotId('Build robot')
+  const selected = `${bots}?bot=${id}`
+  const empty = await html(owner, selected)
+  expect(empty).toContain(`href="${selected}#bot-tokens" aria-current="true">Build robot`)
+  expect(empty).toContain('No credentials for this robot.')
+  const human = await db.prepare("SELECT id FROM members WHERE kind = 'human'").first<string>('id')
+  for (const nonBot of ['not-an-id', crypto.randomUUID(), human]) {
+    expect(await html(owner, `${bots}?bot=${nonBot}`)).not.toContain('id="bot-tokens"')
+  }
+  expect(await html(owner, `${selected}&after=${id}`)).toContain('id="bot-tokens"')
+  const credential = async (name: string) => {
+    const result = await post(owner, selected, { action: 'token', id, name })
+    const secret = tokenPattern.exec(result)?.[1]
+    if (!secret) throw new Error('Expected one-time credential')
+    expect(result).toContain('data-secret-flash')
+    return secret
+  }
+  const first = await credential('CI runner')
+  const second = await credential('Nightly worker')
+  const page = await html(owner, selected)
+  expect(page).not.toContain(first)
+  expect(page).not.toContain(second)
+  const role = openedSheet(page, 'Change role', selected)
+  const remove = openedSheet(page, 'Deactivate robot', selected)
+  expect(role.action).toBe('role')
+  expect(remove.action).toBe('remove')
+  expect(formValue(role.form, 'expect')).toBe('active')
+  expect(formValue(remove.form, 'expect')).toBe('active')
+  expect(role.contents).toContain('Change role for “Build robot”')
+  expect(role.form).toContain('value="viewer" selected')
+  expect(role.form).not.toContain('value="admin"')
+  expect(formValue(role.form, 'id')).toBe(id)
+  expect(formValue(remove.form, 'id')).toBe(id)
+  expect(remove.contents).toContain('Deactivate “Build robot”?')
+  expect(remove.contents).toContain('all its credentials will stop working')
+  const changed = await post(owner, role.path, {
+    action: role.action,
+    id: formValue(role.form, 'id'),
+    role: 'publisher',
+    expect: formValue(role.form, 'expect'),
+  })
+  expect(sheets(changed).find(({ action }) => action === 'role')?.form).toContain(
+    'value="publisher" selected',
+  )
+  expect((await owner.post(selected, { action: 'role', id, role: 'admin' })).status).toBe(400)
+  expect((await whoami(send, first)).role).toBe('publisher')
+  const credentialRow = (name: string) => {
+    const row = Array.from(page.matchAll(/<li>(.*?)<\/li>/gs), ([, contents]) => contents).find((contents) =>
+      contents.includes(`<strong>${name}</strong>`),
+    )
+    if (!row) throw new Error(`Missing credential row for ${name}`)
+    return row
+  }
+  for (const [name, token] of [
+    ['CI runner', first],
+    ['Nightly worker', second],
+  ]) {
+    const sheet = openedSheet(credentialRow(name), 'Revoke', selected)
+    expect(sheet.action).toBe('revoke')
+    expect(sheet.contents).toContain(`Revoke “${name}”?`)
+    expect(
+      await db
+        .prepare('SELECT name FROM api_tokens WHERE id = ? AND token_hash = ?')
+        .bind(formValue(sheet.form, 'id'), await hashSecret(token))
+        .first('name'),
+    ).toBe(name)
+  }
+  const revoke = openedSheet(credentialRow('CI runner'), 'Revoke', selected)
+  expect(
+    await post(owner, revoke.path, { action: revoke.action, id: formValue(revoke.form, 'id') }),
+  ).toContain('<s>CI runner</s>')
+  expect((await mcpCall(send, first)).status).toBe(401)
+  expect((await mcpCall(send, second)).status).toBe(200)
+  const removed = await post(owner, remove.path, {
+    action: remove.action,
+    id: formValue(remove.form, 'id'),
+    expect: formValue(remove.form, 'expect'),
+  })
+  expect(removed).toContain('forge-badge--muted">Removed')
+  expect(removed).toContain('<s>Nightly worker</s>')
+  expect(removed).toContain('Robot deactivated. All its credentials were revoked.')
+  const reinstate = directAction(removed, 'reinstate', selected)
+  expect(reinstate.form).toContain('>Reactivate robot</button>')
+  expect(formValue(reinstate.form, 'id')).toBe(id)
+  expect((await mcpCall(send, second)).status).toBe(401)
+  const reinstated = await post(owner, reinstate.path, {
+    action: reinstate.action,
+    id: formValue(reinstate.form, 'id'),
+  })
+  expect(reinstated).toContain('Previous credentials remain revoked; create new credentials to use it.')
+  expect((await mcpCall(send, second)).status).toBe(401)
+})
+
+it('rejects malformed or human-targeted robot mutations without changing access, credentials or audit', async () => {
+  const owner = await mockProvider().signedIn(runtime(), admin)
+  await post(owner, bots, { action: 'create', name: 'Build robot', role: 'viewer' })
+  const id = await createdBotId('Build robot')
+  const human = await db.prepare("SELECT id FROM members WHERE kind = 'human'").first<string>('id')
+  if (!human) throw new Error('Expected a human member')
+  const selected = `${bots}?bot=${id}`
+  await post(owner, selected, { action: 'token', id, name: 'CI runner' })
+  await issueToken(owner, 'Personal fixture')
+  const snapshot = async () => {
+    const [members, credentials, audit] = await db.batch([
+      db.prepare('SELECT id, status, role, removed_at FROM members ORDER BY id'),
+      db.prepare('SELECT id, revoked_at FROM api_tokens ORDER BY id'),
+      db.prepare('SELECT id, action, detail_json FROM audit_log ORDER BY id'),
+    ])
+    return [members.results, credentials.results, audit.results]
+  }
+  const before = await snapshot()
+  const malformed = [
+    new URLSearchParams([
+      ['action', 'remove'],
+      ['id', human],
+      ['id', id],
+      ['expect', 'active'],
+    ]),
+    new URLSearchParams({ action: 'remove', id, expect: 'active', extra: 'unexpected' }),
+    new URLSearchParams({ action: 'remove', expect: 'active' }),
+    new URLSearchParams({ action: 'role', id, expect: 'active' }),
+  ]
+  for (const body of malformed) {
+    expect(
+      (await owner.request(selected, { method: 'POST', headers: { origin: manage }, body })).status,
+    ).toBe(400)
+    expect(await snapshot()).toEqual(before)
+  }
+  expect(await post(owner, selected, { action: 'remove', id: human, expect: 'active' })).toContain(
+    'Bot action not allowed',
+  )
+  expect(await snapshot()).toEqual(before)
+})
+
+it('bounds robot summaries independently of credential history and keeps both cursors', async () => {
+  const send = runtime()
+  const owner = await mockProvider().signedIn(send, admin)
+  const one = '00000000-0000-4000-8000-000000000001'
+  const many = '00000000-0000-4000-8000-000000000002'
+  const now = Date.now()
+  const lastUse = now - 3_600_000
+  await db.batch([
+    db
+      .prepare(`WITH RECURSIVE numbers(n) AS (SELECT 1 UNION ALL SELECT n + 1 FROM numbers WHERE n < 51)
+      INSERT INTO members (id, kind, name, role, status, created_at)
+      SELECT printf('00000000-0000-4000-8000-%012d', n), 'bot',
+        printf('Robot %02d', n), 'viewer', 'active', ? FROM numbers`)
+      .bind(now),
+    db
+      .prepare(`INSERT INTO api_tokens (id, member_id, name, prefix, token_hash, created_at, revoked_at, last_used_at)
+      VALUES ('a', ?1, 'Used credential', 'fgt_used', 'used', ?2, NULL, ?3 - 60_000),
+             ('b', ?1, 'Unused credential', 'fgt_unused', 'unused', ?2, NULL, NULL),
+             ('c', ?1, 'Revoked credential', 'fgt_revoked', 'revoked', ?2, ?2, ?3)`)
+      .bind(one, now, lastUse),
+    db
+      .prepare(`WITH RECURSIVE numbers(n) AS (SELECT 1 UNION ALL SELECT n + 1 FROM numbers WHERE n < 2000)
+      INSERT INTO api_tokens (id, member_id, name, prefix, token_hash, created_at)
+      SELECT printf('10000000-0000-4000-8000-%012d', n), ?1,
+        printf('Credential %d', n), 'fgt_example', printf('hash-%d', n), ?2 FROM numbers`)
+      .bind(many, now),
+  ])
+  const reads: { operation: string; args: unknown[]; rows: number; read: number }[] = []
+  const measured = new Proxy(db, {
+    get(target, key) {
+      if (key === 'prepare') {
+        return (sql: string) => {
+          const statement = target.prepare(sql)
+          if (
+            !/json_each|FROM api_tokens WHERE member_id|SELECT id, name, role, status, created_at/.test(sql)
+          )
+            return statement
+          return {
+            bind(...args: unknown[]) {
+              const bound = statement.bind(...args)
+              const read = async (operation: string) => {
+                const result = await bound.all()
+                reads.push({ operation, args, rows: result.results.length, read: result.meta.rows_read })
+                return result.results
+              }
+              return {
+                all: async () => ({ results: await read('all') }),
+                first: async () => (await read('first'))[0] ?? null,
+              }
+            },
+          }
+        }
+      }
+      const value = Reflect.get(target, key, target)
+      return typeof value === 'function' ? value.bind(target) : value
+    },
+  })
+  const uri = `${bots}?bot=${many}`
+  const response = await runtime({ DB: measured })(uri, { headers: { Cookie: owner.cookieHeader() } })
+  expect(response.status).toBe(200)
+  const page = await response.text()
+  expect(bodyRows(page)).toHaveLength(50)
+  expect(namedRow(page, 'Robot 01')).toContain('<td>2</td>')
+  expect(namedRow(page, 'Robot 01')).toContain(`<time datetime="${new Date(lastUse).toISOString()}" title=`)
+  expect(namedRow(page, 'Robot 02')).toContain('<td>100+</td>')
+  expect(namedRow(page, 'Robot 02')).toContain('Unknown (sampled history)')
+  expect(namedRow(page, 'Robot 03')).toContain('<td>0</td>')
+  expect(namedRow(page, 'Robot 03')).toContain('Never used')
+  expect(page).toContain(`after=00000000-0000-4000-8000-000000000050&amp;bot=${many}`)
+  expect(page).toContain(`tokenAfter=10000000-0000-4000-8000-000000000050#bot-tokens`)
+  const next = (label: string) => {
+    const href = [...page.matchAll(/<a[^>]*href="([^"]+)"[^>]*>([^<]+)<\/a>/g)].find(
+      ([, , text]) => text === label,
+    )?.[1]
+    if (!href) throw new Error(`Missing next link: ${label}`)
+    return html(owner, href.replaceAll('&amp;', '&'))
+  }
+  const nextRobots = await next('Next robots')
+  expect(bodyRows(nextRobots)).toHaveLength(1)
+  expect(namedRow(nextRobots, 'Robot 51')).toContain('Never used')
+  expect(nextRobots).toContain('id="bot-tokens"')
+  const nextCredentials = await next('Next credentials')
+  expect(bodyRows(nextCredentials)).toHaveLength(50)
+  expect(nextCredentials).toContain('<strong>Credential 51</strong>')
+  expect(nextCredentials).toContain('<strong>Credential 100</strong>')
+  expect(nextCredentials).not.toContain('<strong>Credential 50</strong>')
+  expect(reads).toHaveLength(3)
+  expect(reads.filter(({ operation }) => operation === 'first')).toHaveLength(1)
+  expect(reads.find(({ args }) => args.at(-1) === 51)?.rows).toBe(51)
+  const summary = reads.find(({ args }) => args[0] === 101)
+  expect(summary?.rows).toBe(50)
+  expect(summary?.read).toBeLessThan(500)
+})
+
+it('pairs redirect creators and removal confirmations with their exact prefixes', async () => {
+  const send = runtime()
+  const owner = await mockProvider().signedIn(send, admin, { userinfo: { name: 'Alice Example' } })
+  expect(await html(owner, redirects)).toContain('No redirects yet.')
+  await publish(send, await issueToken(owner, 'Redirect fixture'), 'target', 'Target')
+  const prefixes = ['/a/old/files/a-b/', '/a/old/files/a/b/']
+  for (const fromPrefix of prefixes) {
+    await post(owner, redirects, { action: 'add', fromPrefix, toPrefix: '/a/target/docs/' })
+  }
+  const page = await html(owner, redirects)
+  expect(sheets(page)).toHaveLength(2)
+  for (const fromPrefix of prefixes) {
+    const row = namedRow(page, `<code>${fromPrefix}</code>`)
+    expect(row).toContain('<span aria-hidden="true">→</span><span class="forge-sr-only">to</span>')
+    expect(row).toContain('<code>/a/target/docs/</code>')
+    expect(row).toContain('Alice Example · <time')
+    const sheet = openedSheet(row, 'Remove redirect', redirects)
+    expect(sheet.action).toBe('remove')
+    expect(sheet.contents).toContain(`Remove redirect from “${fromPrefix}”?`)
+    expect(formValue(sheet.form, 'fromPrefix')).toBe(fromPrefix)
+    const after = await post(owner, sheet.path, {
+      action: sheet.action,
+      fromPrefix: formValue(sheet.form, 'fromPrefix'),
+    })
+    expect(after).not.toContain(`<code>${fromPrefix}</code>`)
+    if (fromPrefix === prefixes[0]) expect(after).toContain(`<code>${prefixes[1]}</code>`)
+  }
+})
+
+it('shows the restore boundary without offering restore once a purge starts', async () => {
+  const owner = await mockProvider().signedIn(runtime(), admin)
+  const now = Date.now()
+  const ownerId = await db.prepare('SELECT id FROM members').first<string>('id')
+  for (const [slug, title, age] of [
+    ['one-day', 'One day', deletedRetentionMs - 86_400_000],
+    ['almost-day', 'Almost a day', deletedRetentionMs - (23 * 60 + 59) * 60_000],
+    ['last-hour', '  ', deletedRetentionMs - 3_600_000],
+    ['less-than-hour', 'Nearly expired', deletedRetentionMs - 59 * 60_000],
+    ['expired-item', 'Expired item', deletedRetentionMs],
+    ['purging-item', 'Purging item', 0],
+  ] as const) {
+    await db
+      .prepare(`INSERT INTO artefacts
+      (id, slug, title, visibility, current_revision, created_by, created_at, updated_at, deleted_at)
+      VALUES (?1, ?1, ?2, 'private', 1, ?3, ?4, ?4, ?5)`)
+      .bind(slug, title, ownerId, now, now - age)
+      .run()
+  }
+  await db
+    .prepare("INSERT INTO artefact_purges (slug, artefact_id) VALUES ('purging-item', 'purging-item')")
+    .run()
+  vi.useFakeTimers({ toFake: ['Date'] })
+  vi.setSystemTime(now)
+  try {
+    const page = await html(owner, deleted)
+    const lastHour = namedRow(page, '<code class="forge-admin-meta">last-hour</code>')
+    expect(lastHour).toContain('<td title="last-hour"><code')
+    expect(lastHour).toContain(
+      `title="${absoluteTime({ locale: 'en', timeZone: 'UTC' }, now + 3_600_000)}">For 1 more hour`,
+    )
+    expect(namedRow(page, 'One day')).toContain('For 1 more day')
+    expect(namedRow(page, 'Almost a day')).toContain('For 23 more hours')
+    expect(lastHour).toContain('Restore artefact')
+    expect(namedRow(page, 'Nearly expired')).toContain('For less than an hour')
+    expect(namedRow(page, 'Expired item')).toContain('forge-badge--muted">Restore period expired')
+    expect(namedRow(page, 'Expired item')).not.toContain('Restore artefact')
+    const purging = namedRow(page, 'Purging item')
+    expect(purging).toContain('forge-badge--warn">Purge started')
+    expect(purging).toContain('Resume purge')
+    expect(purging).not.toContain('For 30 more days')
+    expect(purging).not.toContain('Restore artefact')
+  } finally {
+    vi.useRealTimers()
+  }
+})
 it('refuses direct token revocation by its owner after a publisher is downgraded to viewer', async () => {
   const send = runtime()
   const idp = mockProvider()
@@ -728,8 +1119,14 @@ it('restores a revision, reveals and revokes share links, then renames and resto
   expect((await send(`${read}/a/report-alias/`)).status).toBe(404)
   await post(owner, '/artefacts/renamed-report', { action: 'delete', ...identity })
   expect((await send(`${read}/a/renamed-report/`)).status).toBe(404)
-  expect(await html(owner, deleted)).toContain('Quarterly report')
-  await post(owner, deleted, { action: 'restore', slug: 'renamed-report', ...identity })
+  const restore = directAction(namedRow(await html(owner, deleted), 'Quarterly report'), 'restore', deleted)
+  expect(formValue(restore.form, 'slug')).toBe('renamed-report')
+  expect(formValue(restore.form, 'artefactId')).toBe(identity.artefactId)
+  await post(owner, restore.path, {
+    action: restore.action,
+    slug: formValue(restore.form, 'slug'),
+    artefactId: formValue(restore.form, 'artefactId'),
+  })
   expect(await (await send(`${read}/a/renamed-report/`)).text()).toBe('<p>Original version</p>')
 })
 
@@ -974,20 +1371,28 @@ it('confirms deletion and purge with separate forms for each deleted artefact', 
     await post(owner, path, { action: sheet.action, artefactId: formValue(sheet.form, 'artefactId') })
     expect((await owner.request(path)).status).toBe(404)
   }
-  const panels = sheets(await html(owner, deleted))
-  expect(panels).toHaveLength(3)
-  const names = []
-  for (const { contents, form, action } of panels) {
-    const name = formValue(form, 'slug')
-    names.push(name)
-    expect(action).toBe('purge')
-    expect(contents).toContain(`Purger « ${name} » ?`)
-    expect(contents).toContain('La purge est irréversible')
-    expect(form).toContain('>Purger définitivement</button>')
-    await post(owner, deleted, { action, slug: name, id: formValue(form, 'id') })
+  const document = await html(owner, deleted)
+  expect(sheets(document)).toHaveLength(3)
+  for (const name of ['confirm-blank', 'confirm-first', 'confirm-second']) {
+    const row = bodyRows(document).find((entry) =>
+      entry.includes(`<code class="forge-admin-meta">${name}</code>`),
+    )
+    if (!row) throw new Error(`Missing row for ${name}`)
+    const panel = openedSheet(row, 'Purger…', deleted)
+    expect(panel.action).toBe('purge')
+    expect(panel.contents).toContain(`Purger « ${name} » ?`)
+    expect(panel.contents).toContain('La purge est irréversible')
+    expect(panel.form).toContain('>Purger définitivement</button>')
+    expect(formValue(panel.form, 'slug')).toBe(name)
+    const restore = directAction(row, 'restore', deleted)
+    expect(formValue(panel.form, 'id')).toBe(formValue(restore.form, 'artefactId'))
+    await post(owner, panel.path, {
+      action: panel.action,
+      slug: formValue(panel.form, 'slug'),
+      id: formValue(panel.form, 'id'),
+    })
     expect(await html(owner, deleted)).not.toContain(name)
   }
-  expect(names.sort()).toEqual(['confirm-blank', 'confirm-first', 'confirm-second'])
 })
 
 it('continues an interrupted purge after its artefact row has already been removed', async () => {
@@ -998,43 +1403,400 @@ it('continues an interrupted purge after its artefact row has already been remov
   const before = await blobs.list({ prefix: 'blobs/' })
   expect(before.objects).toHaveLength(65)
   await post(owner, detail, { action: 'delete', artefactId: await artefactId(owner) })
-  const id = formValue(await html(owner, deleted), 'id')
-  const intermediate = await post(owner, deleted, { action: 'purge', id, slug })
-  expect(intermediate).toContain('Continue purge')
+  const panel = openedSheet(namedRow(await html(owner, deleted), 'Purge this artefact'), 'Purge…', deleted)
+  const id = formValue(panel.form, 'id')
+  expect(formValue(panel.form, 'slug')).toBe(slug)
+  const intermediate = await post(owner, panel.path, {
+    action: panel.action,
+    id,
+    slug: formValue(panel.form, 'slug'),
+  })
+  expect(intermediate).toContain('Resume purge')
   expect(intermediate).not.toContain('popovertarget')
-  expect(intermediate).toMatch(
-    /<form class="forge-action"[^>]*>.*?<button[^>]*type="submit" name="action" value="purge">Continue purge<\/button><\/form>/s,
-  )
-  expect(intermediate).toContain('<th scope="col" class="forge-col--folded">Slug</th>')
-  expect(intermediate).toContain(`<td class="forge-col--folded" title="${slug}"><code>${slug}</code></td>`)
-  expect(intermediate).toContain(`<span class="forge-fold" hidden=""><code>${slug}</code></span>`)
+  const resume = directAction(intermediate, 'purge', deleted)
+  expect(resume.form).toContain('>Resume purge</button>')
+  expect(formValue(resume.form, 'id')).toBe(id)
+  expect(formValue(resume.form, 'slug')).toBe(slug)
+  expect(intermediate).toContain(`<td title="${slug}"><code class="forge-admin-meta">${slug}</code>`)
   expect(intermediate).not.toContain('Restore artefact')
   expect((await blobs.list({ prefix: 'blobs/' })).objects).toHaveLength(1)
-  const finished = await post(owner, deleted, { action: 'purge', id, slug })
+  const finished = await post(owner, resume.path, {
+    action: resume.action,
+    id: formValue(resume.form, 'id'),
+    slug: formValue(resume.form, 'slug'),
+  })
   expect(finished).toContain('Artefact permanently purged.')
-  expect(finished).not.toContain('Continue purge')
+  expect(finished).not.toContain('Resume purge')
   expect((await blobs.list({ prefix: 'blobs/' })).objects).toHaveLength(0)
 })
 
-it('keeps expiry dates in the primary cells of same-role invite rows', async () => {
-  const send = runtime()
-  const owner = await mockProvider().signedIn(send, admin)
+function section(document: string, id: string) {
+  const match = new RegExp(`<section id="${id}"[^>]*>(.*?)</section>`, 's').exec(document)?.[1]
+  if (!match) throw new Error(`No ${id} section`)
+  return match
+}
+
+function bodyRows(markup: string) {
+  return Array.from(markup.matchAll(/<tr><td(?:\s|>).*?<\/tr>/gs), ([row]) => row)
+}
+
+function namedRow(markup: string, value: string) {
+  const row = bodyRows(markup).find((entry) => entry.includes(value))
+  if (!row) throw new Error(`No row for ${value}`)
+  return row
+}
+
+it('keeps same-role invite rows distinct and binds each revoke trigger to its own record', async () => {
+  const owner = await mockProvider().signedIn(runtime(), admin, { userinfo: { name: 'Alice Example' } })
+  const expires = Date.UTC(2099, 0, 2, 3, 4)
+  const first = /<code>[^<]+\/invite\/([^<]+)<\/code>/.exec(
+    await post(owner, members, { action: 'create-invite', role: 'viewer' }),
+  )?.[1]
+  if (!first) throw new Error('Expected the first invite secret in its flash')
+  const id = await hashSecret(first)
+  await db.prepare('UPDATE invites SET expires_at = ? WHERE token_hash = ?').bind(expires, id).run()
   await post(owner, members, { action: 'create-invite', role: 'viewer' })
-  await db
-    .prepare('UPDATE invites SET expires_at = ?')
-    .bind(Date.UTC(2099, 0, 2, 3, 4))
-    .run()
-  const page = await post(owner, members, { action: 'create-invite', role: 'viewer' })
-  expect(page).toContain('<th scope="col">Expires</th>')
-  const rows = [
-    ...page.matchAll(
-      /<tr><td>viewer<\/td><td><time datetime="([^"]+)"[^>]+>[^<]+<\/time><\/td><td>.*?<\/tr>/gs,
-    ),
-  ]
+  const invites = section(await html(owner, members), 'invites')
+  const rows = bodyRows(invites)
   expect(rows).toHaveLength(2)
-  expect(rows.map((row) => row[1])).toContain('2099-01-02T03:04:00.000Z')
-  expect(new Set(rows.map((row) => row[1])).size).toBe(2)
-  for (const [row] of rows) expect(row).toContain('value="revoke-invite"')
+  const revocations = rows.map((row) => openedSheet(row, 'Revoke', members))
+  expect(revocations.every(({ action }) => action === 'revoke-invite')).toBe(true)
+  expect(new Set(revocations.map(({ form }) => formValue(form, 'id'))).size).toBe(2)
+  const row = namedRow(invites, new Date(expires).toISOString())
+  expect(row).toContain('By Alice Example')
+  const sheet = openedSheet(row, 'Revoke', members)
+  expect(sheet.action).toBe('revoke-invite')
+  expect(sheet.contents).toContain('Alice Example')
+  expect(formValue(sheet.form, 'id')).toBe(id)
+  const updated = section(await post(owner, members, { action: sheet.action, id }), 'invites')
+  expect(bodyRows(updated)).toHaveLength(1)
+  expect(updated).not.toContain(new Date(expires).toISOString())
+  expect(updated).not.toContain(first)
+})
+
+it('groups only humans and submits each row’s own role and confirmation sheets', async () => {
+  const owner = await mockProvider().signedIn(runtime(), admin, { userinfo: { name: 'Alice Example' } })
+  const initial = await html(owner, members)
+  for (const id of ['pending', 'invites', 'removed']) {
+    const empty = section(initial, id)
+    expect(empty).toContain('class="forge-empty"')
+    expect(empty).not.toContain('<table')
+  }
+  const now = Date.now()
+  const seed = db.prepare(`INSERT INTO members (id, kind, name, email, role, status, created_at, removed_at)
+    VALUES (?, ?, ?, ?, 'publisher', ?, ?, ?)`)
+  const fixtures = [
+    ['human', 'Bob', 'pending'],
+    ['human', 'Carol', 'pending'],
+    ['human', 'Dave', 'active'],
+    ['human', 'Eve', 'active'],
+    ['human', 'Fran', 'removed'],
+    ['bot', 'Synthetic bot', 'active'],
+  ].map(([kind, name, status]) => ({ id: crypto.randomUUID(), kind, name, status }))
+  await db.batch(
+    fixtures.map(({ id, kind, name, status }) =>
+      seed.bind(
+        id,
+        kind,
+        name,
+        `${name.toLowerCase().replace(' ', '-')}@example.test`,
+        status,
+        now,
+        status === 'removed' ? now : null,
+      ),
+    ),
+  )
+  const identities = db.prepare(`INSERT INTO identities
+    (provider, subject, member_id, email_verified, last_login_at) VALUES ('example-idp', ?, ?, 1, ?)`)
+  await db.batch(
+    fixtures.filter(({ kind }) => kind === 'human').map(({ id }) => identities.bind(id, id, now)),
+  )
+  await post(owner, members, { action: 'create-invite', role: 'viewer' })
+  const document = await html(owner, members)
+  const scopes = ['pending', 'active', 'removed'].map((id) => section(document, id))
+  expect(scopes.map((scope) => bodyRows(scope).length)).toEqual([2, 3, 1])
+  expect(document).not.toContain('Synthetic bot')
+  const self = namedRow(scopes[1], 'Alice Example')
+  expect(self).toContain('>You</span>')
+  expect(self).not.toMatch(/<form|<button/)
+  const header = /<header class="forge-page-head">(.*?)<\/header>/s.exec(document)?.[1] ?? ''
+  const inviteSheet = openedSheet(header, 'Invite someone', members)
+  expect(inviteSheet.action).toBe('create-invite')
+  expect(inviteSheet.form).toMatch(/<select[^>]*name="role".*?<option value="admin">/s)
+  expect(sheets(document)).toHaveLength(10)
+  const inviteRow = namedRow(section(document, 'invites'), 'Alice Example')
+  const revoke = openedSheet(inviteRow, 'Revoke', members)
+  expect(revoke.action).toBe('revoke-invite')
+  expect(formValue(revoke.form, 'id')).toBe(await listedId(owner, members, 'revoke-invite'))
+  for (const { id, kind, name, status } of fixtures) {
+    if (kind === 'bot') continue
+    const scope = status === 'pending' ? scopes[0] : status === 'active' ? scopes[1] : scopes[2]
+    const row = namedRow(scope, `<strong dir="auto">${name}</strong>`)
+    expect(row).toContain(`datetime="${new Date(now).toISOString()}"`)
+    expect(row).toContain(`${name.toLowerCase()}@example.test`)
+    expect(row).toContain('>example-idp</td>')
+    const stored = db.prepare('SELECT role, status FROM members WHERE id = ?').bind(id)
+    if (status === 'removed') {
+      expect(sheets(row)).toHaveLength(0)
+      expect(row).toContain('>publisher</td>')
+      expect(row).toContain('name="action" value="reinstate"')
+      expect(formValue(row, 'id')).toBe(id)
+      await post(owner, members, { action: 'admit', role: 'viewer', id })
+      expect(await stored.first()).toEqual({ role: 'publisher', status: 'removed' })
+      await post(owner, members, { action: 'reinstate', id })
+      expect(await stored.first()).toEqual({ role: 'publisher', status: 'active' })
+      continue
+    }
+    const edit = openedSheet(row, status === 'pending' ? 'Approve' : 'Change role', members)
+    const remove = openedSheet(row, status === 'pending' ? 'Refuse' : 'Remove', members)
+    expect(edit.kind).toBe('dialog')
+    expect(edit.action).toBe(status === 'pending' ? 'admit' : 'role')
+    expect(edit.form).toMatch(
+      new RegExp(`<option value="${status === 'pending' ? 'viewer' : 'publisher'}" selected[^>]*>`),
+    )
+    expect(remove.kind).toBe('alertdialog')
+    expect(remove.action).toBe('remove')
+    expect(remove.contents).toContain(name)
+    expect(formValue(edit.form, 'id')).toBe(id)
+    expect(formValue(remove.form, 'id')).toBe(id)
+    expect(formValue(remove.form, 'expect')).toBe(status)
+    if (name === 'Bob') {
+      await post(owner, members, { action: 'reinstate', id })
+      expect(await stored.first()).toEqual({ role: 'publisher', status: 'pending' })
+    }
+    if (name === 'Carol' || name === 'Eve') {
+      const notice = await post(owner, members, {
+        action: remove.action,
+        id: formValue(remove.form, 'id'),
+        expect: formValue(remove.form, 'expect'),
+      })
+      expect(notice).toContain(status === 'pending' ? 'Request refused.' : 'Member access removed.')
+      expect(await stored.first()).toEqual({ role: 'publisher', status: 'removed' })
+    } else {
+      await post(owner, members, { action: edit.action, id: formValue(edit.form, 'id'), role: 'viewer' })
+      expect(await stored.first()).toEqual({ role: 'viewer', status: 'active' })
+    }
+  }
+})
+
+it('refuses stale member removal forms without changing access, credentials or audit', async () => {
+  const owner = await mockProvider().signedIn(runtime(), admin)
+  const id = crypto.randomUUID()
+  const now = Date.now()
+  await db
+    .prepare(`INSERT INTO members (id, kind, name, role, status, created_at)
+    VALUES (?, 'human', 'Bob', 'publisher', 'pending', ?)`)
+    .bind(id, now)
+    .run()
+  const refuse = openedSheet(
+    namedRow(section(await html(owner, members), 'pending'), 'Bob'),
+    'Refuse',
+    members,
+  )
+  await post(owner, members, { action: 'admit', id, role: 'publisher' })
+  await db
+    .prepare(`INSERT INTO api_tokens (id, member_id, name, prefix, token_hash, created_at)
+    VALUES (?, ?, 'Synthetic credential', 'synthetic', ?, ?)`)
+    .bind(crypto.randomUUID(), id, id, now)
+    .run()
+  const memberState = db.prepare('SELECT status, removed_at FROM members WHERE id = ?').bind(id)
+  const tokenState = db.prepare('SELECT revoked_at FROM api_tokens WHERE member_id = ?').bind(id)
+  const audit = db
+    .prepare(`SELECT COUNT(*) AS total FROM audit_log
+    WHERE action = 'member.remove' AND json_extract(detail_json, '$.id') = ?`)
+    .bind(id)
+  const submit = (panel: { form: string; action: string }) =>
+    post(owner, members, {
+      action: panel.action,
+      id: formValue(panel.form, 'id'),
+      expect: formValue(panel.form, 'expect'),
+    })
+  expect(await submit(refuse)).toContain('Member action not allowed')
+  expect(await memberState.first()).toEqual({ status: 'active', removed_at: null })
+  expect(await tokenState.first()).toEqual({ revoked_at: null })
+  expect(await audit.first()).toEqual({ total: 0 })
+
+  const remove = openedSheet(
+    namedRow(section(await html(owner, members), 'active'), 'Bob'),
+    'Remove',
+    members,
+  )
+  await post(owner, members, { action: 'remove', id })
+  const removed = await memberState.first()
+  const revoked = await tokenState.first()
+  expect(removed).toEqual({ status: 'removed', removed_at: expect.any(Number) })
+  expect(revoked).toEqual({ revoked_at: expect.any(Number) })
+  expect(await audit.first()).toEqual({ total: 1 })
+  expect(await submit(remove)).toContain('Member action not allowed')
+  expect(await memberState.first()).toEqual(removed)
+  expect(await tokenState.first()).toEqual(revoked)
+  expect(await audit.first()).toEqual({ total: 1 })
+})
+
+it('links each opener independently even for identical fields and non-UUID values', () => {
+  const render = (value: string, label: string, confirmation: boolean) =>
+    Action({
+      path: redirects,
+      action: 'remove',
+      label,
+      fields: { fromPrefix: value },
+      ...(confirmation
+        ? {
+            confirm: {
+              title: label,
+              body: 'This removes the prefix.',
+              label,
+              cancel: 'Cancel',
+            },
+          }
+        : { sheet: { title: label, label, cancel: 'Cancel' } }),
+    }).toString()
+  const document =
+    render('/a/old/', 'First', true) + render('/a/old/', 'Second', true) + render('/a/OLD/', 'Third', false)
+  expect(sheets(document)).toHaveLength(3)
+  for (const [label, value] of [
+    ['First', '/a/old/'],
+    ['Second', '/a/old/'],
+    ['Third', '/a/OLD/'],
+  ]) {
+    const panel = openedSheet(document, label, redirects)
+    expect(panel.contents).toContain(`>${label}</h2>`)
+    expect(panel.action).toBe('remove')
+    expect(formValue(panel.form, 'fromPrefix')).toBe(value)
+  }
+  for (const [name, initials] of [
+    ['👩🏿‍💻 Example Name', '👩🏿‍💻E'],
+    ['ليلى أحمد', 'لأ'],
+    ['  ', '—'],
+  ]) {
+    expect(Avatar({ name }).toString()).toContain(`aria-hidden="true" dir="auto">${initials}</span>`)
+  }
+})
+
+it('paginates the four sections independently with capped counts and no per-row queries', async () => {
+  const owner = await mockProvider().signedIn(runtime(), admin)
+  const ownerId = await db
+    .prepare('SELECT id FROM members WHERE email = ?')
+    .bind(`${admin}@example.test`)
+    .first<string>('id')
+  if (!ownerId) throw new Error('Expected an authenticated administrator')
+  const now = Date.now()
+  const memberKey = (index: number) => `00000000-0000-4000-8000-${String(index).padStart(12, '0')}`
+  const inviteKey = (index: number) => String(index).padStart(43, '0')
+  await db.batch([
+    db
+      .prepare(`WITH RECURSIVE numbers(n) AS (SELECT 1 UNION ALL SELECT n + 1 FROM numbers WHERE n < 600),
+      buckets(k, status) AS (VALUES (0, 'pending'), (1, 'active'), (2, 'removed'), (3, 'active'))
+      INSERT INTO members (id, kind, name, role, status, created_at, removed_at)
+      SELECT printf('00000000-0000-4000-8000-%012d', n * 10 + k),
+      CASE k WHEN 3 THEN 'bot' ELSE 'human' END, printf('Person %d-%d', k, n), 'viewer',
+      status, ?1, CASE status WHEN 'removed' THEN ?1 END FROM numbers, buckets`)
+      .bind(now),
+    db
+      .prepare(`WITH RECURSIVE numbers(n) AS (SELECT 1 UNION ALL SELECT n + 1 FROM numbers WHERE n < 600)
+      INSERT INTO invites (token_hash, role, created_by, created_at, expires_at)
+      SELECT printf('%043d', n), 'viewer', ?, ?, ? FROM numbers`)
+      .bind(ownerId, now, now + 86_400_000),
+  ])
+  const reads: { limit: unknown; rows: number; rowsRead: number }[] = []
+  const originals = new WeakMap<D1PreparedStatement, D1PreparedStatement>()
+  function instrument(statement: D1PreparedStatement, args: unknown[] = []) {
+    const proxy: D1PreparedStatement = new Proxy(statement, {
+      get(target, key) {
+        if (key === 'bind') return (...values: unknown[]) => instrument(target.bind(...values), values)
+        if (key === 'first' || key === 'all')
+          return async (column?: string) => {
+            const result = await target.all<Record<string, unknown>>()
+            reads.push({ limit: args.at(-1), rows: result.results.length, rowsRead: result.meta.rows_read })
+            return key === 'all'
+              ? result
+              : ((column ? result.results[0]?.[column] : result.results[0]) ?? null)
+          }
+        throw new Error(`Unexpected Members statement method: ${String(key)}`)
+      },
+    })
+    originals.set(proxy, statement)
+    return proxy
+  }
+  const measured = new Proxy(db, {
+    get(target, key) {
+      if (key === 'prepare') return (sql: string) => instrument(target.prepare(sql))
+      if (key === 'batch')
+        return async (statements: D1PreparedStatement[]) => {
+          const results = await target.batch(
+            statements.map((statement) => originals.get(statement) ?? statement),
+          )
+          for (const result of results)
+            reads.push({ limit: undefined, rows: result.results.length, rowsRead: result.meta.rows_read })
+          return results
+        }
+      const value = Reflect.get(target, key, target)
+      return typeof value === 'function' ? value.bind(target) : value
+    },
+  })
+  const cursors = {
+    pendingAfter: memberKey(10),
+    after: memberKey(21),
+    inviteAfter: inviteKey(3),
+    removedAfter: memberKey(42),
+  }
+  const request = (keys: typeof cursors) =>
+    runtime({ DB: measured })(`${members}?${new URLSearchParams(keys)}`, {
+      headers: { Cookie: owner.cookieHeader() },
+    })
+  const small = await request({
+    pendingAfter: memberKey(5980),
+    after: memberKey(5981),
+    inviteAfter: inviteKey(598),
+    removedAfter: memberKey(5982),
+  })
+  expect(small.status).toBe(200)
+  const smallPage = await small.text()
+  for (const id of ['pending', 'active', 'removed', 'invites']) {
+    const size = bodyRows(section(smallPage, id)).length
+    expect(size).toBeGreaterThan(0)
+    expect(size).toBeLessThan(4)
+  }
+  const smallReadCount = reads.length
+  reads.length = 0
+  const result = await request(cursors)
+  expect(result.status).toBe(200)
+  const document = await result.text()
+  expect(reads).toHaveLength(smallReadCount)
+  const pages = reads.filter(({ limit }) => limit === 51)
+  expect(pages.map(({ rows, rowsRead }) => [rows, rowsRead > 0])).toEqual(
+    Array.from({ length: 4 }, () => [51, true]),
+  )
+  const counts = reads.filter(({ limit }) => limit === 101).sort((a, b) => a.rows - b.rows)
+  expect(counts.map(({ limit, rows }) => [limit, rows])).toEqual([
+    [101, 1],
+    [101, 3],
+  ])
+  const sections = [
+    ['pending', 'pendingAfter', memberKey(20), memberKey(510)],
+    ['active', 'after', memberKey(31), memberKey(521)],
+    ['invites', 'inviteAfter', inviteKey(4), inviteKey(53)],
+    ['removed', 'removedAfter', memberKey(52), memberKey(542)],
+  ] as const
+  for (const [name, param, first, last] of sections) {
+    const scope = section(document, name)
+    expect(scope).toMatch(/<h2[^>]*>[^<]+ \(100\+\)<\/h2>/)
+    const rows = bodyRows(scope)
+    expect(rows).toHaveLength(50)
+    expect(formValue(rows[0], 'id')).toBe(first)
+    expect(formValue(rows[49], 'id')).toBe(last)
+    const href = /<a href="([^"]+)"/.exec(scope)?.[1]
+    if (!href) throw new Error(`No next link for ${name}`)
+    const next = new URL(href.replaceAll('&amp;', '&'), manage)
+    expect(next.hash).toBe(`#${name}`)
+    expect(Object.fromEntries(next.searchParams)).toEqual({ ...cursors, [param]: last })
+    const following = await html(owner, next)
+    for (const [other, , otherFirst] of sections) {
+      const nextFirst = formValue(bodyRows(section(following, other))[0], 'id')
+      if (name === other) expect(nextFirst > last).toBe(true)
+      else expect(nextFirst).toBe(otherFirst)
+    }
+  }
 })
 
 it('localizes share creation metadata and keeps one visible copy of folded table metadata', async () => {
@@ -1049,29 +1811,30 @@ it('localizes share creation metadata and keeps one visible copy of folded table
   const createdAt = Date.UTC(2025, 1, 3, 4, 5)
   await db.prepare('UPDATE share_links SET created_at = ?').bind(createdAt).run()
   const lastUsedAt = Date.UTC(2025, 2, 4, 5, 6)
-  await db.prepare('UPDATE api_tokens SET last_used_at = ?, revoked_at = ?').bind(lastUsedAt, createdAt).run()
+  await db
+    .prepare('UPDATE api_tokens SET created_at = ?, last_used_at = ?, revoked_at = ?')
+    .bind(createdAt, lastUsedAt, Date.UTC(2025, 3, 5, 6, 7))
+    .run()
 
   const created = `<time datetime="2025-02-03T04:05:00.000Z" title="3 févr. 2025, 04:05 UTC">03/02/2025</time>`
   const lastUsed = `<time datetime="2025-03-04T05:06:00.000Z" title="4 mars 2025, 05:06 UTC">04/03/2025</time>`
   const fold = (value: string, label?: string) => `${label ? `<strong>${label}: </strong>` : ''}${value}`
-  function expectRow(document: string, name: string, headings: string[], copies: string[], cells: string[]) {
+  function expectRow(
+    document: string,
+    primary: string,
+    headings: string[],
+    copies: string[],
+    cells: string[],
+  ) {
     for (const heading of headings) {
       expect(document).toContain(`<th scope="col" class="forge-col--folded">${heading}</th>`)
     }
-    const row = [...document.matchAll(/<tr\b[^>]*>(.*?)<\/tr>/gs)]
-      .map((match) => match[1] ?? '')
-      .find((entry) => entry.startsWith(`<td title="${name}"><span>${name}</span>`))
-    if (!row) throw new Error(`No row for ${name}`)
-    const hidden =
-      /<span class="forge-fold(?: forge-member-email)?"(?: title="[^"]*")? hidden="">(.*?)<\/span>/g
-    expect([...row.matchAll(hidden)].map((match) => match[1])).toEqual(copies)
-    // Without CSS these hidden spans do not render, but the heading and column cells do.
-    expect(row.replace(hidden, '')).toBe(
-      `<td title="${name}"><span>${name}</span></td>${cells.join('')}${row.slice(row.lastIndexOf('<td>'))}`,
-    )
+    const row = namedRow(document, primary)
+    // Without CSS the hidden copies do not render; the heading and the column cells still do.
+    const mobile = copies.map((copy) => `<span class="forge-fold" hidden="">${copy}</span>`).join('')
+    expect(row).toContain(`${primary}${mobile}</td>${cells.join('')}`)
   }
-  const column = (value: string, title?: string) =>
-    `<td class="forge-col--folded"${title ? ` title="${title}"` : ''}>${value}</td>`
+  const column = (value: string) => `<td class="forge-col--folded">${value}</td>`
 
   const sharePage = await html(owner, detail)
   expect(sharePage).toContain(`<strong>${label}</strong>`)
@@ -1079,33 +1842,39 @@ it('localizes share creation metadata and keeps one visible copy of folded table
   expect(sharePage).toContain(
     'Toute personne disposant d’un lien de partage actif peut lire l’artefact actuel. Réservez ces liens aux personnes concernées.',
   )
-  const prefix = token.slice(0, 12)
+  const prefix = `<code>${token.slice(0, 12)}…</code>`
+  const revoked =
+    '<span class="forge-badge forge-badge--muted">Révoqué</span><small class="forge-admin-meta">Révoqué le <time datetime="2025-04-05T06:07:00.000Z" title="5 avr. 2025, 06:07 UTC">05/04/2025</time></small>'
   expectRow(
     await html(owner, tokens),
-    'Jeton de publication',
-    ['Dernière utilisation', 'Révoqué le'],
-    [fold(lastUsed, 'Dernière utilisation'), fold(created, 'Révoqué le')],
-    [`<td title="${prefix}"><code>${prefix}</code></td>`, column(lastUsed), column(created)],
+    '<td title="Jeton de publication"><strong>Jeton de publication</strong>',
+    ['Préfixe du jeton', 'Créé le', 'Dernière utilisation', 'État'],
+    [prefix, fold(created, 'Créé le'), fold(lastUsed, 'Dernière utilisation'), revoked],
+    [column(prefix), column(created), column(lastUsed), column(revoked)],
   )
   const email = `${admin}@example.test`
-  expectRow(
-    await html(owner, members),
-    admin,
-    ['Fournisseur', 'E-mail', 'Rôle'],
-    [email, fold('team', 'Fournisseur'), fold('administrateur', 'Rôle')],
-    [column('team', 'team'), column(email, email), '<td>Actif</td>', column('administrateur')],
-  )
+  const member = namedRow(section(await html(owner, members), 'active'), email)
+  for (const [label, value] of [
+    ['E-mail', email],
+    ['Fournisseur', 'team'],
+    ['Rôle', 'administrateur'],
+  ]) {
+    expect(member).toContain(column(value))
+    expect(member).toContain(
+      label === 'E-mail' ? `hidden="">${value}</span>` : `${fold(value, label)}</span>`,
+    )
+  }
 
   await post(owner, detail, { action: 'delete', artefactId: artefactIdValue })
   await db.prepare('UPDATE artefacts SET deleted_at = ? WHERE id = ?').bind(createdAt, artefactIdValue).run()
-  const code = `<code>${slug}</code>`
-  const status = 'Délai de restauration expiré'
+  const code = `<code class="forge-admin-meta">${slug}</code>`
+  const status = '<span class="forge-badge forge-badge--muted">Délai de restauration expiré</span>'
   expectRow(
     await html(owner, deleted),
-    title,
-    ['Identifiant', 'Supprimé le', 'État'],
-    [code, fold(created, 'Supprimé le'), status],
-    [column(code, slug), column(created), column(status)],
+    `<td title="${title}"><strong>${title}</strong>${code}`,
+    ['Supprimé le', 'État'],
+    [fold(created, 'Supprimé le'), status],
+    [column(created), column(status)],
   )
 })
 
@@ -1132,10 +1901,10 @@ it.each(['en', 'fr'] as const)(
       [owner, '/artefacts', 'Start of title or slug', 'Début du titre ou de l’identifiant'],
       [owner, detail, 'Open artefact', 'Ouvrir l’artefact'],
       [owner, deleted, 'Deleted artefacts', 'Artefacts supprimés'],
-      [owner, tokens, 'Last used', 'Dernière utilisation'],
+      [owner, tokens, 'Create a token', 'Créer un jeton'],
       [owner, redirects, 'Source prefix', 'Préfixe source'],
-      [owner, members, 'Invite links', 'Liens d’invitation'],
-      [owner, bots, 'Create bot', 'Créer un robot'],
+      [owner, members, 'Invitation links', 'Liens d’invitation'],
+      [owner, bots, 'Create a robot', 'Créer un robot'],
       [owner, '/connect', 'MCP endpoint', 'Point d’accès MCP'],
     ] as const
     for (const [browser, path, en, fr] of pages) {

@@ -11,12 +11,16 @@ import { type CopyLabels, messages } from '../../i18n'
 
 export type UiContext = Context<{ Bindings: Runtime }>
 
+type Sheet = { title: string; body?: string; label: string; cancel: string }
+type PageHead = { lead?: string; actions?: Child }
+
 export function Action({
   action,
   label,
   fields,
   variant,
   confirm,
+  sheet,
   path,
   children,
 }: {
@@ -24,7 +28,8 @@ export function Action({
   label: string
   fields?: Record<string, string | number>
   variant?: 'primary' | 'danger'
-  confirm?: { title: string; body: string; label: string; cancel: string }
+  confirm?: Sheet & { body: string }
+  sheet?: Sheet
   path?: string
   children?: Child
 }) {
@@ -32,14 +37,9 @@ export function Action({
     ? Object.entries(fields).map(([name, value]) => <input type="hidden" name={name} value={value} />)
     : null
   const buttonClass = variant ? `forge-button forge-button--${variant}` : 'forge-button'
-  if (confirm) {
-    const id = `forge-sheet-${[action, ...Object.entries(fields ?? {}).flat()]
-      .map((part) =>
-        String(part)
-          .toLowerCase()
-          .replace(/[^a-z0-9-]/g, '-'),
-      )
-      .join('_')}`
+  const panel = confirm ?? sheet
+  if (panel) {
+    const id = `forge-sheet-${crypto.randomUUID()}`
     const titleId = `${id}-title`
     const bodyId = `${id}-body`
     return (
@@ -47,23 +47,26 @@ export function Action({
         <button type="button" class={buttonClass} popovertarget={id}>
           {label}
         </button>
+        {/* biome-ignore lint/a11y/useAriaPropsSupportedByRole: Both dialog and alertdialog support the label and description. */}
         <div
           id={id}
           class="forge-sheet"
           popover="auto"
-          role="alertdialog"
+          role={confirm ? 'alertdialog' : 'dialog'}
           aria-labelledby={titleId}
-          aria-describedby={bodyId}
+          aria-describedby={panel.body ? bodyId : undefined}
         >
           <h2 id={titleId} class="forge-sheet__title">
-            {confirm.title}
+            {panel.title}
           </h2>
-          <p id={bodyId} class="forge-sheet__body">
-            {confirm.body}
-          </p>
+          {panel.body && (
+            <p id={bodyId} class="forge-sheet__body">
+              {panel.body}
+            </p>
+          )}
           <form class="forge-sheet__actions" method="post" action={path}>
             {inputs}
-            {children}
+            {confirm ? children : <div class="forge-sheet__fields">{children}</div>}
             <button
               type="button"
               class="forge-button"
@@ -71,15 +74,15 @@ export function Action({
               popovertargetaction="hide"
               autofocus
             >
-              {confirm.cancel}
+              {panel.cancel}
             </button>
             <button
               type="submit"
-              class="forge-button forge-button--danger-solid"
+              class={`forge-button forge-button--${confirm ? 'danger-solid' : 'primary'}`}
               name="action"
               value={action}
             >
-              {confirm.label}
+              {panel.label}
             </button>
           </form>
         </div>
@@ -120,8 +123,25 @@ function CopyButton({ labels }: { labels: CopyLabels }) {
   )
 }
 
-export function CopyField({ value, labels, block }: { value: string; labels: CopyLabels; block?: boolean }) {
+export function CopyField({
+  value,
+  labels,
+  block,
+  flash,
+}: {
+  value: string
+  labels: CopyLabels
+  block?: boolean
+  flash?: boolean
+}) {
   const code = <code>{value}</code>
+  if (flash)
+    return (
+      <p class="forge-secret">
+        {code}
+        <CopyButton labels={labels} />
+      </p>
+    )
   return (
     <div class={block ? 'forge-copy forge-copy--block' : 'forge-copy'}>
       {block ? <pre>{code}</pre> : code}
@@ -165,7 +185,7 @@ export function Badge({
   variant,
   children,
 }: {
-  variant: CatalogueAccess | 'current' | 'entry'
+  variant: CatalogueAccess | 'current' | 'entry' | 'ok' | 'warn' | 'muted'
   children: Child
 }) {
   return <span class={`forge-badge forge-badge--${variant}`}>{children}</span>
@@ -173,6 +193,22 @@ export function Badge({
 
 export function AccessBadge({ access, label }: { access: CatalogueAccess; label: string }) {
   return <Badge variant={access}>{label}</Badge>
+}
+
+const graphemes = new Intl.Segmenter(undefined, { granularity: 'grapheme' })
+
+export function Avatar({ name }: { name: string }) {
+  const initials = name
+    .trim()
+    .split(/\s+/, 2)
+    .map((word) => graphemes.segment(word).containing(0)?.segment)
+    .join('')
+    .toUpperCase()
+  return (
+    <span class="forge-avatar" aria-hidden="true" dir="auto">
+      {initials || '—'}
+    </span>
+  )
 }
 
 export type TableColumn = string | { secondary: string } | { folded: string }
@@ -220,6 +256,8 @@ export function Page({
   path,
   panel,
   beforeTitle,
+  lead,
+  actions,
   children,
 }: {
   config: Config
@@ -229,7 +267,7 @@ export function Page({
   panel?: 'sign-in' | 'invite' | 'consent'
   beforeTitle?: Child
   children: Child
-}) {
+} & PageHead) {
   const t = messages(config)
   const navigation = member && (
     <>
@@ -267,7 +305,19 @@ export function Page({
       </div>
     </>
   )
-  const heading = <h1 class="forge-title">{title}</h1>
+  const titleElement = <h1 class="forge-title">{title}</h1>
+  const heading =
+    lead || actions ? (
+      <header class="forge-page-head">
+        <div>
+          {titleElement}
+          {lead && <p class="forge-lead">{lead}</p>}
+        </div>
+        {actions && <div class="forge-page-actions">{actions}</div>}
+      </header>
+    ) : (
+      titleElement
+    )
   return (
     <html lang={config.locale}>
       <DocumentHead config={config} title={`${title} · ${config.name}`} />
@@ -406,14 +456,14 @@ export async function page(
   session: BrowserSession,
   title: string,
   children: Child,
-  beforeTitle?: Child,
+  options?: PageHead & { beforeTitle?: Child },
 ) {
   const { config } = c.env
   const t = messages(config)
   const notice = await navigationFlash(c, session)
   const secret = notice?.secret
   return c.html(
-    <Page config={config} title={title} member={session.member} path={c.req.path} beforeTitle={beforeTitle}>
+    <Page config={config} title={title} member={session.member} path={c.req.path} {...options}>
       {notice && (
         <aside
           class="forge-notice"
@@ -422,12 +472,7 @@ export async function page(
           data-secret-flash={secret === undefined ? undefined : ''}
         >
           <p>{notice.message}</p>
-          {secret !== undefined && (
-            <p class="forge-secret">
-              <code>{secret}</code>
-              <CopyButton labels={t} />
-            </p>
-          )}
+          {secret !== undefined && <CopyField value={secret} labels={t} flash />}
         </aside>
       )}
       {children}

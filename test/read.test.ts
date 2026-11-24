@@ -3,6 +3,7 @@ import { expect, it, vi } from 'vitest'
 import {
   admin,
   Browser,
+  createdBotId,
   flashNavigation,
   formValue,
   type Handle,
@@ -29,7 +30,7 @@ const members = '/admin/members'
 async function publisher(send: Handle, owner: Browser) {
   const name = 'Read test publisher'
   expect((await owner.post('/admin/bots', { action: 'create', name, role: 'publisher' })).status).toBe(303)
-  const id = await listedId(owner, members, name)
+  const id = await createdBotId(name)
   const tokenResponse = await owner.post('/admin/bots', { action: 'token', id, name: 'Read tests' })
   expect(tokenResponse.status).toBe(303)
   const landing = await owner.request(location(tokenResponse), { headers: flashNavigation })

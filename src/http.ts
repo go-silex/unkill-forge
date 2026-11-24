@@ -33,7 +33,9 @@ export async function readForm(request: Request): Promise<URLSearchParams | null
   )
     return null
   const bytes = await readBoundedBody(request, formBodyLimit)
-  return bytes === null ? null : new URLSearchParams(new TextDecoder().decode(bytes))
+  if (bytes === null) return null
+  const form = new URLSearchParams(new TextDecoder().decode(bytes))
+  return new Set(form.keys()).size === form.size ? form : null
 }
 
 export function isDocumentNavigation(request: Request): boolean {

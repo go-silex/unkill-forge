@@ -4,9 +4,9 @@ import { generateCovers } from '../src/core/generated-covers'
 import {
   admin,
   configuredEnv,
+  createdBotId,
   flashNavigation,
   formValue,
-  listedId,
   location,
   read,
   runtime,
@@ -37,7 +37,7 @@ async function fixture() {
   const owner = await mockProvider().signedIn(send, admin)
   const name = 'Cover publisher'
   expect((await owner.post('/admin/bots', { action: 'create', name, role: 'publisher' })).status).toBe(303)
-  const id = await listedId(owner, '/admin/members', name)
+  const id = await createdBotId(name)
   const tokenResponse = await owner.post('/admin/bots', { action: 'token', id, name: 'Cover tests' })
   expect(tokenResponse.status).toBe(303)
   const tokenPage = await owner.request(location(tokenResponse), { headers: flashNavigation })
