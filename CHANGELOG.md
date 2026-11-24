@@ -1,8 +1,9 @@
 # Changelog
 
-## Unreleased
+## v2.1.1 — 2026-11-24
 
 - Fold metadata under row names on narrow screens in the artefact share, personal token, member and deleted artefact tables.
+- Upgrade: no D1 migration and no config change. Instance themes can style the folded values with `.forge-fold`.
 
 ## v2.1.0 — 2026-11-24
 
