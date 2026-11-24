@@ -64,7 +64,16 @@ const nav = [
   ['/admin/redirects', 'redirects'],
 ] as const
 
-export type TableColumn = string | { secondary: string }
+export type TableColumn = string | { secondary: string } | { folded: string }
+
+export function Fold({ label, children }: { label?: string; children: Child }) {
+  return (
+    <span class="forge-fold" hidden>
+      {label && <strong>{label}: </strong>}
+      {children}
+    </span>
+  )
+}
 
 export function Table({ columns, children }: { columns: TableColumn[]; children: Child }) {
   return (
@@ -75,6 +84,10 @@ export function Table({ columns, children }: { columns: TableColumn[]; children:
             {columns.map((column) =>
               typeof column === 'string' ? (
                 <th scope="col">{column}</th>
+              ) : 'folded' in column ? (
+                <th scope="col" class="forge-col--folded">
+                  {column.folded}
+                </th>
               ) : (
                 <th scope="col" class="forge-col--secondary">
                   {column.secondary}

@@ -89,9 +89,9 @@ const style = `
     .forge-menu { display: list-item; list-style-position: inside; width: max-content; margin-inline-start: auto; white-space: nowrap }
     .forge-drawer__panel { margin-block-start: var(--forge-space); padding: var(--forge-space); border: 1px solid var(--forge-hairline); border-radius: var(--forge-radius); overflow-wrap: anywhere }
     .forge-content { padding-block: calc(3 * var(--forge-space)) }
-    .forge-col--secondary { display: none }
-    .forge-member-email { display: block; color: var(--forge-muted) }
-    :where(.forge-table td[title]) { overflow-wrap: anywhere }
+    .forge-col--secondary, .forge-col--folded { display: none }
+    .forge-fold { display: block; color: var(--forge-muted); overflow-wrap: anywhere }
+    :where(.forge-table td[title], .forge-table td > span:has(+ .forge-fold)) { overflow-wrap: anywhere }
     :where(.forge-table td:has(.forge-action)) { white-space: normal }
   }
 `
