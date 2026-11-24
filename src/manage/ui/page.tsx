@@ -6,7 +6,7 @@ import type { Config, Runtime } from '../../config'
 import type { BrowserSession, Member } from '../../core'
 import { putUiFlash, takeUiFlash } from '../../core/ui-flash'
 import { DocumentHead } from '../../head'
-import { type Locale, messages } from '../../i18n'
+import { type CopyLabels, type Locale, messages } from '../../i18n'
 
 export type UiContext = Context<{ Bindings: Runtime }>
 
@@ -15,6 +15,7 @@ export function Action({
   label,
   fields,
   variant,
+  confirm,
   path,
   children,
 }: {
@@ -22,20 +23,54 @@ export function Action({
   label: string
   fields?: Record<string, string | number>
   variant?: 'primary' | 'danger'
+  confirm?: { title: string; body: string; label: string; cancel: string }
   path?: string
   children?: Child
 }) {
+  const inputs = fields
+    ? Object.entries(fields).map(([name, value]) => <input type="hidden" name={name} value={value} />)
+    : null
+  const buttonClass = variant ? `forge-button forge-button--${variant}` : 'forge-button'
+  if (confirm) {
+    const id = `forge-sheet-${[action, ...Object.values(fields ?? {})]
+      .join('-')
+      .toLowerCase()
+      .replace(/[^a-z0-9-]/g, '-')}`
+    const titleId = `${id}-title`
+    return (
+      <>
+        <button type="button" class={buttonClass} popovertarget={id}>
+          {label}
+        </button>
+        <div id={id} class="forge-sheet" popover="auto" role="alertdialog" aria-labelledby={titleId}>
+          <h2 id={titleId} class="forge-sheet__title">
+            {confirm.title}
+          </h2>
+          <p class="forge-sheet__body">{confirm.body}</p>
+          <form class="forge-sheet__actions" method="post" action={path}>
+            {inputs}
+            {children}
+            <button type="button" class="forge-button" popovertarget={id} popovertargetaction="hide">
+              {confirm.cancel}
+            </button>
+            <button
+              type="submit"
+              class="forge-button forge-button--danger-solid"
+              name="action"
+              value={action}
+            >
+              {confirm.label}
+            </button>
+          </form>
+        </div>
+      </>
+    )
+  }
   return (
     <form class="forge-action" action={path} method="post">
-      {fields &&
-        Object.entries(fields).map(([name, value]) => <input type="hidden" name={name} value={value} />)}
+      {inputs}
       {children}
-      <button
-        class={variant ? `forge-button forge-button--${variant}` : 'forge-button'}
-        type="submit"
-        name="action"
-        value={action}
-      >
+      <button class={buttonClass} type="submit" name="action" value={action}>
         {label}
       </button>
     </form>
@@ -50,9 +85,34 @@ export function pageLink(href: string, label: string) {
   )
 }
 
+function CopyButton({ labels }: { labels: CopyLabels }) {
+  return (
+    <button
+      class="forge-button"
+      type="button"
+      data-copy=""
+      data-copied={labels.copied}
+      data-failed={labels.copyFailed}
+      hidden
+    >
+      {labels.copy}
+    </button>
+  )
+}
+
+export function CopyField({ value, labels, block }: { value: string; labels: CopyLabels; block?: boolean }) {
+  const code = <code>{value}</code>
+  return (
+    <div class={block ? 'forge-copy forge-copy--block' : 'forge-copy'}>
+      {block ? <pre>{code}</pre> : code}
+      <CopyButton labels={labels} />
+    </div>
+  )
+}
+
 const copyScript =
-  'document.addEventListener("click",async(e)=>{const b=e.target.closest("button[data-copy]");if(!b)return;try{await navigator.clipboard.writeText(b.previousElementSibling.textContent);b.textContent=b.dataset.copied}catch{b.textContent=b.dataset.failed}});addEventListener("pageshow",(e)=>{if(e.persisted)document.querySelector("[data-secret-flash]")?.remove()});'
-export const copyScriptSource = "'sha256-YpBfT0WFfrJI9blwi4A0xOODReRSb4tKB5oO3wQz02k='"
+  'document.addEventListener("click",async(e)=>{const b=e.target.closest("button[data-copy]");if(!b)return;try{await navigator.clipboard.writeText(b.previousElementSibling.textContent);b.textContent=b.dataset.copied}catch{b.textContent=b.dataset.failed}});addEventListener("pageshow",(e)=>{if(e.persisted)document.querySelector("[data-secret-flash]")?.remove()});document.querySelectorAll("button[data-copy]").forEach((b)=>{b.hidden=false});'
+export const copyScriptSource = "'sha256-gKtKyAGgpJlKo+7uRRmAq5ws0oWd85H3QGIE/Wvp3Gc='"
 
 const nav = [
   ['/artefacts', 'artefacts'],
@@ -241,21 +301,13 @@ export async function page(c: UiContext, session: BrowserSession, title: string,
           {secret !== undefined && (
             <p class="forge-secret">
               <code>{secret}</code>
-              <button
-                class="forge-button"
-                type="button"
-                data-copy=""
-                data-copied={t.copied}
-                data-failed={t.copyFailed}
-              >
-                {t.copy}
-              </button>
+              <CopyButton labels={t} />
             </p>
           )}
         </aside>
       )}
       {children}
-      {secret !== undefined && <script>{raw(copyScript)}</script>}
+      <script>{raw(copyScript)}</script>
     </Page>,
   )
 }

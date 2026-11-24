@@ -1,5 +1,7 @@
 export type Locale = 'en' | 'fr'
 
+export type CopyLabels = { copy: string; copied: string; copyFailed: string }
+
 const en = {
   manage: 'Manage',
   artefacts: 'Artefacts',
@@ -15,6 +17,17 @@ const en = {
   copy: 'Copy',
   copied: 'Copied',
   copyFailed: 'Copy manually',
+  confirmation: {
+    cancel: 'Cancel',
+    deleteTitle: (title: string) => 'Delete “{title}”?'.replace('{title}', () => title),
+    deleteBody: (days: number) =>
+      `The artefact is removed from the catalogue and its share links stop working. An administrator can restore it for ${days} days, as long as purge hasn’t started.`,
+    deleteLabel: 'Delete artefact',
+    purgeTitle: (title: string) => `Purge “${title}”?`,
+    purgeBody:
+      'Purge is irreversible: the artefact, its revisions and files are permanently removed. It may take several steps.',
+    purgeLabel: 'Purge permanently',
+  },
   navigation: 'Management',
   menu: 'Menu',
   notice: 'Notice',
@@ -224,6 +237,17 @@ const fr: typeof en = {
   copied: 'Copié',
   pending: 'Accès en attente',
   copyFailed: 'Copier manuellement',
+  confirmation: {
+    cancel: 'Annuler',
+    deleteTitle: (title: string) => 'Supprimer « {title} » ?'.replace('{title}', () => title),
+    deleteBody: (days: number) =>
+      `L’artefact quitte le catalogue et ses liens de partage cessent de fonctionner. Un administrateur peut le restaurer pendant ${days} jours, tant que la purge n’a pas commencé.`,
+    deleteLabel: 'Supprimer l’artefact',
+    purgeTitle: (title: string) => `Purger « ${title} » ?`,
+    purgeBody:
+      'La purge est irréversible : l’artefact, ses versions et ses fichiers disparaissent définitivement. Elle peut prendre plusieurs étapes.',
+    purgeLabel: 'Purger définitivement',
+  },
   navigation: 'Gestion de Forge',
   menu: 'Menu',
   notice: 'Notification',

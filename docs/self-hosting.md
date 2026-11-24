@@ -219,8 +219,17 @@ These classes and the custom properties above are the supported theme contract. 
 | `.forge-member-email`                                                                             | Member email's additional styling hook; the copy also uses `.forge-fold`                                   |
 | `.forge-action`, `.forge-button`                                                                  | Form actions and styled action controls                                                                    |
 | `.forge-button--primary`, `.forge-button--danger`                                                 | Primary and destructive control variants                                                                   |
+| `.forge-button--danger-solid`                                                                     | Filled button for the final destructive confirmation                                                       |
+| `.forge-sheet`                                                                                    | Native confirmation popover (inline panel in older browsers)                                               |
+| `.forge-sheet__title`                                                                             | Heading naming the action and artefact                                                                     |
+| `.forge-sheet__body`                                                                              | Explanation of what confirmation does                                                                      |
+| `.forge-sheet__actions`                                                                           | Form grouping cancel and confirm controls                                                                  |
+| `.forge-copy`                                                                                     | Copyable value and its progressively enhanced copy button                                                  |
+| `.forge-copy--block`                                                                              | Copy group for a preformatted command or configuration snippet                                             |
 | `.forge-notice`, `.forge-secret`, `.forge-empty`                                                  | Flash notice, one-use secret and copy action group, and empty-state text                                   |
 | `.forge-link-list`                                                                                | Sign-in provider links or public artefact list                                                             |
+
+Confirmation sheets use the native `popover` attribute without JavaScript (Chrome 114+, Safari 17+, Firefox 125+). Older browsers show the confirmation inline. Themes must not set `display` on `.forge-sheet` outside `:popover-open`, or closed sheets may become visible.
 
 On narrow screens, opening the native drawer pushes the page down. Keep row identifiers and actions visible when hiding secondary table metadata. Dense table buttons use the compact height only when the primary pointer is fine and no coarse pointer is available.
 
