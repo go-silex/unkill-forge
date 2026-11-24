@@ -3,7 +3,8 @@
 ## Unreleased
 
 - Offer grid and list views of the public catalogue and the Manage catalogue; the Manage list is a table with slug, visibility, revision and update time. `?view=list` selects the list and is kept across search and pagination.
-- Move the public catalogue's sign-in action into the page header and open the Manage catalogue after sign-in. The catalogue no longer has a "Public artefacts" heading.
+- Move the public catalogue's sign-in action into the page header and open the Manage catalogue after sign-in. The catalogue no longer has a "Public artefacts" heading and says so when nothing is public yet.
+- Send pending members who open an artefact, token or redirect page in Manage (as the public sign-in action now does) to the Manage home, which explains that approval is required, instead of a bare 403.
 - Upgrade: no D1 migration, binding or config change. Instance themes can style `.forge-toolbar`, `.forge-views`, `.forge-gallery--list` and `.forge-thumb`.
 
 ## v2.2.0 — 2026-11-24

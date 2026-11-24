@@ -29,6 +29,7 @@ const en = {
     incomplete: 'Sign-in did not complete',
     retry: 'Try signing in again',
     askAdmin: 'Ask a Forge administrator to approve your membership.',
+    noArtefacts: 'Nothing has been published yet.',
   },
   login: {
     invalidFlow: 'Invalid login flow',
@@ -236,6 +237,7 @@ const fr: typeof en = {
     incomplete: 'La connexion n’a pas abouti',
     retry: 'Réessayer de se connecter',
     askAdmin: 'Demandez à un administrateur de Forge d’approuver votre accès.',
+    noArtefacts: 'Aucun artefact publié pour le moment.',
   },
   login: {
     invalidFlow: 'Demande de connexion invalide',

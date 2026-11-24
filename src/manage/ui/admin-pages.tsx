@@ -96,6 +96,8 @@ function browser(minimum: Role, handler: BrowserHandler) {
     const t = adminMessages(c.env.config.locale)
     const session = await requireBrowserSession(c.req.raw, c.env)
     if (session instanceof Response) return session
+    // Pending members land on the Manage home, which explains that approval is required.
+    if (session.member.status === 'pending' && c.req.method === 'GET') return c.redirect('/', 303)
     try {
       const actor = await uiActor(c.env.env.DB, session.member.id, minimum)
       return await handler(c, { ...session, member: actor }, actor, t)
@@ -234,7 +236,7 @@ adminPages.get(
               t('title'),
               { folded: t('slug') },
               { folded: t('visibility') },
-              { secondary: t('revision') },
+              { folded: t('revision') },
               { folded: t('updated') },
             ]}
           >
@@ -258,13 +260,14 @@ adminPages.get(
                       <code>{entry.slug}</code>
                     </Fold>
                     <Fold label={t('visibility')}>{t(entry.visibility)}</Fold>
+                    <Fold label={t('revision')}>{entry.revision}</Fold>
                     <Fold label={t('updated')}>{updated}</Fold>
                   </td>
                   <td class="forge-col--folded" title={entry.slug}>
                     <code>{entry.slug}</code>
                   </td>
                   <td class="forge-col--folded">{t(entry.visibility)}</td>
-                  <td class="forge-col--secondary">{entry.revision}</td>
+                  <td class="forge-col--folded">{entry.revision}</td>
                   <td class="forge-col--folded">{updated}</td>
                 </tr>
               )

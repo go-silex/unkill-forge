@@ -615,6 +615,9 @@ it.each(['en', 'fr'] as const)(
       expect(document, path).toContain('Ember Studio')
       expect(document, path).toContain('Ember &amp; Co</a>')
     }
+    const held = await pending.request('/artefacts?view=list')
+    expect(held.status).toBe(303)
+    expect(held.headers.get('Location')).toBe('/')
     const catalogue = await html(owner, '/artefacts')
     expect(catalogue).toContain('class="forge-shell"')
     expect(catalogue).toContain('class="forge-nav__link" href="/artefacts" aria-current="page"')
@@ -677,6 +680,11 @@ it.each(['en', 'fr'] as const)(
       ])
         expect(sample).not.toContain(english)
     const publicSend = runtime({ LOCALE: locale, PUBLIC_INDEX: 'true' })
+    const emptyIndex = await html(new Browser(publicSend), `${read}/`)
+    expect(emptyIndex).toContain(
+      `<p class="forge-empty">${french ? 'Aucun artefact publié pour le moment.' : 'Nothing has been published yet.'}</p>`,
+    )
+    expect(emptyIndex).toContain(`<a href="/?view=list">${list}</a>`)
     const identity = { artefactId: await artefactId(owner) }
     await post(owner, detail, { action: 'visibility', visibility: 'public', ...identity })
     const publicIndex = await html(new Browser(publicSend), `${read}/`)

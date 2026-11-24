@@ -199,11 +199,13 @@ export async function read(
         name,
         'landing',
         entries ? (
-          entries.length > 0 && (
-            <>
-              <div class="forge-toolbar">
-                <GalleryViews path="/" view={view} labels={common.views} />
-              </div>
+          <>
+            <div class="forge-toolbar">
+              <GalleryViews path="/" view={view} labels={common.views} />
+            </div>
+            {entries.length === 0 ? (
+              <p class="forge-empty">{common.read.noArtefacts}</p>
+            ) : (
               <Gallery
                 label={common.artefacts}
                 view={view}
@@ -213,8 +215,8 @@ export async function read(
                   preview: previews?.has(slug) ? slug : undefined,
                 }))}
               />
-            </>
-          )
+            )}
+          </>
         ) : (
           <>
             {brand.landingText && <p>{brand.landingText}</p>}
