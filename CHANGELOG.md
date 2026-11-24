@@ -1,8 +1,9 @@
 # Changelog
 
-## Unreleased
+## v2.1.0 — 2026-11-24
 
 - Restyle Forge-authored pages with light and dark defaults, a responsive manage menu and tables, a configurable short brand label, and optional same-origin theme assets; read pages gain a restrictive CSP and the sign-in handoff permits same-origin styles and fonts without changing artefact delivery.
+- Upgrade: no D1 migration. Existing instances need no config change; add a `THEME` assets binding and `BRAND` keys only to use a theme (see the self-hosting guide).
 
 ## v2.0.1 — 2026-11-23
 
