@@ -18,7 +18,7 @@ import {
 import { consumeInviteContext, createInviteContext, inviteKey } from '../../core/invites'
 import { formBodyLimit, isDocumentNavigation, readBoundedBody, readCookie, writeCookie } from '../../http'
 import { messages } from '../../i18n'
-import { isReservedManagePath, manageError } from '../access'
+import { isUnambiguousBrowserPath, manageError } from '../access'
 import {
   authorizationEndpoint,
   discover,
@@ -342,7 +342,7 @@ export async function loginRoute(req: Request, runtime: Runtime): Promise<Respon
           'Content-Type': 'text/plain;charset=UTF-8',
         },
       })
-    return req.method === 'GET' && !backchannelRequest && !isReservedManagePath(url.pathname)
+    return req.method === 'GET' && isUnambiguousBrowserPath(url.pathname)
       ? loginError(runtime, 404, lead)
       : respond(404, lead)
   }

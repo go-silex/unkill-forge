@@ -7,22 +7,16 @@ import { manageCsp } from './origin'
 import { Avatar } from './ui/page'
 
 // Classify 404 presentation only. Routing and Origin checks must use the original pathname.
-export function isReservedManagePath(path: string): boolean {
-  let normalized: string
-  try {
-    normalized = decodeURIComponent(path)
-      .toLowerCase()
-      .replace(/\/{2,}/g, '/')
-      .replace(/\/$/, '')
-  } catch {
-    return true
-  }
+export function isUnambiguousBrowserPath(path: string): boolean {
+  if (path.length > 512 || !path.startsWith('/') || /[^A-Za-z0-9._~/-]|\/\/|\/\.{1,2}(?:\/|$)/.test(path))
+    return false
+  const lower = path.toLowerCase()
   return (
-    /^\/(?:oauth|\.well-known|_forge|_theme|mcp|token|register|authorize|logout|upload)(?:\/|$)/.test(
-      normalized,
-    ) ||
-    /^\/(?:auth\/handoff|login\/[^/]+\/backchannel-logout|(?:logo|favicon)\.svg|style\.css)(?:\/|$)/.test(
-      normalized,
+    !/^\/(?:oauth|\.well-known|_forge|_theme|mcp|token|register|authorize|logout|upload)(?:\/|$)/.test(
+      lower,
+    ) &&
+    !/^\/(?:auth\/handoff|login\/[^/]+\/backchannel-logout|(?:logo|favicon)\.svg|style\.css)(?:\/|$)/.test(
+      lower,
     )
   )
 }

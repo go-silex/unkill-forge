@@ -24,7 +24,7 @@ import { adminCountLimit } from '../../core/pagination'
 import { time } from '../../dates'
 import { readForm } from '../../http'
 import { messages } from '../../i18n'
-import { isReservedManagePath, manageError, PendingAccess } from '../access'
+import { isUnambiguousBrowserPath, manageError, PendingAccess } from '../access'
 import { openInvite, requireBrowserSession, returnPath } from '../login'
 import { adminPages } from './admin-pages'
 import { Action, Avatar, Badge, Fold, flash, page, pageLink, Table, type UiContext } from './page'
@@ -48,7 +48,7 @@ app.notFound((c) => {
   const { config } = c.env
   const { method } = c.req.raw
   const t = messages(config)
-  return (method === 'GET' || method === 'HEAD') && !isReservedManagePath(c.req.path)
+  return (method === 'GET' || method === 'HEAD') && isUnambiguousBrowserPath(c.req.path)
     ? manageError(config, 404, t.access.notFoundLead)
     : c.text(t.notFound, 404)
 })

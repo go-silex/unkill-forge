@@ -88,11 +88,15 @@ it('keeps protocol and machine misses plain and serves the browser HEAD without 
   const send = runtime()
   const browser = await send('/missing')
   const browserHeaders = Object.fromEntries(browser.headers)
-  await errorCard(browser, 404)
-  const head = await send('/missing', { method: 'HEAD' })
-  expect(head.status).toBe(404)
-  expect(Object.fromEntries(head.headers)).toEqual(browserHeaders)
-  expect(await head.text()).toBe('')
+  for (const path of ['/missing', '/missing/', '/oauthx']) {
+    const get = path === '/missing' ? browser : await send(path)
+    expect(Object.fromEntries(get.headers)).toEqual(browserHeaders)
+    await errorCard(get, 404)
+    const head = await send(path, { method: 'HEAD' })
+    expect(head.status).toBe(404)
+    expect(Object.fromEntries(head.headers)).toEqual(browserHeaders)
+    expect(await head.text()).toBe('')
+  }
 
   const machineHeaders = { ...browserHeaders, 'content-type': 'text/plain; charset=UTF-8' }
   for (const [path, methods] of [
@@ -100,9 +104,17 @@ it('keeps protocol and machine misses plain and serves the browser HEAD without 
     ['/oauth/clients/local.json', ['OPTIONS', 'HEAD']],
     ['/OAuth/x', ['GET', 'HEAD']],
     ['/oauth%2Ftoken', ['GET', 'HEAD']],
+    ['/oauth%252Ftoken', ['GET', 'HEAD']],
+    ['/oauth%5Ctoken', ['GET', 'HEAD']],
+    ['/mcp/', ['GET', 'HEAD']],
+    ['/mcp%00', ['GET', 'HEAD']],
+    ['/x%2F%2e%2e%2Foauth/token', ['GET', 'HEAD']],
     ['//oauth/token', ['GET', 'HEAD']],
     ['/LOGIN/team/backchannel-logout', ['GET', 'HEAD']],
     ['/bad%zz', ['GET', 'HEAD']],
+    ['/not%20found', ['GET', 'HEAD']],
+    ['/introuvée', ['GET', 'HEAD']],
+    [`/${'x'.repeat(600)}`, ['GET', 'HEAD']],
   ] as const) {
     for (const method of methods) {
       const response = await send(`${manage}${path}`, { method })
@@ -111,7 +123,6 @@ it('keeps protocol and machine misses plain and serves the browser HEAD without 
       expect(await response.text()).toBe(method === 'HEAD' ? '' : 'Not found')
     }
   }
-  await errorCard(await send('/oauthx'), 404)
 
   const loginHeaders = {
     ...browserHeaders,
@@ -123,6 +134,7 @@ it('keeps protocol and machine misses plain and serves the browser HEAD without 
     '/login/team/backchannel-logout/',
     '/login/TEAM/BACKCHANNEL-LOGOUT',
     '/login/team%2Fbackchannel-logout',
+    '/login/team%252Fbackchannel-logout',
     '/login//team//backchannel-logout',
     '/login/%zz',
   ]) {
