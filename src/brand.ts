@@ -62,7 +62,7 @@ const style = `
   .forge-panel__body { padding: clamp(1rem, 4vw, 2rem); border: 1px solid var(--forge-hairline); border-radius: var(--forge-radius); background: var(--forge-surface); overflow-wrap: anywhere }
   .forge-panel.forge-panel--gallery { width: 100% }
   .forge-panel--gallery > :is(.forge-panel__header, .forge-panel__body) { width: min(100%, 76rem); margin-inline: auto }
-  .forge-panel--gallery .forge-panel__header { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: var(--forge-space) }
+  .forge-panel--gallery .forge-panel__header { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: var(--forge-space); overflow-wrap: anywhere }
   .forge-toolbar { display: flex; flex-wrap: wrap; align-items: end; justify-content: space-between; gap: var(--forge-space) calc(2 * var(--forge-space)); margin-block-end: calc(2 * var(--forge-space)) }
   .forge-toolbar > .forge-views:only-child { margin-inline-start: auto }
   .forge-views { display: inline-flex; flex-wrap: wrap; max-width: 100%; border: 1px solid var(--forge-hairline); border-radius: var(--forge-radius); background: var(--forge-surface) }
