@@ -82,7 +82,11 @@ export async function authorize(
             [text.actingAs, `${session.member.name} (${common.roles[session.member.role]})`],
           ]}
           actions={
-            <form class="forge-card-actions forge-card-actions--pair" method="post" action="/authorize">
+            <form
+              class="forge-action forge-card-actions forge-card-actions--pair"
+              method="post"
+              action="/authorize"
+            >
               <input type="hidden" name="consent" value={token} />
               <button class="forge-button" type="submit" name="decision" value="deny">
                 {text.deny}

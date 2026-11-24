@@ -164,6 +164,8 @@ Place `theme.css`, `wordmark.svg` and `icon.png` in `theme/` for this example. `
 
 Forge-authored pages load `/_theme/theme.css` after `/style.css` whenever `THEME` is bound. Theme assets are public on both configured hosts. Use relative URLs in `theme.css` (for example, `url("fonts/ui.woff2")`); do not reference external origins. The `/_theme/` prefix is separate from canonical `/a/` and share `/s/` routes, whose slugs cannot contain `_`.
 
+Manage access and error cards that replace plain-text responses keep the original restrictive Content Security Policy (`default-src 'none'` with no `font-src` exception). The theme stylesheet still loads, but its `@font-face` downloads are blocked on those cards; include a system font fallback in your font stack.
+
 The allowlist applies to paths as received by Forge. A client or proxy may normalize `.` or `..` before sending the request; Forge does not decode path components or allow traversal within the theme binding.
 
 | Theme file under `/_theme/` | Response type                 |
@@ -233,7 +235,7 @@ These classes and the custom properties above are the supported theme contract. 
 | `.forge-facts`, `.forge-card-account`                                                             | Consent facts and signed-in account chip on the approval card                                              |
 | `.forge-public-intro`, `.forge-public-footer`                                                     | Public home title and lead, and the footer with instance name and sign-in link                             |
 | `.forge-public-search`, `.forge-public-count`                                                     | Public search form and localized result count                                                              |
-| `.forge-gallery__meta`                                                                            | Optional metadata below the gallery title (trailing in wide list view)                                     |
+| `.forge-gallery__card`, `.forge-gallery__title`, `.forge-gallery__meta`                           | Whole-card link with focus ring, title underlined only on hover or keyboard focus, and muted metadata      |
 | `.forge-breadcrumb`                                                                               | Artefact detail breadcrumb                                                                                 |
 | `.forge-detail`, `.forge-detail__main`, `.forge-detail__aside`                                    | Detail grid, files and versions column, and role-gated settings column                                     |
 | `.forge-detail__meta`, `.forge-detail__actions`, `.forge-detail__preview`                         | Detail metadata, action groups, and catalogue cover                                                        |

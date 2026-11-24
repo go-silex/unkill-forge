@@ -160,6 +160,9 @@ it('admits only one of two concurrent invite callbacks and shows the URL only at
   const used = await send(link)
   const unknown = await send(`/invite/${'a'.repeat(43)}`)
   expect(used.status).toBe(404)
+  expect(unknown.status).toBe(404)
+  expect(Object.fromEntries(used.headers)).toEqual(Object.fromEntries(unknown.headers))
+  expect(used.headers.getSetCookie()).toEqual([])
   expect(await used.text()).toBe(await unknown.text())
   expect(await (await owner.request(members)).text()).not.toContain('revoke-invite')
   const audit = (
@@ -210,14 +213,21 @@ it('lists and claims invites using D1 time and can revoke an expired unused invi
 
   const expired = await send(link)
   const unknown = await send(`/invite/${'a'.repeat(43)}`)
+  const malformed = await send('/invite/not-an-invite')
   expect(expired.status).toBe(404)
   expect(unknown.status).toBe(404)
+  expect(malformed.status).toBe(404)
+  for (const response of [expired, unknown, malformed]) {
+    expect(Object.fromEntries(response.headers)).toEqual(Object.fromEntries(expired.headers))
+    expect(response.headers.getSetCookie()).toEqual([])
+  }
   expect(expired.headers.get('Referrer-Policy')).toBe('no-referrer')
   expect(expired.headers.get('Cache-Control')).toBe('no-store')
   const page = await expired.text()
   expect(page).toContain('forge-panel--invite')
   expect(page).not.toContain(link.split('/').at(-1))
   expect(page).toBe(await unknown.text())
+  expect(page).toBe(await malformed.text())
   // List and callback must ignore a Worker clock that still considers this invite valid.
   const workerTime = Date.now() - 5_000
   const clock = vi.spyOn(Date, 'now').mockReturnValue(workerTime)

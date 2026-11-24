@@ -46,7 +46,19 @@ app.onError((error, c) => {
 })
 app.notFound((c) => {
   const { config } = c.env
-  return manageError(config, 404, messages(config).access.notFoundLead)
+  const { method } = c.req.raw
+  // These namespaces belong to protocol, handoff or asset handlers, even when routing falls through.
+  const reserved =
+    /^\/(?:oauth|\.well-known|_forge|_theme|mcp|token|register|authorize|logout|upload)(?:\/|$)/.test(
+      c.req.path,
+    ) ||
+    /^\/(?:auth\/handoff|login\/[^/]+\/backchannel-logout|(?:logo|favicon)\.svg|style\.css)(?:\/|$)/.test(
+      c.req.path,
+    )
+  const t = messages(config)
+  return (method === 'GET' || method === 'HEAD') && !reserved
+    ? manageError(config, 404, t.access.notFoundLead)
+    : c.text(t.notFound, 404)
 })
 const roleSchema = z.enum(['viewer', 'publisher', 'admin'])
 const idSchema = z.uuid()

@@ -479,6 +479,8 @@ it('distinguishes anonymous, pending, viewer, publisher and removed canonical re
   const pendingPage = await pending.text()
   expect(pendingPage).toContain('forge-panel--pending')
   expect(pendingPage).not.toContain('forge-card-account')
+  expect(pendingPage).toContain(`href="${manage}"`)
+  expect(pendingPage).not.toContain('href="/_forge/session')
   const pendingMissing = await pendingRead.request(`${privateUrl}missing`)
   expect(pendingMissing.status).toBe(200)
   expect(await pendingMissing.text()).toContain('Pending access')

@@ -17,7 +17,7 @@ export function PendingAccess({ config, member }: { config: Config; member: Memb
       note={t.access.pendingNote}
       homeLink
       actions={
-        <form action="/logout" method="post">
+        <form class="forge-action" action="/logout" method="post">
           <button class="forge-button forge-button--primary" type="submit">
             {t.signOut}
           </button>

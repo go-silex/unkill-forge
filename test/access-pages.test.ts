@@ -1,7 +1,7 @@
 import { expect, it, vi } from 'vitest'
 import {
   admin,
-  type Browser,
+  Browser,
   configuredEnv,
   formValue,
   type Handle,
@@ -10,6 +10,7 @@ import {
   provider,
   read,
   runtime,
+  sessionCookie,
   setupStorage,
 } from './http'
 import { mockProvider, setupOidc } from './oidc'
@@ -83,6 +84,87 @@ it('does not reflect a failed login callback, unknown path or malformed form', a
   await errorCard(await unavailable('/artefacts', { headers: { Cookie: owner.cookieHeader() } }), 503)
 })
 
+it('keeps protocol and machine misses plain and serves the browser HEAD without a body', async () => {
+  const send = runtime()
+  const browser = await send('/missing')
+  const browserHeaders = Object.fromEntries(browser.headers)
+  await errorCard(browser, 404)
+  const head = await send('/missing', { method: 'HEAD' })
+  expect(head.status).toBe(404)
+  expect(Object.fromEntries(head.headers)).toEqual(browserHeaders)
+  expect(await head.text()).toBe('')
+
+  const machine = await send('/_forge/session')
+  expect(machine.status).toBe(404)
+  const machineHeaders = Object.fromEntries(machine.headers)
+  expect(machineHeaders).toEqual({ ...browserHeaders, 'content-type': 'text/plain; charset=UTF-8' })
+  expect(await machine.text()).toBe('Not found')
+  for (const method of ['OPTIONS', 'HEAD']) {
+    const metadata = await send('/oauth/clients/local.json', { method })
+    expect(metadata.status).toBe(404)
+    expect(Object.fromEntries(metadata.headers)).toEqual(machineHeaders)
+    expect(await metadata.text()).toBe(method === 'HEAD' ? '' : 'Not found')
+  }
+})
+
+it('renders login and consent storage outages but leaves the logout failure plain', async () => {
+  const send = runtime()
+  const idp = mockProvider()
+  const guest = new Browser(send)
+  const callback = await idp.issue(await idp.begin(guest), 'example-user')
+  const owner = await idp.signedIn(send, admin)
+  const localClientId = `${manage}/oauth/clients/local.json`
+  const providerFetch = fetch
+  vi.stubGlobal('fetch', (input: RequestInfo | URL, init?: RequestInit) =>
+    input === localClientId ? send(localClientId) : providerFetch(input, init),
+  )
+  const localPath = new URL(authPath(localClientId), manage)
+  localPath.searchParams.set('redirect_uri', 'http://127.0.0.1:7777/callback')
+  const consentPage = await owner.request(localPath)
+  expect(consentPage.status).toBe(200)
+  const consent = formValue(await consentPage.text(), 'consent')
+  let fault = /INSERT INTO login_flows/
+  const unavailable = runtime({
+    DB: new Proxy(configuredEnv().DB, {
+      get(db, key) {
+        if (key === 'prepare')
+          return (sql: string) => {
+            if (fault.test(sql)) throw new Error(requestData)
+            return db.prepare(sql)
+          }
+        return Reflect.get(db, key, db)
+      },
+    }),
+  })
+  const start = await unavailable('/login/team')
+  const referenceHeaders = Object.fromEntries(start.headers)
+  await errorCard(start, 503)
+  fault = /DELETE FROM login_flows WHERE state_hash/
+  await errorCard(await unavailable(callback, { headers: { Cookie: guest.cookieHeader() } }), 503)
+
+  const headers = { Cookie: owner.cookieHeader(), Origin: manage }
+  fault = /INSERT INTO oauth_consents/
+  await errorCard(await unavailable(localPath, { headers }), 503)
+  fault = /DELETE FROM oauth_consents WHERE token_hash/
+  await errorCard(
+    await unavailable('/authorize', {
+      method: 'POST',
+      headers,
+      body: new URLSearchParams({ consent, decision: 'deny' }),
+    }),
+    503,
+  )
+
+  fault = /sessions/
+  const logout = await unavailable('/logout', { method: 'POST', headers })
+  expect(logout.status).toBe(503)
+  expect(Object.fromEntries(logout.headers)).toEqual({
+    ...referenceHeaders,
+    'content-type': 'text/plain;charset=UTF-8',
+  })
+  expect(await logout.text()).toBe('Forge is unavailable')
+})
+
 it('keeps HEAD body-less and leaves machine logout and consent method errors plain', async () => {
   const send = runtime()
   for (const path of ['/missing', `${read}/missing`, '/login/team/callback']) {
@@ -121,8 +203,18 @@ it('shows the same pending account and local sign-out form at home and consent',
   const html = await home.text()
   expect(html).toContain('forge-panel--pending')
   expect(html).toContain('awaiting-approval@example.test')
-  expect(html).toMatch(/action="\/logout" method="post"/)
+  const form = html.match(/<form class="forge-action" action="([^"]+)" method="(post)">([\s\S]*?)<\/form>/)
+  expect(form?.[1]).toBe('/logout')
+  expect(form?.[3]).not.toContain('<input')
   expect(await authorize.text()).toBe(html)
+  const signedOut = await viewer.request(form?.[1] ?? '', {
+    method: form?.[2].toUpperCase(),
+    headers: { Origin: manage },
+  })
+  expect(signedOut.status).toBe(303)
+  expect(location(signedOut).pathname).toBe('/login')
+  expect(viewer.cookie(sessionCookie)).toBeUndefined()
+  expect(location(await viewer.request('/')).pathname).toBe('/login')
 })
 
 function authPath(id = clientId) {

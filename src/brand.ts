@@ -117,11 +117,12 @@ const style = `
   .forge-gallery { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 16rem), 1fr)); align-items: start; gap: calc(2 * var(--forge-space)); list-style: none; padding: 0 }
   .forge-gallery__item { min-width: 0; border: 1px solid var(--forge-hairline); border-radius: var(--forge-radius); background: var(--forge-surface); overflow-wrap: anywhere }
   .forge-gallery__item:has(> a:hover) { border-color: var(--forge-link) }
-  .forge-gallery__card { display: block; border-radius: var(--forge-radius) }
+  .forge-gallery__card { display: block; border-radius: var(--forge-radius); text-decoration: none }
   .forge-gallery__card:focus-visible { outline: 2px solid var(--forge-focus); outline-offset: 2px }
   .forge-gallery__preview { display: block; width: 100%; aspect-ratio: 16 / 9; object-fit: contain; background: var(--forge-page); border-radius: var(--forge-radius) var(--forge-radius) 0 0 }
   .forge-gallery__caption { display: block; padding: calc(2 * var(--forge-space)); min-height: var(--forge-control-height) }
-  .forge-gallery__title { font-weight: 600 }
+  .forge-gallery__title { color: var(--forge-ink); font-weight: 600 }
+  :where(.forge-gallery__card:is(:hover, :focus-visible)) .forge-gallery__title { text-decoration: underline }
   .forge-gallery__meta { display: block; color: var(--forge-muted); font-size: var(--forge-text-small) }
   @media (min-width: 45rem) {
     :where(.forge-gallery--list) .forge-gallery__caption:where(:has(> .forge-gallery__meta)) { display: flex; align-items: baseline; justify-content: space-between; gap: var(--forge-space) }
@@ -179,6 +180,7 @@ const style = `
   :where(.forge-member-identity) > strong { min-inline-size: 0 }
   .forge-member-legend { color: var(--forge-muted); font-size: var(--forge-text-small) }
   .forge-action { display: inline-flex; max-width: 100%; flex-wrap: wrap; align-items: end; gap: var(--forge-space); margin-block: calc(.5 * var(--forge-space)) }
+  :where(.forge-card-actions) > .forge-action { display: grid; align-items: stretch; margin-block: 0 }
   :where(.forge-admin-panel) > .forge-action { display: grid; justify-items: stretch }
   :where(.forge-admin-panel > .forge-action) > .forge-button { justify-self: start }
   :where(.forge-action label) { display: flex; flex-direction: column; gap: calc(.5 * var(--forge-space)); min-width: 0; font-size: var(--forge-text-small) }
