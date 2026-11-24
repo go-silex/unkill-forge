@@ -5,6 +5,7 @@ import { expect, it, vi } from 'vitest'
 import type { Env } from '../src/config'
 import { hashSecret } from '../src/core'
 import { createOwnToken, revokeOwnToken } from '../src/core/admin'
+import { catalogueCountLimit } from '../src/core/catalogue'
 import { time } from '../src/manage/ui/page'
 import {
   admin,
@@ -540,17 +541,41 @@ it('shows a localized end-of-results message when a catalogue continuation exhau
   expect(await french.text()).toContain('Il n’y a plus de résultats.')
 })
 
+it('identifies same-title and blank-title artefacts without covers in both catalogue views', async () => {
+  const send = runtime()
+  const owner = await mockProvider().signedIn(send, admin)
+  const token = await issueToken(owner, 'Identity fixtures')
+  const samples = [
+    ['first-report', 'Report', 'Report'],
+    ['second-report', 'Report', 'Report'],
+    ['blank-report', '  ', 'blank-report'],
+  ] as const
+  for (const [slug, title] of samples) await publish(send, token, slug, title)
+  const grid = await html(owner, '/artefacts')
+  const list = await html(owner, '/artefacts?view=list')
+  for (const [slug, , label] of samples) {
+    expect(grid).toContain(
+      `href="/artefacts/${slug}"><span class="forge-gallery__caption"><span class="forge-gallery__title">${label}</span></span></a><div class="forge-gallery__detail"><code class="forge-catalogue-slug">${slug}</code>`,
+    )
+    expect(list).toContain(`href="/artefacts/${slug}"><span>${label}</span></a>`)
+    expect(list).toContain(`<td class="forge-col--folded" title="${slug}"><code>${slug}</code></td>`)
+  }
+})
+
 it('uses bounded index seeks for missing and sparse matches in a large catalogue', async () => {
   const send = runtime()
   const owner = await mockProvider().signedIn(send, admin)
   await publish(send, await issueToken(owner, 'Catalogue seed'), slug, 'Exact Élément %_')
-  await db
-    .prepare(`WITH RECURSIVE numbers(n) AS (SELECT 1 UNION ALL SELECT n + 1 FROM numbers WHERE n < 1500)
+  const seed =
+    db.prepare(`WITH RECURSIVE numbers(n) AS (SELECT ?1 UNION ALL SELECT n + 1 FROM numbers WHERE n < ?2)
     INSERT INTO artefacts (id, slug, title, visibility, current_revision, created_by, created_at, updated_at)
     SELECT printf('10000000-0000-4000-8000-%012d', n), printf('common-%04d', n), 'Exact other title', 'public',
-    current_revision, created_by, created_at, updated_at FROM artefacts, numbers WHERE slug = ?`)
-    .bind(slug)
-    .run()
+    current_revision, created_by, created_at, updated_at FROM artefacts, numbers WHERE slug = ?3`)
+  await seed.bind(1, catalogueCountLimit - 1, slug).run()
+  expect(await html(owner, '/artefacts?q=missing')).toContain(
+    `All <span class="forge-filters__count">${catalogueCountLimit}</span>`,
+  )
+  await seed.bind(catalogueCountLimit, catalogueCountLimit, slug).run()
   // A long revocation history must not be walked by the active-link probe, even after ANALYZE.
   await db
     .prepare(`WITH RECURSIVE numbers(n) AS (SELECT 1 UNION ALL SELECT n + 1 FROM numbers WHERE n < 2000)
@@ -560,29 +585,51 @@ it('uses bounded index seeks for missing and sparse matches in a large catalogue
     .bind(slug)
     .run()
   await db.prepare('ANALYZE').run()
-  let reads = 0
+  let totalReads = 0
+  let searchReads = 0
   const planStatements: D1PreparedStatement[] = []
+  const originals = new WeakMap<D1PreparedStatement, { statement: D1PreparedStatement; search: boolean }>()
+  const measure = <T>(result: D1Result<T>) => {
+    totalReads += result.meta.rows_read
+    return result
+  }
+  function wrap(statement: D1PreparedStatement, sql: string): D1PreparedStatement {
+    const search = sql.includes('visibility = ?')
+    const wrapped = new Proxy(statement, {
+      get(prepared, key) {
+        if (key === 'bind')
+          return (...args: unknown[]) => {
+            if (search) planStatements.push(db.prepare(`EXPLAIN QUERY PLAN ${sql}`).bind(...args))
+            return wrap(prepared.bind(...args), sql)
+          }
+        if (key === 'all') return async () => measure(await prepared.all())
+        if (key === 'run') return async () => measure(await prepared.run())
+        if (key === 'first')
+          return async (column?: string) => {
+            const { results } = measure(await prepared.all<Record<string, unknown>>())
+            const row = results[0]
+            return row ? (column === undefined ? row : row[column]) : null
+          }
+        if (key === 'raw') throw new Error('Catalogue D1 meter does not support raw results')
+        return Reflect.get(prepared, key, prepared)
+      },
+    })
+    originals.set(wrapped, { statement, search })
+    return wrapped
+  }
   const measured = new Proxy(db, {
     get(target, key) {
-      if (key === 'prepare')
-        return (sql: string) => {
-          const statement = target.prepare(sql)
-          if (!sql.includes('visibility = ?')) return statement
-          return new Proxy(statement, {
-            get(prepared, prop) {
-              if (prop === 'bind')
-                return (...args: unknown[]) => {
-                  planStatements.push(target.prepare(`EXPLAIN QUERY PLAN ${sql}`).bind(...args))
-                  return prepared.bind(...args)
-                }
-              return Reflect.get(prepared, prop, prepared)
-            },
-          })
-        }
+      if (key === 'prepare') return (sql: string) => wrap(target.prepare(sql), sql)
       if (key === 'batch')
         return async (statements: D1PreparedStatement[]) => {
-          const results = await target.batch(statements)
-          reads += results.reduce((sum, result) => sum + result.meta.rows_read, 0)
+          const entries = statements.map((statement) => originals.get(statement))
+          const results = await target.batch(
+            statements.map((statement, i) => entries[i]?.statement ?? statement),
+          )
+          for (const [i, result] of results.entries()) {
+            measure(result)
+            if (entries[i]?.search) searchReads += result.meta.rows_read
+          }
           return results
         }
       const value = Reflect.get(target, key, target)
@@ -600,7 +647,20 @@ it('uses bounded index seeks for missing and sparse matches in a large catalogue
     )
   const empty = await fetch('missing')
   expect(empty.status).toBe(200)
-  expect(await empty.text()).toContain('No results.')
+  const oversized = await empty.text()
+  expect(oversized).toContain('No results.')
+  expect(oversized).not.toContain('forge-filters__count')
+  expect(
+    [...oversized.matchAll(/<a class="forge-filters__link"[^>]*>([^<]+)<\/a>/g)].map(([, label]) => label),
+  ).toEqual(['All', 'Private', 'Shared', 'Public'])
+  const emptyReads = totalReads
+  expect(emptyReads).toBeGreaterThanOrEqual(catalogueCountLimit + 1)
+  // D1 can meter both an index step and a table lookup for each sampled live artefact.
+  expect(emptyReads).toBeLessThan(2 * (catalogueCountLimit + 1) + 30)
+  await seed.bind(catalogueCountLimit + 1, catalogueCountLimit + 500, slug).run()
+  totalReads = 0
+  expect((await fetch('missing')).status).toBe(200)
+  expect(totalReads).toBe(emptyReads)
   const sparse = await fetch('eXaCt Élément %_')
   expect(sparse.status).toBe(200)
   expect(await sparse.text()).toContain('Exact Élément %_')
@@ -610,8 +670,8 @@ it('uses bounded index seeks for missing and sparse matches in a large catalogue
   const shared = await fetch('exact', 'shared')
   expect(shared.status).toBe(200)
   expect(await shared.text()).toContain('No results.')
-  expect(reads).toBeGreaterThan(0)
-  expect(reads).toBeLessThan(20)
+  expect(searchReads).toBeGreaterThan(0)
+  expect(searchReads).toBeLessThan(20)
   const plans = (await db.batch<{ detail: string }>(planStatements)).flatMap((result) =>
     result.results.map((row) => row.detail),
   )
@@ -1307,9 +1367,10 @@ it('renders short elapsed and future times and falls back to a short absolute da
       [-minute + 1, /^now$/],
       [-minute, /^1 min\.? ago$/],
       [-60 * minute, /^1 hr\.? ago$/],
-      [-day, /^yesterday$/],
+      [-day, /^1 day ago$/],
+      [day, /^in 1 day$/],
       [-6 * day, /^6 days? ago$/],
-      [-7 * day, /^last wk\.?$/],
+      [-7 * day, /^1 wk\.? ago$/],
       [-56 * day, /^8 wk\.? ago$/],
       [-56 * day - 1, /^31\/12\/2025$/],
       [3 * day, /^in 3 days$/],
@@ -1319,6 +1380,19 @@ it('renders short elapsed and future times and falls back to a short absolute da
       expect(/>([^<]+)<\/time>/.exec(rendered)?.[1]).toMatch(label)
     }
     expect(time(zone, null)).toBe('—')
+  } finally {
+    clock.mockRestore()
+  }
+})
+
+it.each([
+  ['UTC', '2026-11-21T23:00:00Z', '2026-11-23T00:30:00Z'],
+  // Both instants are on November 1 locally, 24.5 hours apart across the fallback.
+  ['America/New_York', '2026-11-01T04:05:00Z', '2026-11-02T04:35:00Z'],
+])('describes elapsed days without a calendar-day label in %s', (timeZone, timestamp, now) => {
+  const clock = vi.spyOn(Date, 'now').mockReturnValue(Date.parse(now))
+  try {
+    expect(String(time({ locale: 'en', timeZone }, Date.parse(timestamp)))).toMatch(/>1 day ago<\/time>$/)
   } finally {
     clock.mockRestore()
   }

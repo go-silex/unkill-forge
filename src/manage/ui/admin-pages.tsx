@@ -235,7 +235,13 @@ adminPages.get(
                   href={query.size ? `${cataloguePath}?${query}` : cataloguePath}
                   aria-current={choice === (selected ?? 'all') ? 'page' : undefined}
                 >
-                  {t(choice)} <span class="forge-filters__count">{counts[choice]}</span>
+                  {t(choice)}
+                  {counts && (
+                    <>
+                      {' '}
+                      <span class="forge-filters__count">{counts[choice]}</span>
+                    </>
+                  )}
                 </a>
               )
             })}
@@ -255,11 +261,12 @@ adminPages.get(
             ]}
           >
             {artefacts.map((entry) => {
+              const label = entry.title.trim() || entry.slug
               const updated = time(config, entry.updatedAt)
               const badge = <AccessBadge access={entry.access} label={t(entry.access)} />
               return (
                 <tr>
-                  <td title={entry.title}>
+                  <td title={label}>
                     <a class="forge-catalogue-link" href={detailPath(entry.slug)}>
                       {previews.has(entry.slug) && (
                         <img
@@ -269,7 +276,7 @@ adminPages.get(
                           loading="lazy"
                         />
                       )}
-                      <span>{entry.title}</span>
+                      <span>{label}</span>
                     </a>
                     <Fold>
                       <code>{entry.slug}</code>
@@ -298,15 +305,18 @@ adminPages.get(
             label={t('artefacts')}
             items={artefacts.map((entry) => ({
               href: detailPath(entry.slug),
-              title: entry.title,
+              title: entry.title.trim() || entry.slug,
               preview: previews.has(entry.slug) ? entry.slug : undefined,
               detail: (
-                <span class="forge-catalogue-meta">
-                  <span>
-                    {time(config, entry.updatedAt)} · v{entry.revision}
+                <>
+                  <code class="forge-catalogue-slug">{entry.slug}</code>
+                  <span class="forge-catalogue-meta">
+                    <span>
+                      {time(config, entry.updatedAt)} · v{entry.revision}
+                    </span>
+                    <AccessBadge access={entry.access} label={t(entry.access)} />
                   </span>
-                  <AccessBadge access={entry.access} label={t(entry.access)} />
-                </span>
+                </>
               ),
             }))}
           />

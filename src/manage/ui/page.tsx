@@ -311,6 +311,7 @@ type DateFormats = {
   absolute: Intl.DateTimeFormat
   short: Intl.DateTimeFormat
   relative: Intl.RelativeTimeFormat
+  now: string
 }
 
 const dateFormats = new WeakMap<DateConfig, DateFormats>()
@@ -332,7 +333,8 @@ function dateFormat(config: DateConfig) {
       timeZoneName: 'short',
     }),
     short: new Intl.DateTimeFormat(language, { timeZone, dateStyle: 'short' }),
-    relative: new Intl.RelativeTimeFormat(language, { numeric: 'auto', style: 'short' }),
+    relative: new Intl.RelativeTimeFormat(language, { style: 'short' }),
+    now: new Intl.RelativeTimeFormat(language, { numeric: 'auto', style: 'short' }).format(0, 'second'),
   }
   dateFormats.set(config, format)
   return format
@@ -353,7 +355,7 @@ export function time(config: DateConfig, timestamp: number | null) {
   const delta = timestamp - Date.now()
   const distance = Math.abs(delta)
   let relative: string
-  if (distance < minute) relative = format.relative.format(0, 'second')
+  if (distance < minute) relative = format.now
   else if (distance < hour) relative = format.relative.format(Math.trunc(delta / minute), 'minute')
   else if (distance < day) relative = format.relative.format(Math.trunc(delta / hour), 'hour')
   else if (distance < week) relative = format.relative.format(Math.trunc(delta / day), 'day')

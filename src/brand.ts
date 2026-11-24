@@ -91,6 +91,7 @@ const style = `
   .forge-gallery__detail { padding: 0 calc(2 * var(--forge-space)) calc(2 * var(--forge-space)); color: var(--forge-muted); font-size: var(--forge-text-small) }
   .forge-catalogue-meta { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: var(--forge-space) }
   :where(.forge-catalogue-meta > span:first-child) { flex: 1 1 7rem; min-inline-size: 0 }
+  .forge-catalogue-slug { display: block; margin-block-end: calc(.5 * var(--forge-space)) }
   .forge-gallery--list { grid-template-columns: minmax(0, 1fr); gap: 0 }
   .forge-gallery--list .forge-gallery__item { border-width: 0 0 1px; border-radius: 0; background: none }
   .forge-gallery--list .forge-gallery__item:has(> a:hover) { border-color: var(--forge-hairline); background: var(--forge-page) }

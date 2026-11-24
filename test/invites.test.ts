@@ -106,12 +106,17 @@ it('keeps invite contexts separate across tabs and ignores them in ordinary or o
   expect((await otherBrowser.request(await idp.issue(copied, 'copied-context'))).status).toBe(302)
   expect(await (await otherBrowser.request('/')).text()).toContain('Pending access')
 
+  const expectAccount = async (name: string, role: string) => {
+    expect(await (await browser.request('/artefacts')).text()).toContain(
+      `<div class="forge-account"><span class="forge-account__name">${name}</span><span class="forge-account__role">${role}</span>`,
+    )
+  }
   const viewerStart = location(await browser.request(viewerTab.href))
   const adminStart = location(await browser.request(adminTab.href))
   expect((await browser.request(await idp.issue(viewerStart, 'viewer-tab'))).status).toBe(302)
-  expect(await (await browser.request('/artefacts')).text()).toContain('class="forge-account__role">viewer')
+  await expectAccount('viewer-tab', 'viewer')
   expect((await browser.request(await idp.issue(adminStart, 'admin-tab'))).status).toBe(302)
-  expect(await (await browser.request('/artefacts')).text()).toContain('class="forge-account__role">admin')
+  await expectAccount('admin-tab', 'admin')
 })
 
 it('admits only one of two concurrent invite callbacks and shows the URL only at creation', async () => {
@@ -147,7 +152,9 @@ it('admits only one of two concurrent invite callbacks and shows the URL only at
   const homes = await Promise.all([first, second].map((b) => b.request('/')))
   expect(homes.map((home) => home.status).sort()).toEqual([200, 303])
   const winner = homes[0].status === 303 ? first : second
-  expect(await (await winner.request('/artefacts')).text()).toContain('class="forge-account__role">publisher')
+  expect(await (await winner.request('/artefacts')).text()).toContain(
+    `<div class="forge-account"><span class="forge-account__name">${winner === first ? 'first' : 'second'}-invitee</span><span class="forge-account__role">publisher</span>`,
+  )
   expect(await homes.find((home) => home.status === 200)?.text()).toContain('Pending access')
   expect((await send(link)).status).toBe(404)
   expect(await (await owner.request(members)).text()).not.toContain('revoke-invite')
@@ -210,7 +217,9 @@ it('lists and claims invites using D1 time and can revoke an expired unused invi
   } finally {
     clock.mockRestore()
   }
-  expect(await (await browser.request('/artefacts')).text()).toContain('class="forge-account__role">viewer')
+  expect(await (await browser.request('/artefacts')).text()).toContain(
+    '<div class="forge-account"><span class="forge-account__name">expired-invitee</span><span class="forge-account__role">viewer</span>',
+  )
   expect((await owner.post(members, { action: 'revoke-invite', id })).status).toBe(303)
   const conflict = await owner.post(members, { action: 'revoke-invite', id })
   expect(conflict.status).toBe(303)
@@ -276,7 +285,9 @@ it('restricts invite creation and revocation to same-origin admins and audits a 
   )
   expect((await send(link)).status).toBe(404)
   expect((await browser.request(callback)).status).toBe(302)
-  expect(await (await browser.request('/artefacts')).text()).toContain('class="forge-account__role">viewer')
+  expect(await (await browser.request('/artefacts')).text()).toContain(
+    '<div class="forge-account"><span class="forge-account__name">revoked-invitee</span><span class="forge-account__role">viewer</span>',
+  )
   const audit = (
     await DB.prepare("SELECT action FROM audit_log WHERE action LIKE 'invite.%' ORDER BY action").all()
   ).results

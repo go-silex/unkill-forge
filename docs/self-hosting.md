@@ -115,6 +115,8 @@ By default the read origin shows a sign-in action without a public catalogue. Se
 
 Both galleries use a supported raster preview from the current revision. You can supply a root-level `og.jpg`, `og.jpeg`, `og.png`, `og.webp` or `index.og.png` no larger than 1 MiB. A valid supplied preview always wins. To publish and verify the first private artefact, see [Connect and publish with MCP](mcp.md).
 
+Manage shows access counts for catalogues of up to 1,000 live artefacts. The counts are catalogue-wide, not limited to search matches. Larger catalogues still offer the same filters, without counts.
+
 To generate missing covers for HTML artefacts after publication, add a [Browser Run binding](https://developers.cloudflare.com/browser-run/reference/wrangler/#bindings). Keep the separate cover trigger for retries and backfill:
 
 ```jsonc
@@ -218,6 +220,7 @@ These classes and the custom properties above are the supported theme contract. 
 | `.forge-badge`, `.forge-badge--current`                                                           | Text badge and current-version variant                                                                     |
 | `.forge-badge--private`, `.forge-badge--shared`, `.forge-badge--public`                           | Private, shared and public access variants                                                                 |
 | `.forge-catalogue-meta`, `.forge-catalogue-link`                                                  | Grid and folded list metadata, and the artefact title/thumbnail link in list view                          |
+| `.forge-catalogue-slug`                                                                           | Visible artefact identifier on grid cards                                                                  |
 | `.forge-title`                                                                                    | Page heading                                                                                               |
 | `.forge-panel`, `.forge-panel__header`, `.forge-panel__body`                                      | Single-panel layout, shared brand header, and body                                                         |
 | `.forge-panel--sign-in`, `.forge-panel--invite`, `.forge-panel--consent`, `.forge-panel--handoff` | Manage sign-in, invitation, consent, and read-session relay panels                                         |
