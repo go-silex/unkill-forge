@@ -21,7 +21,7 @@ import {
   setRedirects,
   setVisibility,
 } from '../../core/artefacts'
-import { type CatalogueAccess, searchArtefacts } from '../../core/catalogue'
+import { catalogueCounts, searchArtefacts } from '../../core/catalogue'
 import { galleryPreviewSlugs, previewPrefix } from '../../core/gallery-previews'
 import type { BrowserSession, Member, Role } from '../../core/index'
 import { purgeArtefact } from '../../core/purge'
@@ -33,6 +33,7 @@ import { type AdminMessage, type AdminTranslate, adminMessages, type CopyLabels,
 import { requireBrowserSession } from '../login'
 import { localClientPath } from '../oauth'
 import {
+  AccessBadge,
   Action,
   CopyField,
   Fold,
@@ -148,31 +149,12 @@ async function runAction<S extends z.ZodType>(
   return flash(c, session, result.path ?? path, t(result.message), result.secret)
 }
 
-/** Visibility choices; the catalogue filter adds "all" and the derived shared state. */
-function VisibilityOptions({
-  t,
-  value,
-  filter = false,
-}: {
-  t: AdminTranslate
-  value?: CatalogueAccess
-  filter?: boolean
-}) {
+function VisibilityOptions({ t, value }: { t: AdminTranslate; value: 'private' | 'public' }) {
   return (
     <>
-      {filter && (
-        <option value="" selected={value === undefined}>
-          {t('all')}
-        </option>
-      )}
       <option value="private" selected={value === 'private'}>
         {t('private')}
       </option>
-      {filter && (
-        <option value="shared" selected={value === 'shared'}>
-          {t('shared')}
-        </option>
-      )}
       <option value="public" selected={value === 'public'}>
         {t('public')}
       </option>
@@ -207,18 +189,22 @@ adminPages.get(
     if (rawVisibility && !filter.success) return c.text(t('malformed'), 400)
     const selected = filter.data
     const cursor = c.req.query('cursor')
-    const { artefacts, nextCursor } = await searchArtefacts(c.env, actor, q, selected, cursor)
+    const [{ artefacts, nextCursor }, counts] = await Promise.all([
+      searchArtefacts(c.env, actor, q, selected, cursor),
+      catalogueCounts(c.env, actor),
+    ])
     const previews = await galleryPreviewSlugs(
       c.env,
       artefacts.map((entry) => entry.slug),
       'member',
     )
-    const view = galleryView(c.req.query('view'))
+    const rawView = c.req.query('view')
+    const view = galleryView(rawView)
     const params = new URLSearchParams()
     if (q) params.set('q', q)
     if (selected) params.set('visibility', selected)
-    if (view === 'list') params.set('view', view)
-    const { locale } = c.env.config
+    if (rawView === view) params.set('view', view)
+    const { config } = c.env
     return page(
       c,
       session,
@@ -229,23 +215,31 @@ adminPages.get(
             <label>
               {t('searchQuery')} <input type="search" name="q" value={q} />
             </label>
-            <label>
-              {t('visibility')}{' '}
-              <select name="visibility">
-                <VisibilityOptions t={t} value={selected} filter />
-              </select>
-            </label>
-            {view === 'list' && <input type="hidden" name="view" value={view} />}
+            {selected && <input type="hidden" name="visibility" value={selected} />}
+            {rawView === view && <input type="hidden" name="view" value={view} />}
             <button class="forge-button forge-button--primary" type="submit">
               {t('search')}
             </button>
           </form>
-          <GalleryViews
-            path={cataloguePath}
-            params={params}
-            view={view}
-            labels={messages(c.env.config).views}
-          />
+        </div>
+        <div class="forge-toolbar">
+          <nav class="forge-filters" aria-label={t('visibility')}>
+            {(['all', ...access.options] as const).map((choice) => {
+              const query = new URLSearchParams(params)
+              if (choice === 'all') query.delete('visibility')
+              else query.set('visibility', choice)
+              return (
+                <a
+                  class="forge-filters__link"
+                  href={query.size ? `${cataloguePath}?${query}` : cataloguePath}
+                  aria-current={choice === (selected ?? 'all') ? 'page' : undefined}
+                >
+                  {t(choice)} <span class="forge-filters__count">{counts[choice]}</span>
+                </a>
+              )
+            })}
+          </nav>
+          <GalleryViews path={cataloguePath} params={params} view={view} labels={messages(config).views} />
         </div>
         {artefacts.length === 0 ? (
           <p class="forge-empty">{t(nextCursor ? 'noNewMatches' : cursor ? 'noMoreResults' : 'noResults')}</p>
@@ -260,11 +254,12 @@ adminPages.get(
             ]}
           >
             {artefacts.map((entry) => {
-              const updated = time(locale, entry.updatedAt)
+              const updated = time(config, entry.updatedAt)
+              const badge = <AccessBadge access={entry.access} label={t(entry.access)} />
               return (
                 <tr>
                   <td title={entry.title}>
-                    <a href={detailPath(entry.slug)}>
+                    <a class="forge-catalogue-link" href={detailPath(entry.slug)}>
                       {previews.has(entry.slug) && (
                         <img
                           class="forge-thumb"
@@ -278,15 +273,20 @@ adminPages.get(
                     <Fold>
                       <code>{entry.slug}</code>
                     </Fold>
-                    <Fold label={t('visibility')}>{t(entry.access)}</Fold>
-                    <Fold label={t('revision')}>{entry.revision}</Fold>
-                    <Fold label={t('updated')}>{updated}</Fold>
+                    <Fold>
+                      <span class="forge-catalogue-meta">
+                        <span>
+                          {updated} · v{entry.revision}
+                        </span>
+                        {badge}
+                      </span>
+                    </Fold>
                   </td>
                   <td class="forge-col--folded" title={entry.slug}>
                     <code>{entry.slug}</code>
                   </td>
-                  <td class="forge-col--folded">{t(entry.access)}</td>
-                  <td class="forge-col--folded">{entry.revision}</td>
+                  <td class="forge-col--folded">{badge}</td>
+                  <td class="forge-col--folded">v{entry.revision}</td>
                   <td class="forge-col--folded">{updated}</td>
                 </tr>
               )
@@ -300,18 +300,12 @@ adminPages.get(
               title: entry.title,
               preview: previews.has(entry.slug) ? entry.slug : undefined,
               detail: (
-                <dl>
-                  <dt>{t('slug')}</dt>
-                  <dd>
-                    <code>{entry.slug}</code>
-                  </dd>
-                  <dt>{t('visibility')}</dt>
-                  <dd>{t(entry.access)}</dd>
-                  <dt>{t('revision')}</dt>
-                  <dd>{entry.revision}</dd>
-                  <dt>{t('updated')}</dt>
-                  <dd>{time(locale, entry.updatedAt)}</dd>
-                </dl>
+                <span class="forge-catalogue-meta">
+                  <span>
+                    {time(config, entry.updatedAt)} · v{entry.revision}
+                  </span>
+                  <AccessBadge access={entry.access} label={t(entry.access)} />
+                </span>
               ),
             }))}
           />
@@ -404,7 +398,7 @@ adminPages.get(
               <td class="forge-col--secondary" title={entry.author}>
                 {entry.author}
               </td>
-              <td class="forge-col--secondary">{time(c.env.config.locale, entry.createdAt)}</td>
+              <td class="forge-col--secondary">{time(c.env.config, entry.createdAt)}</td>
               <td title={entry.message ?? undefined}>{entry.message}</td>
               {canWrite && (
                 <td>
@@ -447,8 +441,8 @@ adminPages.get(
               [t('shareLabel'), { folded: t('created') }, { folded: t('lastUsed') }, t('actions')],
               artefact.shareLinks.map((share) => {
                 const label = share.label || t('unlabeled')
-                const created = time(c.env.config.locale, share.createdAt)
-                const lastUsed = time(c.env.config.locale, share.lastUsedAt)
+                const created = time(c.env.config, share.createdAt)
+                const lastUsed = time(c.env.config, share.lastUsedAt)
                 return (
                   <tr>
                     <td title={label}>
@@ -563,7 +557,7 @@ adminPages.get(
             t('actions'),
           ],
           artefacts.map((entry) => {
-            const deletedAt = time(c.env.config.locale, entry.deletedAt)
+            const deletedAt = time(c.env.config, entry.deletedAt)
             const status = t(entry.purging ? 'purging' : entry.restorable ? 'restorable' : 'expired')
             return (
               <tr>
@@ -656,8 +650,8 @@ adminPages.get(
             t('actions'),
           ],
           tokens.map((token) => {
-            const lastUsed = time(c.env.config.locale, token.lastUsedAt)
-            const revoked = time(c.env.config.locale, token.revokedAt)
+            const lastUsed = time(c.env.config, token.lastUsedAt)
+            const revoked = time(c.env.config, token.revokedAt)
             return (
               <tr>
                 <td title={token.name}>

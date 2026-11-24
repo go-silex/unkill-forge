@@ -128,10 +128,13 @@ Publication does not wait for capture. The scheduled pass also discovers existin
 
 Set `LOCALE` to `en` (default) or `fr` for Forge-authored UI copy on both hosts. It does not translate published artefacts, provider labels or member names. `FORGE_NAME` supplies the instance name in document titles, MCP and OAuth resource metadata. `BRAND` is a JSON-encoded string; keep `"{}"` for the bundled defaults, or override the six-digit hex accent, the brand block label (trimmed plain text, 1–40 characters; defaults to `FORGE_NAME`), and the non-index read landing's plain text (up to 500 characters). A label does not require a theme binding:
 
+Set the optional `TIMEZONE` to an IANA time zone name (default `UTC`, for example `Europe/Paris`). Manage shows relative dates where possible; this setting applies to the absolute timestamp on hover and to older dates shown directly. Relative labels use elapsed time and do not depend on the time zone.
+
 ```json
 {
   "FORGE_NAME": "Forge",
   "LOCALE": "fr",
+  "TIMEZONE": "Europe/Paris",
   "BRAND": "{\"label\":\"Studio\",\"accent\":\"#a7481c\",\"landingText\":\"Our published work\"}"
 }
 ```
@@ -209,6 +212,12 @@ These classes and the custom properties above are the supported theme contract. 
 | `.forge-drawer`, `.forge-menu`, `.forge-drawer__panel`                                            | Native narrow-screen disclosure, summary control and panel; use `[open]` on `.forge-drawer` for its state  |
 | `.forge-brand`, `.forge-brand__logo`                                                              | Shared instance mark/label group and height-sized image                                                    |
 | `.forge-nav`, `.forge-nav__link`                                                                  | Section navigation and links; use `[aria-current="page"]` for the active section                           |
+| `.forge-nav__group`, `.forge-nav__group-label`                                                    | Role-gated section group and its visible label                                                             |
+| `.forge-account`, `.forge-account__name`, `.forge-account__role`                                  | Signed-in account block with member name, role and sign-out form                                           |
+| `.forge-filters`, `.forge-filters__link`, `.forge-filters__count`                                 | Catalogue visibility filters, links (active via `[aria-current="page"]`) and catalogue-wide counts         |
+| `.forge-badge`, `.forge-badge--current`                                                           | Text badge and current-version variant                                                                     |
+| `.forge-badge--private`, `.forge-badge--shared`, `.forge-badge--public`                           | Private, shared and public access variants                                                                 |
+| `.forge-catalogue-meta`, `.forge-catalogue-link`                                                  | Grid and folded list metadata, and the artefact title/thumbnail link in list view                          |
 | `.forge-title`                                                                                    | Page heading                                                                                               |
 | `.forge-panel`, `.forge-panel__header`, `.forge-panel__body`                                      | Single-panel layout, shared brand header, and body                                                         |
 | `.forge-panel--sign-in`, `.forge-panel--invite`, `.forge-panel--consent`, `.forge-panel--handoff` | Manage sign-in, invitation, consent, and read-session relay panels                                         |

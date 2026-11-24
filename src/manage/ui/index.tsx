@@ -123,38 +123,16 @@ app.get('/invite/:token', async (c) => {
 app.get('/', async (c) => {
   const session = await requireBrowserSession(c.req.raw, c.env)
   if (session instanceof Response) return session
-  const { config } = c.env
-  const { member } = session
-  const common = messages(config)
+  if (session.member.status === 'active') return c.redirect('/artefacts', 303)
+  const common = messages(c.env.config)
   const text = common.legacy
-  if (member.status === 'pending') {
-    return page(
-      c,
-      session,
-      common.pending,
-      <p>
-        {text.signedIn} {member.name}. {text.approvalRequired}
-      </p>,
-    )
-  }
   return page(
     c,
     session,
-    common.manage,
-    <>
-      <p>
-        {text.signedIn} {member.name} ({common.roles[member.role]}).
-      </p>
-      <p>
-        <a class="forge-button forge-button--primary" href="/artefacts">
-          {common.artefacts}
-        </a>
-      </p>
-      <h2>{common.connect}</h2>
-      <p>
-        {text.mcpUrl} <code>{config.manageOrigin}/mcp</code>
-      </p>
-    </>,
+    common.pending,
+    <p>
+      {text.signedIn} {session.member.name}. {text.approvalRequired}
+    </p>,
   )
 })
 
@@ -244,7 +222,7 @@ app.get('/admin/members', async (c) => {
         {invites.map((invite) => (
           <tr key={invite.id}>
             <td>{common.roles[invite.role]}</td>
-            <td>{time(config.locale, invite.expiresAt)}</td>
+            <td>{time(config, invite.expiresAt)}</td>
             <td>
               <Action
                 path="/admin/members"

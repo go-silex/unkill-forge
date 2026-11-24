@@ -577,7 +577,7 @@ describe('OAuth with DCR enabled for this runtime only', () => {
     expect(location(await b.request('/')).pathname).toBe('/login')
     expect((await mcpCall(send, issued.access_token)).status).toBe(401)
     await expectInvalidGrant(await grant.refresh(issued.refresh_token))
-    expect((await other.request('/')).status).toBe(200)
+    expect((await other.request('/artefacts')).status).toBe(200)
     expect(await whoami(send, otherIssued.access_token)).toMatchObject({ name: subject })
   })
 

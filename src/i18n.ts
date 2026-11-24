@@ -3,7 +3,6 @@ export type Locale = 'en' | 'fr'
 export type CopyLabels = { copy: string; copied: string; copyFailed: string }
 
 const en = {
-  manage: 'Manage',
   artefacts: 'Artefacts',
   connect: 'Connect an agent',
   tokens: 'API tokens',
@@ -29,6 +28,7 @@ const en = {
     purgeLabel: 'Purge permanently',
   },
   navigation: 'Management',
+  navGroups: { content: 'Content', access: 'Access', account: 'My account' },
   menu: 'Menu',
   notice: 'Notice',
   forbidden: 'Forbidden',
@@ -75,7 +75,6 @@ const en = {
     invalidInvite: 'Invite invalid or expired',
     signedIn: 'Signed in as',
     approvalRequired: 'An administrator needs to approve your access.',
-    mcpUrl: 'MCP URL:',
     member: 'Member',
     provider: 'Provider',
     email: 'Email',
@@ -91,7 +90,7 @@ const en = {
     remove: 'Remove',
     inviteLinks: 'Invite links',
     createInvite: 'Create invite link',
-    expires: 'Expires (UTC)',
+    expires: 'Expires',
     revoke: 'Revoke',
     invalidMemberAction: 'Invalid member action',
     inviteNotAllowed: 'Invite action not allowed',
@@ -223,7 +222,6 @@ const en = {
   },
 }
 const fr: typeof en = {
-  manage: 'Gestion',
   artefacts: 'Artefacts',
   connect: 'Connecter un agent',
   tokens: 'Jetons API',
@@ -249,6 +247,7 @@ const fr: typeof en = {
     purgeLabel: 'Purger définitivement',
   },
   navigation: 'Gestion de Forge',
+  navGroups: { content: 'Contenu', access: 'Accès', account: 'Mon compte' },
   menu: 'Menu',
   notice: 'Notification',
   forbidden: 'Accès interdit',
@@ -295,7 +294,6 @@ const fr: typeof en = {
     invalidInvite: 'Invitation invalide ou expirée',
     signedIn: 'Compte connecté :',
     approvalRequired: 'Un administrateur doit approuver votre accès.',
-    mcpUrl: 'URL MCP :',
     member: 'Membre',
     provider: 'Fournisseur',
     email: 'E-mail',
@@ -311,7 +309,7 @@ const fr: typeof en = {
     remove: 'Retirer',
     inviteLinks: 'Liens d’invitation',
     createInvite: 'Créer un lien d’invitation',
-    expires: 'Expiration (UTC)',
+    expires: 'Expiration',
     revoke: 'Révoquer',
     invalidMemberAction: 'Action invalide sur ce membre',
     inviteNotAllowed: 'Action sur cette invitation non autorisée',

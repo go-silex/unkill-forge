@@ -53,7 +53,7 @@ it('rejects a session written by Gate 0 from a stale flow during rollout', async
   expect(location(await send('/', stale)).pathname).toBe('/login')
   expect(location(await send('/authorize', stale)).pathname).toBe('/login')
   const fresh = await idp.signedIn(send, subject)
-  expect(await (await fresh.request('/')).text()).toContain(`${subject} (viewer)`)
+  expect(await (await fresh.request('/artefacts')).text()).toContain(`class="forge-account__name">${subject}`)
 })
 
 it('revokes pre-removal and replacement Gate 0 tokens while preserving unaffected credentials', async () => {
@@ -107,5 +107,7 @@ it('revokes pre-removal and replacement Gate 0 tokens while preserving unaffecte
   expect((await mcpCall(send, replacement)).status).toBe(401)
   expect(await whoami(send, unaffected)).toMatchObject({ id: untouchedBot })
   expect(location(await send('/', replacementSession)).pathname).toBe('/login')
-  expect(await (await send('/', unaffectedSession)).text()).toContain('untouched-human (publisher)')
+  expect(await (await send('/artefacts', unaffectedSession)).text()).toContain(
+    'class="forge-account__name">untouched-human',
+  )
 })

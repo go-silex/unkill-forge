@@ -4,9 +4,10 @@ import type { Child } from 'hono/jsx'
 import { BrandBlock } from '../../brand-block'
 import type { Config, Runtime } from '../../config'
 import type { BrowserSession, Member } from '../../core'
+import type { CatalogueAccess } from '../../core/catalogue'
 import { putUiFlash, takeUiFlash } from '../../core/ui-flash'
 import { DocumentHead } from '../../head'
-import { type CopyLabels, type Locale, messages } from '../../i18n'
+import { type CopyLabels, messages } from '../../i18n'
 
 export type UiContext = Context<{ Bindings: Runtime }>
 
@@ -133,15 +134,40 @@ const copyScript =
   'document.addEventListener("click",async(e)=>{const b=e.target.closest("button[data-copy]");if(!b)return;try{await navigator.clipboard.writeText(b.previousElementSibling.textContent);b.textContent=b.dataset.copied}catch{b.textContent=b.dataset.failed}});addEventListener("pageshow",(e)=>{if(e.persisted)document.querySelector("[data-secret-flash]")?.remove()});document.querySelectorAll("button[data-copy]").forEach((b)=>{b.hidden=false});'
 export const copyScriptSource = "'sha256-gKtKyAGgpJlKo+7uRRmAq5ws0oWd85H3QGIE/Wvp3Gc='"
 
-const nav = [
-  ['/artefacts', 'artefacts'],
-  ['/connect', 'connect'],
-  ['/tokens', 'tokens'],
-  ['/admin/members', 'members'],
-  ['/admin/bots', 'bots'],
-  ['/admin/deleted', 'deleted'],
-  ['/admin/redirects', 'redirects'],
+const navGroups = [
+  [
+    'content',
+    [
+      ['/artefacts', 'artefacts', 'viewer'],
+      ['/admin/deleted', 'deleted', 'admin'],
+      ['/admin/redirects', 'redirects', 'admin'],
+    ],
+  ],
+  [
+    'access',
+    [
+      ['/admin/members', 'members', 'admin'],
+      ['/admin/bots', 'bots', 'admin'],
+    ],
+  ],
+  [
+    'account',
+    [
+      ['/connect', 'connect', 'viewer'],
+      ['/tokens', 'tokens', 'publisher'],
+    ],
+  ],
 ] as const
+
+const roleRank = { viewer: 0, publisher: 1, admin: 2 }
+
+export function Badge({ variant, children }: { variant: CatalogueAccess | 'current'; children: Child }) {
+  return <span class={`forge-badge forge-badge--${variant}`}>{children}</span>
+}
+
+export function AccessBadge({ access, label }: { access: CatalogueAccess; label: string }) {
+  return <Badge variant={access}>{label}</Badge>
+}
 
 export type TableColumn = string | { secondary: string } | { folded: string }
 
@@ -201,24 +227,36 @@ export function Page({
     <>
       {member.status === 'active' && (
         <nav class="forge-nav" aria-label={t.navigation}>
-          {nav
-            .slice(0, member.role === 'admin' ? nav.length : member.role === 'publisher' ? 3 : 2)
-            .map(([href, label]) => (
-              <a
-                class="forge-nav__link"
-                href={href}
-                aria-current={path === href || path?.startsWith(`${href}/`) ? 'page' : undefined}
-              >
-                {t[label]}
-              </a>
-            ))}
+          {navGroups.map(([group, links]) => {
+            const visible = links.filter(([, , role]) => roleRank[member.role] >= roleRank[role])
+            return (
+              visible.length > 0 && (
+                <section class="forge-nav__group" aria-label={t.navGroups[group]}>
+                  <span class="forge-nav__group-label">{t.navGroups[group]}</span>
+                  {visible.map(([href, label]) => (
+                    <a
+                      class="forge-nav__link"
+                      href={href}
+                      aria-current={path === href || path?.startsWith(`${href}/`) ? 'page' : undefined}
+                    >
+                      {t[label]}
+                    </a>
+                  ))}
+                </section>
+              )
+            )
+          })}
         </nav>
       )}
-      <form class="forge-action" action="/logout" method="post">
-        <button class="forge-button" type="submit">
-          {t.signOut}
-        </button>
-      </form>
+      <div class="forge-account">
+        <span class="forge-account__name">{member.name}</span>
+        <span class="forge-account__role">{t.roles[member.role]}</span>
+        <form class="forge-action" action="/logout" method="post">
+          <button class="forge-button" type="submit">
+            {t.signOut}
+          </button>
+        </form>
+      </div>
     </>
   )
   const heading = <h1 class="forge-title">{title}</h1>
@@ -259,14 +297,64 @@ export function Page({
   )
 }
 
-const utcOptions = { dateStyle: 'short', timeStyle: 'short', timeZone: 'UTC', hour12: false } as const
-const utc = {
-  en: new Intl.DateTimeFormat('en-GB', utcOptions),
-  fr: new Intl.DateTimeFormat('fr-FR', utcOptions),
+type DateConfig = Pick<Config, 'locale' | 'timeZone'>
+type DateFormats = {
+  absolute: Intl.DateTimeFormat
+  short: Intl.DateTimeFormat
+  relative: Intl.RelativeTimeFormat
 }
 
-export function time(locale: Locale, timestamp: number | null) {
-  return timestamp === null ? '—' : `${utc[locale].format(timestamp)} UTC`
+const dateFormats = new WeakMap<DateConfig, DateFormats>()
+
+function dateFormat(config: DateConfig) {
+  const cached = dateFormats.get(config)
+  if (cached) return cached
+  const { locale, timeZone } = config
+  const language = locale === 'fr' ? 'fr-FR' : 'en-GB'
+  const format = {
+    absolute: new Intl.DateTimeFormat(language, {
+      timeZone,
+      year: 'numeric',
+      month: 'short',
+      day: 'numeric',
+      hour: '2-digit',
+      minute: '2-digit',
+      hourCycle: 'h23',
+      timeZoneName: 'short',
+    }),
+    short: new Intl.DateTimeFormat(language, { timeZone, dateStyle: 'short' }),
+    relative: new Intl.RelativeTimeFormat(language, { numeric: 'auto', style: 'short' }),
+  }
+  dateFormats.set(config, format)
+  return format
+}
+
+export function absoluteTime(config: DateConfig, timestamp: number | null) {
+  return timestamp === null ? '—' : dateFormat(config).absolute.format(timestamp)
+}
+
+const minute = 60_000
+const hour = 60 * minute
+const day = 24 * hour
+const week = 7 * day
+
+export function time(config: DateConfig, timestamp: number | null) {
+  if (timestamp === null) return '—'
+  const format = dateFormat(config)
+  const delta = timestamp - Date.now()
+  const distance = Math.abs(delta)
+  let relative: string
+  if (distance < minute) relative = format.relative.format(0, 'second')
+  else if (distance < hour) relative = format.relative.format(Math.trunc(delta / minute), 'minute')
+  else if (distance < day) relative = format.relative.format(Math.trunc(delta / hour), 'hour')
+  else if (distance < week) relative = format.relative.format(Math.trunc(delta / day), 'day')
+  else if (distance <= 8 * week) relative = format.relative.format(Math.trunc(delta / week), 'week')
+  else relative = format.short.format(timestamp)
+  return (
+    <time datetime={new Date(timestamp).toISOString()} title={absoluteTime(config, timestamp)}>
+      {relative}
+    </time>
+  )
 }
 
 export async function flash(
