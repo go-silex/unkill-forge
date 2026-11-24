@@ -281,6 +281,9 @@ it('searches by slug or title prefix with visibility and keeps a stable paginati
   expect(first).not.toContain('quarterly-fixture-49')
   expect(second).toContain('quarterly-fixture-49')
   expect(second).not.toContain('quarterly-fixture-48')
+  const listFirst = await html(owner, '/artefacts?q=quarterly&visibility=private&view=list')
+  const listNext = /href="([^"]+)"[^>]*>Next page<\/a>/.exec(listFirst)?.[1]?.replaceAll('&amp;', '&')
+  expect(listNext && new URL(listNext, manage).searchParams.get('view')).toBe('list')
 })
 
 it('keeps modified seek cursors inside the prefix and explains duplicate-only pages with more matches', async () => {
@@ -615,7 +618,7 @@ it.each(['en', 'fr'] as const)(
     const catalogue = await html(owner, '/artefacts')
     expect(catalogue).toContain('class="forge-shell"')
     expect(catalogue).toContain('class="forge-nav__link" href="/artefacts" aria-current="page"')
-    expect(catalogue.match(/aria-current="page"/g)).toHaveLength(2)
+    expect(catalogue.match(/class="forge-nav__link"[^>]*aria-current="page"/g)).toHaveLength(2)
     expect(catalogue).toMatch(
       /<details class="forge-drawer"><summary class="forge-menu forge-button">Menu<\/summary>.*?href="\/artefacts" aria-current="page".*?action="\/logout".*?<\/details><\/div><div class="forge-tray__sections">.*?href="\/artefacts" aria-current="page".*?action="\/logout"/s,
     )
@@ -630,6 +633,18 @@ it.each(['en', 'fr'] as const)(
     )
     expect(catalogue).toContain(french ? '<dt>Version</dt><dd>1</dd>' : '<dt>Revision</dt><dd>1</dd>')
     expect(catalogue).toMatch(new RegExp(`<dt>${french ? 'Mis à jour' : 'Updated'}</dt><dd>[^<]+ UTC</dd>`))
+    const [grid, list] = french ? ['Grille', 'Liste'] : ['Grid', 'List']
+    expect(catalogue).toContain(
+      `<nav class="forge-views" aria-label="${french ? 'Affichage' : 'View'}"><a href="/artefacts" aria-current="page">${grid}</a><a href="/artefacts?view=list">${list}</a></nav>`,
+    )
+    const listed = await html(owner, '/artefacts?visibility=private&view=list')
+    expect(listed).not.toContain('class="forge-gallery')
+    expect(listed).toContain(`<a href="${detail}"><span>Quarterly report</span></a>`)
+    expect(listed).toContain(`<td class="forge-col--folded" title="${slug}"><code>${slug}</code></td>`)
+    expect(listed).toContain('<input type="hidden" name="view" value="list"/>')
+    expect(listed).toContain(
+      `<a href="/artefacts?visibility=private">${grid}</a><a href="/artefacts?visibility=private&amp;view=list" aria-current="page">${list}</a>`,
+    )
     const invalidInvite = await html(anonymous, '/invite/invalid', 404)
     expect(invalidInvite).toContain(french ? 'Invitation invalide ou expirée' : 'Invite invalid or expired')
     expect(invalidInvite).toContain('forge-panel--invite')
@@ -665,8 +680,19 @@ it.each(['en', 'fr'] as const)(
     const identity = { artefactId: await artefactId(owner) }
     await post(owner, detail, { action: 'visibility', visibility: 'public', ...identity })
     const publicIndex = await html(new Browser(publicSend), `${read}/`)
-    expect(publicIndex).toContain(french ? 'Artefacts publics' : 'Public artefacts')
+    expect(publicIndex).not.toContain(french ? 'Artefacts publics' : 'Public artefacts')
+    expect(publicIndex).toContain(
+      `<a class="forge-button forge-button--primary" href="${manage}/artefacts">${french ? 'Se connecter' : 'Sign in'}</a></header>`,
+    )
+    expect(publicIndex).toContain('<ul class="forge-gallery" role="list" aria-label="Artefacts">')
     expect(publicIndex).toContain('Quarterly report')
+    const publicList = await html(new Browser(publicSend), `${read}/?view=list`)
+    expect(publicList).toContain(
+      '<ul class="forge-gallery forge-gallery--list" role="list" aria-label="Artefacts">',
+    )
+    expect(publicList).toContain(
+      `<a href="/">${grid}</a><a href="/?view=list" aria-current="page">${list}</a>`,
+    )
     const css = await send('/style.css')
     expect(await css.text()).toContain('--forge-accent:#123a6f')
     for (const origin of [read, manage]) {

@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+- Offer grid and list views of the public catalogue and the Manage catalogue; the Manage list is a table with slug, visibility, revision and update time. `?view=list` selects the list and is kept across search and pagination.
+- Move the public catalogue's sign-in action into the page header and open the Manage catalogue after sign-in. The catalogue no longer has a "Public artefacts" heading.
+- Upgrade: no D1 migration, binding or config change. Instance themes can style `.forge-toolbar`, `.forge-views`, `.forge-gallery--list` and `.forge-thumb`.
+
 ## v2.2.0 — 2026-11-24
 
 - Add a sign-in action to the read home page that opens the management host.

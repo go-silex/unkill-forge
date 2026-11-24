@@ -21,14 +21,14 @@ import {
   setVisibility,
 } from '../../core/artefacts'
 import { searchArtefacts } from '../../core/catalogue'
-import { galleryPreviewSlugs } from '../../core/gallery-previews'
+import { galleryPreviewSlugs, previewPrefix } from '../../core/gallery-previews'
 import type { BrowserSession, Member, Role } from '../../core/index'
 import { purgeArtefact } from '../../core/purge'
 import { artefactPath, maxRedirectPrefix } from '../../core/read-path'
 import { shareKeyMax } from '../../core/share-keys'
-import { Gallery } from '../../gallery'
+import { Gallery, GalleryViews, galleryView } from '../../gallery'
 import { readForm } from '../../http'
-import { type AdminMessage, type AdminTranslate, adminMessages } from '../../i18n'
+import { type AdminMessage, type AdminTranslate, adminMessages, messages } from '../../i18n'
 import { requireBrowserSession } from '../login'
 import { localClientPath } from '../oauth'
 import { Action, Fold, flash, page, pageLink, Table, type TableColumn, time, type UiContext } from './page'
@@ -192,29 +192,85 @@ adminPages.get(
       artefacts.map((entry) => entry.slug),
       'member',
     )
+    const view = galleryView(c.req.query('view'))
     const params = new URLSearchParams()
     if (q) params.set('q', q)
     if (selected) params.set('visibility', selected)
+    if (view === 'list') params.set('view', view)
+    const { locale } = c.env.config
     return page(
       c,
       session,
       t('artefacts'),
       <>
-        <form class="forge-action" method="get">
-          <label>
-            {t('searchQuery')} <input type="search" name="q" value={q} />
-          </label>
-          <label>
-            {t('visibility')}{' '}
-            <select name="visibility">
-              <VisibilityOptions t={t} value={selected} includeAll />
-            </select>
-          </label>
-          <button class="forge-button forge-button--primary" type="submit">
-            {t('search')}
-          </button>
-        </form>
-        {artefacts.length > 0 ? (
+        <div class="forge-toolbar">
+          <form class="forge-action" method="get">
+            <label>
+              {t('searchQuery')} <input type="search" name="q" value={q} />
+            </label>
+            <label>
+              {t('visibility')}{' '}
+              <select name="visibility">
+                <VisibilityOptions t={t} value={selected} includeAll />
+              </select>
+            </label>
+            {view === 'list' && <input type="hidden" name="view" value={view} />}
+            <button class="forge-button forge-button--primary" type="submit">
+              {t('search')}
+            </button>
+          </form>
+          <GalleryViews
+            path={cataloguePath}
+            params={params}
+            view={view}
+            labels={messages(c.env.config).views}
+          />
+        </div>
+        {artefacts.length === 0 ? (
+          <p class="forge-empty">{t(nextCursor ? 'noNewMatches' : cursor ? 'noMoreResults' : 'noResults')}</p>
+        ) : view === 'list' ? (
+          <Table
+            columns={[
+              t('title'),
+              { folded: t('slug') },
+              { folded: t('visibility') },
+              { secondary: t('revision') },
+              { folded: t('updated') },
+            ]}
+          >
+            {artefacts.map((entry) => {
+              const updated = time(locale, entry.updatedAt)
+              return (
+                <tr>
+                  <td title={entry.title}>
+                    <a href={detailPath(entry.slug)}>
+                      {previews.has(entry.slug) && (
+                        <img
+                          class="forge-thumb"
+                          src={`${previewPrefix}${entry.slug}`}
+                          alt=""
+                          loading="lazy"
+                        />
+                      )}
+                      <span>{entry.title}</span>
+                    </a>
+                    <Fold>
+                      <code>{entry.slug}</code>
+                    </Fold>
+                    <Fold label={t('visibility')}>{t(entry.visibility)}</Fold>
+                    <Fold label={t('updated')}>{updated}</Fold>
+                  </td>
+                  <td class="forge-col--folded" title={entry.slug}>
+                    <code>{entry.slug}</code>
+                  </td>
+                  <td class="forge-col--folded">{t(entry.visibility)}</td>
+                  <td class="forge-col--secondary">{entry.revision}</td>
+                  <td class="forge-col--folded">{updated}</td>
+                </tr>
+              )
+            })}
+          </Table>
+        ) : (
           <Gallery
             label={t('artefacts')}
             items={artefacts.map((entry) => ({
@@ -232,13 +288,11 @@ adminPages.get(
                   <dt>{t('revision')}</dt>
                   <dd>{entry.revision}</dd>
                   <dt>{t('updated')}</dt>
-                  <dd>{time(c.env.config.locale, entry.updatedAt)}</dd>
+                  <dd>{time(locale, entry.updatedAt)}</dd>
                 </dl>
               ),
             }))}
           />
-        ) : (
-          <p class="forge-empty">{t(nextCursor ? 'noNewMatches' : cursor ? 'noMoreResults' : 'noResults')}</p>
         )}
         {nextPage(cataloguePath, nextCursor, t('next'), params)}
       </>,
