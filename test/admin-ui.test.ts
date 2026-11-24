@@ -1,4 +1,5 @@
 import { env } from 'cloudflare:test'
+import { createHash } from 'node:crypto'
 import { base64url } from 'jose'
 import { expect, it, vi } from 'vitest'
 import type { Env } from '../src/config'
@@ -54,6 +55,36 @@ async function html(browser: Browser, path: string | URL, status = 200) {
 
 async function artefactId(browser: Browser, path = detail) {
   return formValue(await html(browser, path), 'artefactId')
+}
+
+function sheets(document: string) {
+  const panels = Array.from(
+    document.matchAll(/<div id="(forge-sheet-[a-z0-9_-]+)" class="forge-sheet"([^>]*)>(.*?)<\/div>/gs),
+    ([, id, attributes, contents]) => {
+      expect(attributes).toMatch(/\bpopover(?:="(?:auto)?")?(?=\s|$)/)
+      expect(attributes).toContain('role="alertdialog"')
+      expect(attributes).toContain(`aria-labelledby="${id}-title"`)
+      expect(attributes).toContain(`aria-describedby="${id}-body"`)
+      expect(contents).toContain(`<p id="${id}-body" class="forge-sheet__body">`)
+      expect(document).toMatch(new RegExp(`<button[^>]*type="button"[^>]*popovertarget="${id}">`))
+      expect(contents).toContain(`<h2 id="${id}-title" class="forge-sheet__title">`)
+      const form = /<form class="forge-sheet__actions" method="post"[^>]*>(.*?)<\/form>/s.exec(contents)?.[1]
+      if (!form) throw new Error('Expected a confirmation POST form')
+      expect(form).toMatch(
+        new RegExp(
+          `<button[^>]*type="button"[^>]*popovertarget="${id}"[^>]*popovertargetaction="hide"[^>]* autofocus`,
+        ),
+      )
+      const action =
+        /<button[^>]*type="submit"[^>]*class="forge-button forge-button--danger-solid"[^>]*name="action" value="([^"]+)"/.exec(
+          form,
+        )?.[1]
+      if (!action) throw new Error('Expected a confirm submit button')
+      return { id, contents, form, action }
+    },
+  )
+  expect(new Set(panels.map(({ id }) => id)).size).toBe(panels.length)
+  return panels
 }
 
 async function issueToken(browser: Browser, name: string) {
@@ -506,7 +537,7 @@ it('restores a revision, reveals and revokes share links, then renames and resto
     first,
   )?.[1]
   if (!url) throw new Error('Expected a share URL in the flash')
-  expect(first).toContain('data-copy')
+  expect(first).toContain(`<p class="forge-secret"><code>${url}</code><button`)
   expect(await html(owner, detail)).not.toContain(url)
   const shareId = await db.prepare('SELECT id FROM share_links').first<string>('id')
   if (!shareId) throw new Error('Expected a share link ID')
@@ -535,6 +566,44 @@ it('restores a revision, reveals and revokes share links, then renames and resto
   expect(await (await send(`${read}/a/renamed-report/`)).text()).toBe('<p>Original version</p>')
 })
 
+it('confirms deletion and purge with separate forms for each deleted artefact', async () => {
+  const send = runtime({ LOCALE: 'fr' })
+  const owner = await mockProvider().signedIn(send, admin)
+  const token = await issueToken(owner, 'Confirmation fixture')
+  for (const [name, title] of [
+    ['confirm-first', 'confirm-first'],
+    ['confirm-second', 'confirm-second'],
+    ['confirm-blank', '  '],
+  ]) {
+    const path = `/artefacts/${name}`
+    await publish(send, token, name, title)
+    const panels = sheets(await html(owner, path))
+    expect(panels).toHaveLength(1)
+    const [sheet] = panels
+    expect(sheet.action).toBe('delete')
+    expect(sheet.contents).toContain(`Supprimer « ${name} » ?`)
+    expect(sheet.contents).toContain('ses liens de partage cessent de fonctionner')
+    expect(sheet.contents).toContain('pendant 30 jours')
+    expect(sheet.form).toContain('>Annuler</button>')
+    await post(owner, path, { action: sheet.action, artefactId: formValue(sheet.form, 'artefactId') })
+    expect((await owner.request(path)).status).toBe(404)
+  }
+  const panels = sheets(await html(owner, deleted))
+  expect(panels).toHaveLength(3)
+  const names = []
+  for (const { contents, form, action } of panels) {
+    const name = formValue(form, 'slug')
+    names.push(name)
+    expect(action).toBe('purge')
+    expect(contents).toContain(`Purger « ${name} » ?`)
+    expect(contents).toContain('La purge est irréversible')
+    expect(form).toContain('>Purger définitivement</button>')
+    await post(owner, deleted, { action, slug: name, id: formValue(form, 'id') })
+    expect(await html(owner, deleted)).not.toContain(name)
+  }
+  expect(names.sort()).toEqual(['confirm-blank', 'confirm-first', 'confirm-second'])
+})
+
 it('continues an interrupted purge after its artefact row has already been removed', async () => {
   const send = runtime()
   const owner = await mockProvider().signedIn(send, admin)
@@ -546,6 +615,10 @@ it('continues an interrupted purge after its artefact row has already been remov
   const id = formValue(await html(owner, deleted), 'id')
   const intermediate = await post(owner, deleted, { action: 'purge', id, slug })
   expect(intermediate).toContain('Continue purge')
+  expect(intermediate).not.toContain('popovertarget')
+  expect(intermediate).toMatch(
+    /<form class="forge-action"[^>]*>.*?<button[^>]*type="submit" name="action" value="purge">Continue purge<\/button><\/form>/s,
+  )
   expect(intermediate).toContain('<th scope="col" class="forge-col--folded">Slug</th>')
   expect(intermediate).toContain(`<td class="forge-col--folded" title="${slug}"><code>${slug}</code></td>`)
   expect(intermediate).toContain(`<span class="forge-fold" hidden=""><code>${slug}</code></span>`)
@@ -723,10 +796,28 @@ it.each(['en', 'fr'] as const)(
     expect(invalidInvite).toContain(french ? 'Invitation invalide ou expirée' : 'Invite invalid or expired')
     expect(invalidInvite).toContain('forge-panel--invite')
     expect(invalidInvite).toContain('Ember &amp; Co</a>')
-    const connect = await html(owner, '/connect')
+    const connection = await owner.request('/connect')
+    expect(connection.status).toBe(200)
+    const connect = await connection.text()
     expect(connect).toContain(
       french ? 'Point d’accès MCP (Streamable HTTP) :' : 'MCP endpoint (Streamable HTTP):',
     )
+    const copyControl =
+      /<button[^>]*type="button" data-copy="" data-copied="[^"]+" data-failed="[^"]+" hidden="">(?:Copy|Copier)<\/button>/
+    expect(connect).toMatch(
+      new RegExp(`<div class="forge-copy"><code>${manage}/mcp</code>${copyControl.source}</div>`),
+    )
+    const block = new RegExp(
+      `<div class="forge-copy forge-copy--block"><pre><code>[\\s\\S]+?</code></pre>${copyControl.source}</div>`,
+      'g',
+    )
+    expect(connect.match(block)).toHaveLength(5)
+    expect(connect.match(/<pre>/g)).toHaveLength(5)
+    const script = /<script>([^<]+)<\/script>/.exec(connect)?.[1]
+    if (!script) throw new Error('Expected the copy script on the connection page')
+    const hash = createHash('sha256').update(script).digest('base64')
+    const policy = connection.headers.get('Content-Security-Policy')?.split('; ')
+    expect(policy?.find((rule) => rule.startsWith('script-src '))).toBe(`script-src 'sha256-${hash}'`)
     for (const [client, command] of [
       ['claude.ai', 'CIMD'],
       ['Claude Desktop', 'JSON'],

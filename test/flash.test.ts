@@ -66,7 +66,9 @@ it('keeps the continuation unconsumed without a document navigation or the issui
   const token = tokenPattern.exec(html)?.[1]
   if (!token) throw new Error('Expected a one-time bot token')
   expect(html).toContain('API token created for Flash owner $&amp;.')
-  expect(html).toMatch(/<aside[^>]*data-secret-flash[^>]*>[\s\S]*<code>fgt_/)
+  expect(html).toMatch(
+    /<aside[^>]*data-secret-flash[^>]*>[\s\S]*<p class="forge-secret"><code>fgt_[^<]+<\/code><button[^>]*data-copy=""[^>]*hidden="">Copy<\/button>/,
+  )
   const script = /<script>([^<]+)<\/script>/.exec(html)?.[1]
   if (!script) throw new Error('Expected the one-time secret cleanup script')
   expect(script).toContain('pageshow')

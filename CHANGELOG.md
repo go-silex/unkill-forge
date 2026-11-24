@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+- Ask for confirmation before deleting an artefact or starting an irreversible purge. A purge that's already underway can still be continued directly.
+- Copy the MCP endpoint and command or configuration snippets from the Manage connection page.
+- Upgrade: no D1 migration, binding or config change.
+
 ## v2.5.1 — 2026-11-24
 
 - Start generating a missing HTML cover as soon as its revision is published, without delaying the response. The schedule remains available for retries and backfill.

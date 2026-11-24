@@ -7,6 +7,7 @@ import {
   ArtefactError,
   createShareLink,
   deleteArtefact,
+  deletedRetentionMs,
   encodeFilePath,
   getArtefactDetails,
   getShareLink,
@@ -28,10 +29,21 @@ import { artefactPath, maxRedirectPrefix } from '../../core/read-path'
 import { shareKeyMax } from '../../core/share-keys'
 import { Gallery, GalleryViews, galleryView } from '../../gallery'
 import { readForm } from '../../http'
-import { type AdminMessage, type AdminTranslate, adminMessages, messages } from '../../i18n'
+import { type AdminMessage, type AdminTranslate, adminMessages, type CopyLabels, messages } from '../../i18n'
 import { requireBrowserSession } from '../login'
 import { localClientPath } from '../oauth'
-import { Action, Fold, flash, page, pageLink, Table, type TableColumn, time, type UiContext } from './page'
+import {
+  Action,
+  CopyField,
+  Fold,
+  flash,
+  page,
+  pageLink,
+  Table,
+  type TableColumn,
+  time,
+  type UiContext,
+} from './page'
 
 export const adminPages = new Hono<{ Bindings: Runtime }>({
   getPath: (request) => new URL(request.url).pathname,
@@ -322,6 +334,7 @@ adminPages.get(
     const artefact = await getArtefactDetails(c.env, actor, currentSlug, fileCursor)
     const history = await listRevisions(c.env, actor, currentSlug, revisionCursor, artefact.id)
     const canWrite = actor.role !== 'viewer'
+    const { confirmation } = messages(c.env.config)
     const params = new URLSearchParams()
     if (fileCursor) params.set('files', fileCursor)
     if (revisionCursor) params.set('revisions', revisionCursor)
@@ -467,6 +480,12 @@ adminPages.get(
               variant="danger"
               label={t('delete')}
               fields={{ artefactId: artefact.id }}
+              confirm={{
+                title: confirmation.deleteTitle(artefact.title.trim() || artefact.slug),
+                body: confirmation.deleteBody(deletedRetentionMs / (24 * 60 * 60 * 1_000)),
+                label: confirmation.deleteLabel,
+                cancel: confirmation.cancel,
+              }}
             />
           </>
         )}
@@ -528,6 +547,7 @@ adminPages.get(
   deletedPath,
   browser('admin', async (c, session, actor, t) => {
     const { artefacts, nextCursor } = await listDeletedArtefacts(c.env, actor, c.req.query('cursor'))
+    const { confirmation } = messages(c.env.config)
     return page(
       c,
       session,
@@ -573,6 +593,16 @@ adminPages.get(
                     variant="danger"
                     label={t(entry.purging ? 'resumePurge' : 'purge')}
                     fields={{ id: entry.id, slug: entry.slug }}
+                    confirm={
+                      entry.purging
+                        ? undefined
+                        : {
+                            title: confirmation.purgeTitle(entry.title?.trim() || entry.slug),
+                            body: confirmation.purgeBody,
+                            label: confirmation.purgeLabel,
+                            cancel: confirmation.cancel,
+                          }
+                    }
                   />
                 </td>
               </tr>
@@ -735,15 +765,13 @@ adminPages.post(
   ),
 )
 
-function connectSection(name: string, instructions: string, ...snippets: string[]) {
+function connectSection(labels: CopyLabels, name: string, instructions: string, ...snippets: string[]) {
   return (
     <>
       <h2>{name}</h2>
       <p>{instructions}</p>
       {snippets.map((snippet) => (
-        <pre>
-          <code>{snippet}</code>
-        </pre>
+        <CopyField value={snippet} labels={labels} block />
       ))}
     </>
   )
@@ -753,6 +781,7 @@ adminPages.get(
   '/connect',
   browser('viewer', async (c, session, _actor, t) => {
     const origin = c.env.config.manageOrigin
+    const labels = messages(c.env.config)
     const url = `${origin}/mcp`
     const omp = {
       type: 'http',
@@ -768,15 +797,25 @@ adminPages.get(
       session,
       t('connect'),
       <>
-        <p>
-          {t('endpoint')} <code>{url}</code>
-        </p>
-        {connectSection('claude.ai', t('claudeAi'))}
-        {connectSection('Claude Desktop', t('claudeDesktop'))}
-        {connectSection('Claude Code', t('claudeCode'), `claude mcp add --transport http forge ${url}`)}
-        {connectSection('Codex', t('codex'), `codex mcp add forge --url ${url}\ncodex mcp login forge`)}
-        {connectSection('OMP', t('omp'), JSON.stringify({ mcpServers: { forge: omp } }, null, 2))}
+        <p>{t('endpoint')}</p>
+        <CopyField value={url} labels={labels} />
+        {connectSection(labels, 'claude.ai', t('claudeAi'))}
+        {connectSection(labels, 'Claude Desktop', t('claudeDesktop'))}
         {connectSection(
+          labels,
+          'Claude Code',
+          t('claudeCode'),
+          `claude mcp add --transport http forge ${url}`,
+        )}
+        {connectSection(
+          labels,
+          'Codex',
+          t('codex'),
+          `codex mcp add forge --url ${url}\ncodex mcp login forge`,
+        )}
+        {connectSection(labels, 'OMP', t('omp'), JSON.stringify({ mcpServers: { forge: omp } }, null, 2))}
+        {connectSection(
+          labels,
           'Hermes',
           t('hermes'),
           `${variable}=…`,
