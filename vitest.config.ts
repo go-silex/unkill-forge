@@ -14,5 +14,23 @@ export default defineConfig({
         bindings: { TEST_MIGRATIONS: await readD1Migrations('./migrations') },
       },
     }),
+    {
+      name: 'native-istanbul-provider',
+      enforce: 'post',
+      config(config) {
+        // The pool inlines all dependencies for workerd. The provider's host-only
+        // module must keep Node's native CJS interop for its Babel imports.
+        const deps = config.test?.server?.deps
+        if (deps) deps.inline = [/^(?!.*\/@vitest\/coverage-istanbul\/dist\/provider\.js$)/]
+      },
+    },
   ],
+  test: {
+    coverage: {
+      // Workerd does not expose the V8 coverage profiler.
+      provider: 'istanbul',
+      include: ['src/**/*.{ts,tsx}', 'brand/**/*.ts'],
+      reporter: ['text-summary', 'json-summary'],
+    },
+  },
 })

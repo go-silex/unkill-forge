@@ -10,3 +10,14 @@ commit-msg:
   commands:
     conventional:
       run: bash scripts/check-conventional-commit.sh {1}
+
+pre-push:
+  piped: true
+  jobs:
+    - name: lockfile-cooldown
+      use_stdin: true
+      run: npm run check:lockfile-cooldown -- --pre-push
+    - name: quality-gates
+      run: npm run lint && npm run check:file-length && npm run knip && npm run typecheck
+    - name: tests
+      run: npm run test:node && npm run test:coverage

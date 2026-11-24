@@ -1,0 +1,48 @@
+# Forge v2: Cloudflare Workers with Hono, the MCP SDK, D1, R2 and KV.
+schema_version: "1.0"
+runtime: node
+package_manager: npm
+
+backend:
+  framework: hono
+  path: src
+frontend:
+  # Server-rendered Hono JSX, no standalone frontend app.
+  framework: none
+  path: ""
+build:
+  orchestrator: none
+  formatter: biome
+  formatter_config: biome.json
+  formatter_fix_cmd: "npx biome check --write"
+testing:
+  unit: vitest
+  e2e: none
+hooks:
+  tool: lefthook
+worktree:
+  setup: npm ci
+lsp:
+  enabled: true
+# Deployments are operator-run via npm run deploy, not driven by CI.
+deploy:
+  platform: none
+  secrets_cmd: ""
+release:
+  class: NONE
+  component: unkill-forge
+  version_files: []
+docs:
+  framework: none
+  path: docs
+  format: md
+commands:
+  install: npm ci
+  test: npm run test:node && npm run test:coverage
+  typecheck: npm run typecheck
+  lint: npm run lint
+  format: npm run format
+  quality_gates: npm run lint && npm run check:file-length && npm run knip
+standards:
+  architecture: docs/architecture.md
+  contributing: CONTRIBUTING.md
