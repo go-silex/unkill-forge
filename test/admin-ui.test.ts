@@ -286,6 +286,62 @@ it('searches by slug or title prefix with visibility and keeps a stable paginati
   expect(listNext && new URL(listNext, manage).searchParams.get('view')).toBe('list')
 })
 
+it('shows private artefacts with an active share link as shared and filters on that derived state', async () => {
+  const send = runtime()
+  const owner = await mockProvider().signedIn(send, admin)
+  const token = await issueToken(owner, 'Shared state publisher')
+  await publish(send, token, 'notes', 'Private notes')
+  await publish(send, token, 'deck', 'Shared deck')
+  await publish(send, token, 'open', 'Open deck')
+  const deck = { artefactId: await artefactId(owner, '/artefacts/deck') }
+  const open = { artefactId: await artefactId(owner, '/artefacts/open') }
+  await post(owner, '/artefacts/deck', { action: 'create-share', label: 'Readers', ...deck })
+  await post(owner, '/artefacts/open', { action: 'create-share', label: 'Readers', ...open })
+  await post(owner, '/artefacts/open', { action: 'visibility', visibility: 'public', ...open })
+  const list = await html(owner, '/artefacts?view=list')
+  for (const state of ['Private', 'Shared', 'Public'])
+    expect(list.split(`<td class="forge-col--folded">${state}</td>`)).toHaveLength(2)
+  const titles = async (filter: string) => {
+    const page = await html(owner, `/artefacts?${filter}`)
+    return ['Private notes', 'Shared deck', 'Open deck'].filter((title) => page.includes(title))
+  }
+  expect(await titles('visibility=shared')).toEqual(['Shared deck'])
+  expect(await titles('visibility=private')).toEqual(['Private notes'])
+  expect(await titles('visibility=public')).toEqual(['Open deck'])
+  expect(await titles('q=shared&visibility=shared')).toEqual(['Shared deck'])
+  expect(await titles('q=shared&visibility=private')).toEqual([])
+  expect(await html(owner, '/artefacts?visibility=shared')).toMatch(
+    /<option value="shared" selected[^>]*>Shared</,
+  )
+  expect(await html(owner, '/artefacts/deck')).not.toContain('value="shared"')
+
+  const shareId = await db
+    .prepare('SELECT s.id FROM share_links s JOIN artefacts a ON a.id = s.artefact_id WHERE a.slug = ?')
+    .bind('deck')
+    .first<string>('id')
+  if (!shareId) throw new Error('Expected a share link')
+  await post(owner, '/artefacts/deck', { action: 'revoke-share', id: shareId })
+  expect(await titles('visibility=shared')).toEqual([])
+  expect(await titles('visibility=private')).toEqual(['Private notes', 'Shared deck'])
+
+  // Filtering scans the usual bounded page of the private index, then continues on the next page.
+  await post(owner, '/artefacts/deck', { action: 'create-share', label: 'Readers again', ...deck })
+  await db
+    .prepare(`WITH RECURSIVE numbers(n) AS (SELECT 1 UNION ALL SELECT n + 1 FROM numbers WHERE n < 60)
+    INSERT INTO artefacts (id, slug, title, visibility, current_revision, created_by, created_at, updated_at)
+    SELECT printf('20000000-0000-4000-8000-%012d', n), printf('filler-%02d', n), 'Filler', 'private',
+    current_revision, created_by, created_at, updated_at + n FROM artefacts, numbers WHERE slug = 'deck'`)
+    .run()
+  const first = await html(owner, '/artefacts?visibility=shared')
+  expect(first).toContain('No new matches on this page.')
+  const next = /href="([^"]+)"[^>]*>Next page<\/a>/.exec(first)?.[1]?.replaceAll('&amp;', '&')
+  if (!next) throw new Error('Expected a next page link')
+  expect(new URL(next, manage).searchParams.get('visibility')).toBe('shared')
+  const second = await html(owner, next)
+  expect(second).toContain('Shared deck')
+  expect(second).not.toContain('Private notes')
+})
+
 it('keeps modified seek cursors inside the prefix and explains duplicate-only pages with more matches', async () => {
   const send = runtime()
   const owner = await mockProvider().signedIn(send, admin)
