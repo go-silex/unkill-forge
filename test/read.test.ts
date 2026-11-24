@@ -342,14 +342,22 @@ it.each(['en', 'fr'] as const)(
     expect(filtered).toContain(french ? '1 sur 2 documents' : '1 of 2 documents')
     expect(filtered).toContain('class="forge-gallery forge-gallery--list"')
     expect(filtered).toContain('name="view" type="hidden" value="list"')
+    expect(filtered).toContain(`<a class="forge-gallery__card" href="${publicUrl}" rel="noreferrer">`)
     expect(filtered).toContain('value="BLIC ReP"')
     expect(filtered).toContain('href="/?q=BLIC+ReP"')
     expect(filtered).toContain('href="/?q=BLIC+ReP&amp;view=list" aria-current="page"')
     expect(filtered).toContain(`href="/?view=list">${french ? 'Effacer' : 'Clear'}</a>`)
+    expect(filtered.match(/ rel="noreferrer"/g)).toHaveLength(1)
+    expect(filtered).toMatch(
+      /<\/header><main class="forge-panel__body">[\s\S]*<\/main><footer class="forge-public-footer">/,
+    )
     expect(filtered).toContain('Public report')
     expect(filtered).not.toContain('Alternate entry')
     expect(filtered).not.toContain('Private report')
     const slugMatch = await home({ q: 'ELD-GU' })
+    expect(slugMatch).toContain(
+      `<a class="forge-gallery__card" href="${read}/a/field-guide/" rel="noreferrer">`,
+    )
     expect(slugMatch).toContain('Alternate entry')
     expect(slugMatch).not.toContain('Public report')
 
@@ -362,8 +370,52 @@ it.each(['en', 'fr'] as const)(
     expect(unmatched).toContain(french ? 'Aucun document ne correspond' : 'No documents match')
     expect(unmatched).not.toContain('<ul class="forge-gallery')
     expect(unmatched.match(/href="\/\?view=list">(?:Clear|Effacer)<\/a>/g)).toHaveLength(2)
+
+    const emptyQuery = await home({ q: '', view: 'list' })
+    expect(emptyQuery).toBe(unfiltered)
+    const repeatedUrl = `${read}/?q=BLIC+ReP&q=alternate&view=list`
+    const repeated = await indexed(repeatedUrl)
+    expect(repeated.status).toBe(200)
+    expect(await repeated.text()).toBe(filtered)
+    const head = await indexed(repeatedUrl, { method: 'HEAD' })
+    expect(head.status).toBe(200)
+    expect(await head.text()).toBe('')
+    for (const { headers } of [repeated, head]) {
+      expect(headers.get('Cache-Control')).toBe('private, no-store')
+      expect(headers.get('Referrer-Policy')).toBe('same-origin')
+      expect(headers.has('ETag')).toBe(false)
+      expect(headers.has('Vary')).toBe(false)
+    }
   },
 )
+
+it('folds Unicode search without stripping accents or splitting surrogate pairs', async () => {
+  const indexed = runtime({ PUBLIC_INDEX: 'true' })
+  const { call } = await fixture(indexed)
+  const title = 'ΟΣ Straße Café 🧭'
+  await call('publish', {
+    slug: 'field-notes',
+    title,
+    mode: 'replace',
+    files: [{ path: 'index.html', content: 'entry' }],
+  })
+  await call('set_visibility', { slug: 'field-notes', visibility: 'public' })
+
+  async function search(q: string) {
+    const response = await indexed(`${read}/?${new URLSearchParams({ q })}`)
+    expect(response.status).toBe(200)
+    return response.text()
+  }
+  for (const q of ['Σ', 'STRASSE', 'STRAẞE', 'CAFE\u0301', '🧭']) {
+    expect(await search(q)).toContain(title)
+  }
+  expect(await search('CAFE')).not.toContain(title)
+  const prefix = `${'🧭'.repeat(49)}x`
+  const clamped = await search(`${prefix}🧭`)
+  expect(clamped).toContain(`value="${prefix}" maxlength="100"`)
+  expect(clamped).not.toContain('\uFFFD')
+  expect(clamped).toContain('0 of 2 documents')
+})
 
 it.each(['en', 'fr'] as const)(
   'distinguishes the empty public catalogue in %s from a failed search',

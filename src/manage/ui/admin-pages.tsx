@@ -1042,7 +1042,7 @@ function ConnectClient({
   labels: CopyLabels
   name: string
   kind: string
-  steps: readonly (readonly [instruction: string, snippet?: string])[]
+  steps: readonly (readonly [instruction: Child, snippet?: string])[]
   open?: boolean
 }) {
   return (
@@ -1093,7 +1093,15 @@ adminPages.get(
             labels={labels}
             name="claude.ai"
             kind={t('clientWeb')}
-            steps={[[t('claudeAiIndividual')], [t('claudeAiTeam')], [t('claudeAiAuthorize')]]}
+            steps={[
+              [
+                <ul>
+                  <li>{t('claudeAiIndividual')}</li>
+                  <li>{t('claudeAiTeam')}</li>
+                </ul>,
+              ],
+              [t('claudeAiAuthorize')],
+            ]}
           />
           <ConnectClient
             labels={labels}

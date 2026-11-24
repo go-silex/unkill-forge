@@ -1992,7 +1992,9 @@ it.each(['en', 'fr'] as const)(
       'Hermes',
     ])
     expect(panels.filter(([, open]) => open).map(([, , client]) => client)).toEqual(['Claude Code'])
-    expect(panels.map(([, , , , steps]) => steps.match(/<li>/g)?.length)).toEqual([3, 1, 2, 1, 3, 3])
+    expect(
+      panels.map(([, , , , steps]) => steps.replace(/<ul>[\s\S]*?<\/ul>/g, '').match(/<li>/g)?.length),
+    ).toEqual([2, 1, 2, 1, 3, 3])
     expect(panels.map(([, , , kind]) => kind)).toEqual([
       french ? 'Application web' : 'Web app',
       french ? 'Application de bureau' : 'Desktop app',
@@ -2001,7 +2003,9 @@ it.each(['en', 'fr'] as const)(
       'Terminal',
       'Robot',
     ])
-    expect(panels[0][4]).toContain('CIMD')
+    expect(panels[0][4]).toMatch(
+      /^<li><ul><li>[^<]+<\/li><li>[^<]+<\/li><\/ul><\/li><li>[^<]*CIMD[^<]*<\/li>$/,
+    )
     expect(panels[1][4]).toContain('JSON')
     expect(panels[2][4]).toContain(
       `<pre><code>claude mcp add --transport http forge ${manage}/mcp</code></pre>`,

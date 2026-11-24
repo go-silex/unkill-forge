@@ -114,13 +114,15 @@ async function home(runtime: Runtime, params: URLSearchParams, head: boolean, ct
     )
   }
 
+  // NFC preserves accents; uppercasing unifies sigma and both forms of sharp S expand to SS.
+  const fold = (value: string) => value.normalize('NFC').replaceAll('ẞ', 'SS').toUpperCase()
   const queryLimit = 100
   const q = (params.get('q') ?? '')
     .trim()
     .slice(0, queryLimit)
     .replace(/[\uD800-\uDBFF]$/, '')
     .trimEnd()
-  const needle = q.toLowerCase()
+  const needle = fold(q)
   const view = galleryView(params.get('view'))
   const entries = await publicArtefacts(runtime, ctx)
   // Keep preview discovery on the same bounded set (and SQL path) for both indexed views and search.
@@ -130,9 +132,7 @@ async function home(runtime: Runtime, params: URLSearchParams, head: boolean, ct
     'public',
   )
   const matches = q
-    ? entries.filter(
-        ({ title, slug }) => slug.toLowerCase().includes(needle) || title.toLowerCase().includes(needle),
-      )
+    ? entries.filter(({ title, slug }) => fold(slug).includes(needle) || fold(title).includes(needle))
     : entries
   const viewParams = q ? new URLSearchParams({ q }) : undefined
   const clear = view === 'list' ? '/?view=list' : '/'
@@ -140,14 +140,14 @@ async function home(runtime: Runtime, params: URLSearchParams, head: boolean, ct
     <html lang={config.locale}>
       <DocumentHead config={config} title={name} />
       <body>
-        <main class="forge-panel forge-panel--landing forge-panel--gallery">
+        <div class="forge-panel forge-panel--landing forge-panel--gallery">
           <header class="forge-panel__header">
             <BrandBlock config={config} />
             <CardLink href={signIn} primary>
               {t.signIn}
             </CardLink>
           </header>
-          <div class="forge-panel__body">
+          <main class="forge-panel__body">
             <div class="forge-public-intro">
               <h1 class="forge-title">{name}</h1>
               <p class="forge-lead">{brand.landingText ?? t.read.landingLead}</p>
@@ -192,6 +192,7 @@ async function home(runtime: Runtime, params: URLSearchParams, head: boolean, ct
               <Gallery
                 label={t.artefacts}
                 view={view}
+                linkRel="noreferrer"
                 items={matches.map(({ url, title, slug, updatedAt }) => ({
                   href: url,
                   title,
@@ -200,12 +201,12 @@ async function home(runtime: Runtime, params: URLSearchParams, head: boolean, ct
                 }))}
               />
             )}
-          </div>
+          </main>
           <footer class="forge-public-footer">
             <span>{name}</span>
             <a href={signIn}>{t.signIn}</a>
           </footer>
-        </main>
+        </div>
       </body>
     </html>,
     head,

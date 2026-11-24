@@ -234,6 +234,7 @@ These classes and the custom properties above are the supported theme contract. 
 | `.forge-card-actions`, `.forge-card-actions--pair`                                                | Full-width stacked actions; the paired form uses two columns where space permits                           |
 | `.forge-facts`, `.forge-card-account`                                                             | Consent facts and signed-in account chip on the approval card                                              |
 | `.forge-public-intro`, `.forge-public-footer`                                                     | Public home title and lead, and the footer with instance name and sign-in link                             |
+| `.forge-panel--gallery`                                                                           | Public catalogue wrapper; brand header, main panel body and footer are sibling landmarks                   |
 | `.forge-public-search`, `.forge-public-count`                                                     | Public search form and localized result count                                                              |
 | `.forge-gallery__card`, `.forge-gallery__title`, `.forge-gallery__meta`                           | Whole-card link with focus ring, title underlined only on hover or keyboard focus, and muted metadata      |
 | `.forge-breadcrumb`                                                                               | Artefact detail breadcrumb                                                                                 |
