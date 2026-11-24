@@ -24,9 +24,11 @@ for every in-scope file. Production and tooling source is capped at 300 lines;
 entries in `config/file-length-exemptions.json` grandfather existing files
 only. Split an overlong file instead of adding an entry or raising its cap.
 
-The Worker scope check bundles the configured entry point in memory. All
-bundled first-party inputs must be in the length, coverage, and Knip scopes,
-even if they live outside `src/`.
+The Worker scope check runs Wrangler's default-discovery dry run and inspects
+its build metadata and attached modules. Keep exactly one root Wrangler config.
+Bundled first-party code must be in the length, coverage, and Knip scopes, even
+outside `src/`. JSON imports and Wrangler attachments typed as data (for example,
+text files) are exempt from source checks.
 
 `npm run check:lockfile-cooldown` checks the working copy against the merge
 base with `origin/main`. Pre-push checks the commits being pushed; set
