@@ -32,7 +32,8 @@ export async function generatePublishedCover(
         attempts = CASE WHEN generated_covers.revision = excluded.revision THEN attempts + 1 ELSE 1 END,
         jpeg = NULL
       WHERE generated_covers.revision < excluded.revision OR
-        (generated_covers.revision = excluded.revision AND generated_covers.retry_at <= ?3)
+        (generated_covers.revision = excluded.revision AND
+          (generated_covers.retry_at <= ?3 OR (attempts = 0 AND generated_covers.retry_at IS NOT NULL)))
       RETURNING artefact_id AS artefactId, revision, attempts, retry_at AS leaseUntil`)
     .bind(artefactId, revision, now, now + leaseMs)
     .first<Job>()

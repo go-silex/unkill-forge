@@ -37,9 +37,13 @@ beforeEach(() => {
 })
 
 async function fixture() {
-  const enabled = { ...overrides, COVER_BROWSER: browser }
-  const env = configuredEnv(enabled)
-  const send = runtime(enabled)
+  const env = configuredEnv({ ...overrides, COVER_BROWSER: browser })
+  const send: Handle = async (path, init) => {
+    const ctx = createExecutionContext()
+    const response = await worker.fetch(new Request(new URL(path, manage), init), env, ctx)
+    await waitOnExecutionContext(ctx)
+    return response
+  }
   const withoutBrowser = runtime(overrides)
   const owner = await mockProvider().signedIn(send, admin)
   const name = 'Cover publisher'
@@ -90,8 +94,7 @@ async function fixture() {
   return { env, send, withoutBrowser, publish, makePublic }
 }
 
-function trackRequest(env: Env) {
-  const ctx = createExecutionContext()
+function trackRequest(env: Env, ctx = createExecutionContext()) {
   const waitUntil = vi.spyOn(ctx, 'waitUntil')
   const send: Handle = (path, init) => worker.fetch(new Request(new URL(path, manage), init), env, ctx)
   return { send, waitUntil, drain: () => waitOnExecutionContext(ctx) }
@@ -139,6 +142,57 @@ it('generates a cover in the publish background for only the exact committed hea
   expect((await send(preview('backfill'))).status).toBe(404)
 })
 
+it('returns the publish receipt and serves the new head when cover registration throws', async () => {
+  const { env, send, withoutBrowser, publish, makePublic } = await fixture()
+  expect(await publish('report', [htmlFile('first.html')], 0, withoutBrowser)).toMatchObject({
+    revision: 1,
+  })
+  await makePublic('report')
+
+  const ctx = createExecutionContext()
+  const register = ctx.waitUntil.bind(ctx)
+  const background = trackRequest(env, ctx)
+  let unregistered: Promise<unknown> | undefined
+  background.waitUntil
+    .mockImplementationOnce(register) // Let the entry-cache write register normally.
+    .mockImplementationOnce((work) => {
+      unregistered = work
+      throw new Error('Test cover registration failed')
+    })
+  const entry = htmlFile('latest.html')
+  const url = `${read}/a/report/latest.html`
+  try {
+    expect(await publish('report', [entry], 1, background.send)).toEqual({ revision: 2, url })
+  } finally {
+    await Promise.all([background.drain(), unregistered])
+  }
+  expect(background.waitUntil).toHaveBeenCalledTimes(2)
+  const response = await send(url)
+  expect(response.status).toBe(200)
+  expect(await response.text()).toBe(entry.content)
+})
+
+it('renders a matching, never-attempted head even when cron discovered it at a later time', async () => {
+  const { env, send, publish, makePublic } = await fixture()
+  // Interleave just the discovery write with the commit, before publish can claim the head.
+  await env.DB.prepare(`CREATE TRIGGER discover_report_cover AFTER UPDATE OF current_revision ON artefacts
+    WHEN NEW.slug = 'report'
+    BEGIN
+      INSERT INTO generated_covers (artefact_id, revision, retry_at, attempts)
+        VALUES (NEW.id, NEW.current_revision, NEW.updated_at + 60000, 0);
+    END`).run()
+
+  const now = Date.now()
+  const clock = vi.spyOn(Date, 'now').mockReturnValue(now)
+  try {
+    expect(await publish('report', [htmlFile('index.html')], 0)).toMatchObject({ revision: 1 })
+  } finally {
+    clock.mockRestore()
+  }
+  await makePublic('report')
+  await expectCover(await send(preview('report')), jpeg)
+})
+
 it('does not schedule cover generation when expectedRevision rejects a publish', async () => {
   const { env, send, withoutBrowser, publish, makePublic } = await fixture()
   const current = htmlFile('current.html')
@@ -175,16 +229,26 @@ it('leaves the publish successful after a render failure and recovers the cover 
   const { env, send, publish, makePublic } = await fixture()
   const entry = htmlFile('index.html')
   const url = `${read}/a/report/`
+  const attemptTime = Date.now()
+  const clock = vi.spyOn(Date, 'now').mockReturnValue(attemptTime)
   render.mockRejectedValueOnce(new Error('Test renderer failed'))
-  expect(await publish('report', [entry], 0)).toEqual({ revision: 1, url })
-  expect(render).toHaveBeenCalledTimes(1)
-  await makePublic('report')
-  expect(await (await send(url)).text()).toBe(entry.content)
-  expect((await send(preview('report'))).status).toBe(404)
-
-  const retryTime = Date.now() + 24 * 60 * 60 * 1000
-  const clock = vi.spyOn(Date, 'now').mockReturnValue(retryTime)
   try {
+    expect(await publish('report', [entry], 0)).toEqual({ revision: 1, url })
+    expect(render).toHaveBeenCalledTimes(1)
+    await makePublic('report')
+    expect(await (await send(url)).text()).toBe(entry.content)
+    expect((await send(preview('report'))).status).toBe(404)
+
+    for (const elapsed of [120_001, 299_999]) {
+      const tooSoon = attemptTime + elapsed
+      clock.mockReturnValue(tooSoon)
+      await worker.scheduled(createScheduledController({ cron: coverCron, scheduledTime: tooSoon }), env)
+      expect(render).toHaveBeenCalledTimes(1)
+      expect((await send(preview('report'))).status).toBe(404)
+    }
+
+    const retryTime = attemptTime + 300_000
+    clock.mockReturnValue(retryTime)
     await worker.scheduled(createScheduledController({ cron: coverCron, scheduledTime: retryTime }), env)
   } finally {
     clock.mockRestore()

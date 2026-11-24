@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+- Start generating a missing HTML cover as soon as its revision is published, without delaying the response. The schedule remains available for retries and backfill.
+- Upgrade: no D1 migration, binding or config change.
+
 ## v2.5.0 — 2026-11-24
 
 - Show private artefacts with an active share link as "Shared" in the Manage catalogue, and add a Shared filter. The Private filter now lists private artefacts without an active link. Creating or revoking links moves an artefact between the two; the artefact visibility setting stays private/public.
