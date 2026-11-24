@@ -419,6 +419,44 @@ it('folds Unicode search without stripping accents or splitting surrogate pairs'
   expect(clamped).toContain('0 of 2 documents')
 })
 
+it('matches only complete combining sequences and tries later occurrences', async () => {
+  const indexed = runtime({ PUBLIC_INDEX: 'true' })
+  const { call } = await fixture(indexed)
+  for (const [slug, title] of [
+    ['entry', 'İstanbul'],
+    ['atlas', 'İstanbul i'],
+    ['map', 'é'],
+    ['chart', 'e\u0301'],
+  ]) {
+    await call('publish', {
+      slug,
+      title,
+      mode: 'replace',
+      files: [{ path: 'index.html', content: 'entry' }],
+    })
+    await call('set_visibility', { slug, visibility: 'public' })
+  }
+
+  for (const [q, expected] of [
+    ['i', ['atlas']],
+    ['i\u0307', ['entry', 'atlas']],
+    ['istanbul', []],
+    ['\u0307', []],
+    ['e', ['entry']],
+    ['é', ['map', 'chart']],
+    ['e\u0301', ['map', 'chart']],
+  ] as const) {
+    const response = await indexed(`${read}/?${new URLSearchParams({ q })}`)
+    expect(response.status).toBe(200)
+    const body = await response.text()
+    for (const slug of ['entry', 'atlas', 'map', 'chart'] as const) {
+      expect(body.includes(`href="${read}/a/${slug}/"`), `query ${q}, result ${slug}`).toBe(
+        expected.some((match) => match === slug),
+      )
+    }
+  }
+})
+
 it.each(['en', 'fr'] as const)(
   'distinguishes the empty public catalogue in %s from a failed search',
   async (locale) => {

@@ -124,6 +124,17 @@ async function home(runtime: Runtime, params: URLSearchParams, head: boolean, ct
     .replace(/[\uD800-\uDBFF]$/, '')
     .trimEnd()
   const needle = fold(q)
+  const markAt = /\p{M}/uy
+  // A folded match must not consume only part of an accented character.
+  const startsWithMark = markAt.test(needle)
+  const matchesText = (value: string) => {
+    const text = fold(value)
+    for (let at = text.indexOf(needle); at !== -1; at = text.indexOf(needle, at + 1)) {
+      markAt.lastIndex = at + needle.length
+      if (!markAt.test(text)) return true
+    }
+    return false
+  }
   const view = galleryView(params.get('view'))
   const entries = await publicArtefacts(runtime, ctx)
   // Keep preview discovery on the same bounded set (and SQL path) for both indexed views and search.
@@ -132,9 +143,11 @@ async function home(runtime: Runtime, params: URLSearchParams, head: boolean, ct
     entries.map(({ slug }) => slug),
     'public',
   )
-  const matches = q
-    ? entries.filter(({ title, slug }) => fold(slug).includes(needle) || fold(title).includes(needle))
-    : entries
+  const matches = !q
+    ? entries
+    : startsWithMark
+      ? []
+      : entries.filter(({ title, slug }) => matchesText(slug) || matchesText(title))
   const viewParams = q ? new URLSearchParams({ q }) : undefined
   const clear = view === 'list' ? '/?view=list' : '/'
   return documentResponse(
