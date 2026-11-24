@@ -4,6 +4,7 @@ import { z } from 'zod'
 import type { Runtime } from '../../config'
 import { createOwnToken, listOwnTokens, revokeOwnToken, uiActor } from '../../core/admin'
 import {
+  AccessConfirmationError,
   ArtefactError,
   createShareLink,
   deleteArtefact,
@@ -18,6 +19,7 @@ import {
   restoreDeletedArtefact,
   restoreRevision,
   revokeShareLink,
+  setAccess,
   setRedirects,
   setVisibility,
 } from '../../core/artefacts'
@@ -35,6 +37,8 @@ import { localClientPath } from '../oauth'
 import {
   AccessBadge,
   Action,
+  Badge,
+  CopyButton,
   CopyField,
   Fold,
   flash,
@@ -71,8 +75,16 @@ const revision = z
 const prefix = z.string().max(maxRedirectPrefix)
 const maxNameLength = 120
 const maxShareLabelLength = 200
+const confirmedCount = z
+  .string()
+  .regex(/^(0|[1-9][0-9]*)$/)
+  .transform(Number)
+  .pipe(z.int().nonnegative())
 const artefactAction = z.discriminatedUnion('action', [
   z.strictObject({ action: z.literal('visibility'), visibility, artefactId: id }),
+  z
+    .strictObject({ action: z.literal('access'), access, artefactId: id, revoke: confirmedCount.optional() })
+    .refine(({ access, revoke }) => access === 'private' || revoke === undefined),
   z.strictObject({ action: z.literal('restore-revision'), revision, artefactId: id }),
   z.strictObject({
     action: z.literal('create-share'),
@@ -143,23 +155,12 @@ async function runAction<S extends z.ZodType>(
   try {
     result = await run(parsed.data)
   } catch (error) {
+    if (error instanceof AccessConfirmationError)
+      return flash(c, session, path, messages(c.env.config).detail.revokeCountChanged(error.activeLinks))
     if (!(error instanceof ArtefactError) || error.code === 'forbidden') throw error
     result = { message: error.code, path: error.code === 'not_found' ? missingPath : path }
   }
   return flash(c, session, result.path ?? path, t(result.message), result.secret)
-}
-
-function VisibilityOptions({ t, value }: { t: AdminTranslate; value: 'private' | 'public' }) {
-  return (
-    <>
-      <option value="private" selected={value === 'private'}>
-        {t('private')}
-      </option>
-      <option value="public" selected={value === 'public'}>
-        {t('public')}
-      </option>
-    </>
-  )
 }
 
 function table(columns: TableColumn[], rows: Child[], t: AdminTranslate) {
@@ -326,164 +327,275 @@ adminPages.get(
     const fileCursor = c.req.query('files')
     const revisionCursor = c.req.query('revisions')
     const artefact = await getArtefactDetails(c.env, actor, currentSlug, fileCursor)
-    const history = await listRevisions(c.env, actor, currentSlug, revisionCursor, artefact.id)
+    const [history, previews] = await Promise.all([
+      listRevisions(c.env, actor, currentSlug, revisionCursor, artefact.id),
+      galleryPreviewSlugs(c.env, [currentSlug], 'member'),
+    ])
     const canWrite = actor.role !== 'viewer'
-    const { confirmation } = messages(c.env.config)
+    const { config } = c.env
+    const copyLabels = messages(config)
+    const { confirmation, detail: labels } = copyLabels
+    const count = artefact.shareLinks.length
+    const currentAccess = artefact.visibility === 'public' ? 'public' : count ? 'shared' : 'private'
     const params = new URLSearchParams()
     if (fileCursor) params.set('files', fileCursor)
     if (revisionCursor) params.set('revisions', revisionCursor)
-    const readBase = `${c.env.config.readOrigin}/a/${currentSlug}/`
+    const readBase = `${config.readOrigin}/a/${currentSlug}/`
     return page(
       c,
       session,
       artefact.title,
       <>
-        <p>
-          <a href={cataloguePath}>{t('artefacts')}</a>
-        </p>
-        <p>
-          <a href={artefact.url}>{t('open')}</a>
-        </p>
-        <dl>
-          <dt>{t('slug')}</dt>
-          <dd>
-            <code>{currentSlug}</code>
-          </dd>
-          <dt>{t('currentRevision')}</dt>
-          <dd>{artefact.revision}</dd>
-          <dt>{t('visibility')}</dt>
-          <dd>{t(artefact.visibility)}</dd>
-        </dl>
-        {canWrite && (
-          <Action action="visibility" label={t('saveVisibility')} fields={{ artefactId: artefact.id }}>
-            <label>
-              {t('visibility')}{' '}
-              <select name="visibility">
-                <VisibilityOptions t={t} value={artefact.visibility} />
-              </select>
-            </label>
-          </Action>
-        )}
-        <h2>{t('files')}</h2>
-        {table(
-          [t('file'), { secondary: t('size') }, { secondary: t('type') }],
-          artefact.files.map((file) => (
-            <tr>
-              <td title={file.path}>
-                <a href={readBase + encodeFilePath(file.path)}>
-                  <code>{file.path}</code>
-                </a>
-              </td>
-              <td class="forge-col--secondary">{file.size}</td>
-              <td class="forge-col--secondary" title={file.type}>
-                {file.type}
-              </td>
-            </tr>
-          )),
-          t,
-        )}
-        {nextPage(path, artefact.nextCursor, t('nextFiles'), params, 'files')}
-        <h2>{t('revisions')}</h2>
-        {table(
-          [
-            t('revision'),
-            { secondary: t('author') },
-            { secondary: t('created') },
-            t('message'),
-            ...(canWrite ? [t('actions')] : []),
-          ],
-          history.revisions.map((entry) => (
-            <tr>
-              <td>{entry.number}</td>
-              <td class="forge-col--secondary" title={entry.author}>
-                {entry.author}
-              </td>
-              <td class="forge-col--secondary">{time(c.env.config, entry.createdAt)}</td>
-              <td title={entry.message ?? undefined}>{entry.message}</td>
-              {canWrite && (
-                <td>
-                  {entry.number !== artefact.revision && (
-                    <Action
-                      action="restore-revision"
-                      label={t('restoreRevision')}
-                      fields={{ revision: entry.number, artefactId: artefact.id }}
-                    />
-                  )}
-                </td>
-              )}
-            </tr>
-          )),
-          t,
-        )}
-        {nextPage(path, history.nextCursor, t('nextRevisions'), params, 'revisions')}
-        {canWrite && (
-          <>
-            <h2>{t('shareLinks')}</h2>
-            <p>{t('shareWarning')}</p>
-            <Action action="create-share" label={t('createShare')} fields={{ artefactId: artefact.id }}>
-              <label>
-                {t('shareLabel')} <input name="label" maxlength={maxShareLabelLength} />
-              </label>
-              {actor.role === 'admin' && (
-                <label>
-                  {t('customShare')}{' '}
-                  <input
-                    type="password"
-                    name="key"
-                    autocomplete="off"
-                    maxlength={shareKeyMax}
-                    pattern="[A-Za-z0-9_\-]{16,128}"
-                  />
-                </label>
-              )}
-            </Action>
+        <div class="forge-detail__meta">
+          <AccessBadge access={currentAccess} label={t(currentAccess)} />
+          <span>
+            v{artefact.revision} · {t('updated')} {time(config, artefact.updatedAt)}
+            {artefact.author && (
+              <>
+                {' '}
+                {labels.by} {artefact.author}
+              </>
+            )}
+          </span>
+          <span>{labels.fileCount(fileCursor || artefact.nextCursor ? '200+' : artefact.files.length)}</span>
+        </div>
+        <div class="forge-detail__actions">
+          <a class="forge-button forge-button--primary" href={artefact.url}>
+            {t('open')}
+          </a>
+          <code hidden>{artefact.url}</code>
+          <CopyButton labels={{ ...copyLabels, copy: labels.copyAddress }} />
+        </div>
+        <div class="forge-detail">
+          <div class="forge-detail__main">
+            {previews.has(currentSlug) && (
+              <img
+                class="forge-detail__preview"
+                src={`${previewPrefix}${currentSlug}`}
+                alt=""
+                width="1600"
+                height="900"
+                decoding="async"
+              />
+            )}
+            <h2>{t('files')}</h2>
             {table(
-              [t('shareLabel'), { folded: t('created') }, { folded: t('lastUsed') }, t('actions')],
-              artefact.shareLinks.map((share) => {
-                const label = share.label || t('unlabeled')
-                const created = time(c.env.config, share.createdAt)
-                const lastUsed = time(c.env.config, share.lastUsedAt)
-                return (
-                  <tr>
-                    <td title={label}>
-                      <span>{label}</span>
-                      <Fold label={t('created')}>{created}</Fold>
-                      <Fold label={t('lastUsed')}>{lastUsed}</Fold>
-                    </td>
-                    <td class="forge-col--folded">{created}</td>
-                    <td class="forge-col--folded">{lastUsed}</td>
-                    <td>
-                      <Action action="reveal-share" label={t('showShare')} fields={{ id: share.id }} />
-                      <Action action="revoke-share" label={t('revokeShare')} fields={{ id: share.id }} />
-                    </td>
-                  </tr>
-                )
-              }),
+              [t('file'), { secondary: t('type') }, t('size')],
+              artefact.files.map((file) => (
+                <tr>
+                  <td title={file.path}>
+                    <a href={readBase + encodeFilePath(file.path)}>
+                      <code>{file.path}</code>
+                    </a>
+                    {file.path === artefact.entryPath && (
+                      <>
+                        {' '}
+                        <Badge variant="entry">{labels.entryPage}</Badge>
+                      </>
+                    )}
+                  </td>
+                  <td class="forge-col--secondary" title={file.type}>
+                    {file.type}
+                  </td>
+                  <td>{file.size}</td>
+                </tr>
+              )),
               t,
             )}
-            <h2>{t('rename')}</h2>
-            <Action action="rename" label={t('rename')} fields={{ artefactId: artefact.id }}>
-              <label>
-                {t('newSlug')} <input name="slug" required maxlength={64} />
-              </label>
-            </Action>
-            <h2>{t('delete')}</h2>
-            <p>{t('deleteHelp')}</p>
-            <Action
-              action="delete"
-              variant="danger"
-              label={t('delete')}
-              fields={{ artefactId: artefact.id }}
-              confirm={{
-                title: confirmation.deleteTitle(artefact.title.trim() || artefact.slug),
-                body: confirmation.deleteBody(deletedRetentionMs / (24 * 60 * 60 * 1_000)),
-                label: confirmation.deleteLabel,
-                cancel: confirmation.cancel,
-              }}
-            />
-          </>
-        )}
+            {nextPage(path, artefact.nextCursor, t('nextFiles'), params, 'files')}
+            <h2>{t('revisions')}</h2>
+            {history.revisions.length ? (
+              // biome-ignore lint/a11y/noRedundantRoles: Safari removes unstyled lists from the accessibility tree.
+              <ol class="forge-versions" role="list">
+                {history.revisions.map((entry) => {
+                  const isCurrent = entry.number === artefact.revision
+                  const message = entry.message
+                  return (
+                    <li class="forge-version">
+                      <div>
+                        <strong>{labels.version(entry.number)}</strong>
+                        {isCurrent && (
+                          <>
+                            {' '}
+                            <Badge variant="current">{t('currentRevision')}</Badge>
+                          </>
+                        )}
+                        {message &&
+                          (message.length > 160 ? (
+                            <>
+                              <p>{message.slice(0, 160).toWellFormed()}…</p>
+                              <details>
+                                <summary>{labels.fullMessage}</summary>
+                                <p>{message}</p>
+                              </details>
+                            </>
+                          ) : (
+                            <p>{message}</p>
+                          ))}
+                        <p class="forge-detail__meta">
+                          {time(config, entry.createdAt)} · {entry.author}
+                        </p>
+                      </div>
+                      {canWrite && !isCurrent && (
+                        <Action
+                          action="restore-revision"
+                          label={t('restoreRevision')}
+                          fields={{ revision: entry.number, artefactId: artefact.id }}
+                        />
+                      )}
+                    </li>
+                  )
+                })}
+              </ol>
+            ) : (
+              <p class="forge-empty">{t('noResults')}</p>
+            )}
+            {nextPage(path, history.nextCursor, t('nextRevisions'), params, 'revisions')}
+          </div>
+          {canWrite && (
+            <aside class="forge-detail__aside" aria-label={labels.settings}>
+              <section class="forge-panel-card">
+                <h2>{labels.access}</h2>
+                <div class="forge-access">
+                  <Action
+                    action="access"
+                    label={labels.save}
+                    variant="primary"
+                    fields={{ artefactId: artefact.id }}
+                  >
+                    <fieldset class="forge-access__options" aria-label={labels.access}>
+                      {access.options.map((option) => (
+                        <label>
+                          <input
+                            type="radio"
+                            name="access"
+                            value={option}
+                            checked={option === currentAccess}
+                          />
+                          <span>
+                            <strong>{t(option)}</strong>
+                            <small>{labels.accessHelp[option]}</small>
+                          </span>
+                        </label>
+                      ))}
+                    </fieldset>
+                  </Action>
+                  {count > 0 && (
+                    <Action
+                      action="access"
+                      label={labels.save}
+                      variant="danger"
+                      fields={{ access: 'private', revoke: count, artefactId: artefact.id }}
+                      confirm={{
+                        title: labels.privateTitle,
+                        body: labels.privateBody(count),
+                        label: labels.privateConfirm,
+                        cancel: confirmation.cancel,
+                      }}
+                    />
+                  )}
+                </div>
+              </section>
+              <section class="forge-panel-card">
+                <h2>{t('shareLinks')}</h2>
+                <p>{t('shareWarning')}</p>
+                {count ? (
+                  // biome-ignore lint/a11y/noRedundantRoles: Safari removes unstyled lists from the accessibility tree.
+                  <ul class="forge-share-links" role="list">
+                    {artefact.shareLinks.map((share) => {
+                      const label = share.label || t('unlabeled')
+                      return (
+                        <li>
+                          <strong>{label}</strong>
+                          <p class="forge-detail__meta">
+                            {t('created')} {time(config, share.createdAt)}
+                            {share.creator && (
+                              <>
+                                {' '}
+                                {labels.by} {share.creator}
+                              </>
+                            )}
+                          </p>
+                          <p class="forge-detail__meta">
+                            <span aria-hidden="true">•••• · </span>
+                            {labels.maskedLink}
+                          </p>
+                          <div class="forge-detail__actions">
+                            <Action action="reveal-share" label={t('showShare')} fields={{ id: share.id }} />
+                            <Action
+                              action="revoke-share"
+                              label={t('revokeShare')}
+                              fields={{ id: share.id }}
+                              confirm={{
+                                title: labels.revokeTitle(label),
+                                body: labels.revokeBody,
+                                label: t('revokeShare'),
+                                cancel: confirmation.cancel,
+                              }}
+                            />
+                          </div>
+                        </li>
+                      )
+                    })}
+                  </ul>
+                ) : (
+                  <p class="forge-empty">{labels.emptyShares}</p>
+                )}
+                <details>
+                  <summary>{labels.addLink}</summary>
+                  <Action action="create-share" label={t('createShare')} fields={{ artefactId: artefact.id }}>
+                    <label>
+                      {t('shareLabel')} <input name="label" maxlength={maxShareLabelLength} />
+                    </label>
+                    {actor.role === 'admin' && (
+                      <label>
+                        {t('customShare')}{' '}
+                        <input
+                          type="password"
+                          name="key"
+                          autocomplete="off"
+                          maxlength={shareKeyMax}
+                          pattern="[A-Za-z0-9_\-]{16,128}"
+                        />
+                      </label>
+                    )}
+                  </Action>
+                </details>
+              </section>
+              <section class="forge-panel-card">
+                <h2>{t('rename')}</h2>
+                <p>{labels.renameHint}</p>
+                <Action action="rename" label={t('rename')} fields={{ artefactId: artefact.id }}>
+                  <label>
+                    {t('newSlug')} <input name="slug" required maxlength={64} />
+                  </label>
+                </Action>
+              </section>
+              <section class="forge-panel-card">
+                <h2>{t('delete')}</h2>
+                <p>{t('deleteHelp')}</p>
+                <Action
+                  action="delete"
+                  variant="danger"
+                  label={t('delete')}
+                  fields={{ artefactId: artefact.id }}
+                  confirm={{
+                    title: confirmation.deleteTitle(artefact.title.trim() || artefact.slug),
+                    body: confirmation.deleteBody(deletedRetentionMs / (24 * 60 * 60 * 1_000)),
+                    label: confirmation.deleteLabel,
+                    cancel: confirmation.cancel,
+                  }}
+                />
+              </section>
+            </aside>
+          )}
+        </div>
       </>,
+      <nav class="forge-breadcrumb" aria-label={labels.breadcrumb}>
+        <a href={cataloguePath}>{t('artefacts')}</a>
+        <span aria-hidden="true"> › </span>
+        <span aria-current="page">{currentSlug}</span>
+      </nav>,
     )
   }),
 )
@@ -502,6 +614,17 @@ adminPages.post(
       artefactAction,
       async (input) => {
         switch (input.action) {
+          case 'access': {
+            const { url } = await setAccess(
+              c.env,
+              actor,
+              currentSlug,
+              input.access,
+              input.artefactId,
+              input.revoke,
+            )
+            return { message: url ? 'shareCreated' : 'accessSaved', secret: url }
+          }
           case 'visibility':
             await setVisibility(c.env, actor, currentSlug, input.visibility, input.artefactId)
             return { message: 'visibilitySaved' }

@@ -63,7 +63,7 @@ function edition(title: string) {
   return { slug, title, mode: 'replace' as const, files: [{ path: 'index.html', content: title }] }
 }
 
-it('refuses cached visibility, revision restore, share creation, rename and delete forms on a replacement', async () => {
+it('refuses cached access, visibility, revision restore, share creation, rename and delete on a replacement', async () => {
   const { owner, member, core } = await fixture()
   await publish(core, member, edition('Original first edition'))
   await publish(core, member, edition('Original second edition'))
@@ -77,6 +77,7 @@ it('refuses cached visibility, revision restore, share creation, rename and dele
   await publish(core, member, edition('Replacement second edition'))
 
   const actions = [
+    ['access', { access: 'shared' }],
     ['visibility', { visibility: 'public' }],
     ['restore-revision', { revision: formValue(revisionForm, 'revision') }],
     ['create-share', { label: 'Stale link' }],
@@ -84,7 +85,7 @@ it('refuses cached visibility, revision restore, share creation, rename and dele
     ['delete', {}],
   ] as const
   for (const [action, values] of actions) {
-    const formId = formValue(actionForm(original, action), 'artefactId')
+    const formId = formValue(actionForm(original, action === 'visibility' ? 'access' : action), 'artefactId')
     expect(formId).toBe(artefactId)
     await expectConflict(owner, detail, { action, ...values, artefactId: formId })
   }

@@ -2,6 +2,7 @@ import { base64url } from 'jose'
 import { z } from 'zod'
 import { MAX_ARTEFACT_FILES, type Runtime } from '../config'
 import { blobText, contentType, MAX_TEXT_BYTES, storeBlobs, textSlice } from './blobs'
+import type { CatalogueAccess } from './catalogue'
 import { auditChange, hashSecret, type Member } from './index'
 import { trimLookahead } from './pagination'
 import { redirectPrefix } from './read-path'
@@ -15,6 +16,12 @@ export class ArtefactError extends Error {
     readonly extra?: { currentRevision: number } | { matches: number },
   ) {
     super(message)
+  }
+}
+
+export class AccessConfirmationError extends ArtefactError {
+  constructor(readonly activeLinks: number) {
+    super('conflict', `Confirm revocation of all active share links (current count: ${activeLinks})`)
   }
 }
 
@@ -246,7 +253,12 @@ export async function getArtefact(
   cursor?: string,
   ctx?: ExecutionContext,
 ) {
-  const { id: _id, ...artefact } = await getArtefactDetails(runtime, member, slug, cursor, ctx)
+  const {
+    id: _id,
+    entryPath: _entryPath,
+    author: _author,
+    ...artefact
+  } = await getArtefactDetails(runtime, member, slug, cursor, ctx, false)
   return artefact
 }
 
@@ -256,6 +268,7 @@ export async function getArtefactDetails(
   slug: string,
   cursor?: string,
   ctx?: ExecutionContext,
+  ui = true,
 ) {
   checkMember(member)
   const {
@@ -268,20 +281,36 @@ export async function getArtefactDetails(
   if (after && after[0] !== id)
     throw new ArtefactError('invalid_input', 'Cursor belongs to a different artefact')
   if (after) checkRevision(after[1], revision)
-  const [page, path, shareLinks] = await Promise.all([
+  const [page, path, shareLinks, author] = await Promise.all([
     db
       .prepare(`SELECT path, size, content_type AS type FROM files
         WHERE artefact_id = ? AND revision = ? AND path > ? ORDER BY path LIMIT 201`)
       .bind(id, revision, after?.[2] ?? '')
       .all<Pick<File, 'path' | 'size' | 'type'>>(),
     revisionEntry(db, id, revision, { ctx }),
-    shareLinkMetadata(db, id),
+    shareLinkMetadata(db, id, ui && member.role !== 'viewer'),
+    ui
+      ? db
+          .prepare(`SELECT m.name FROM revisions r JOIN members m ON m.id = r.created_by
+            WHERE r.artefact_id = ? AND r.number = ?`)
+          .bind(id, revision)
+          .first<string>('name')
+      : null,
   ])
   if (!path) throw new Error('Artefact head has no entry file')
   const files = page.results
   const last = trimLookahead(files, 200)
   const nextCursor = last ? base64url.encode(JSON.stringify([id, revision, last.path])) : undefined
-  return { id, ...artefact, files, url: entryUrl(config.readOrigin, slug, path), shareLinks, nextCursor }
+  return {
+    id,
+    ...artefact,
+    files,
+    url: entryUrl(config.readOrigin, slug, path),
+    shareLinks,
+    nextCursor,
+    entryPath: path,
+    author,
+  }
 }
 
 async function findFile(db: D1Database, id: string, revision: number, path: string) {
@@ -936,6 +965,80 @@ export async function setVisibility(
   return { visibility }
 }
 
+export async function setAccess(
+  { env: { DB: db }, config }: Runtime,
+  member: Member,
+  slug: string,
+  access: CatalogueAccess,
+  expectedId: string,
+  revoke?: number,
+) {
+  checkMember(member, true)
+  const { id } = await liveHead(db, slug, expectedId)
+  const now = Date.now()
+  const revokeCount = access === 'private' ? (revoke ?? 0) : null
+  const visibility = access === 'public' ? 'public' : 'private'
+  const update = db
+    .prepare(`UPDATE artefacts SET visibility = ?1,
+      updated_at = CASE WHEN visibility <> ?1 OR ?5 > 0 THEN MAX(?2, updated_at) ELSE updated_at END
+      WHERE id = ?3 AND slug = ?4 AND deleted_at IS NULL
+        AND (?5 IS NULL OR ?5 = (SELECT COUNT(*) FROM share_links
+          WHERE artefact_id = ?3 AND revoked_at IS NULL))`)
+    .bind(visibility, now, id, slug, revokeCount)
+  const audit = auditChange(db, now, member.id, 'artefact.access', { access, revoked: revokeCount ?? 0 }, id)
+
+  if (access === 'shared') {
+    const key = generateShareKey()
+    const linkId = crypto.randomUUID()
+    const [keyHash, sealed] = await Promise.all([
+      hashSecret(key),
+      sealShareKey(config.sealKey, linkId, id, key),
+    ])
+    try {
+      const [insert, , changed] = await db.batch([
+        db
+          .prepare(`INSERT INTO share_links (id, artefact_id, key_hash, key_sealed, created_by, created_at)
+            SELECT ?, id, ?, ?, ?, ? FROM artefacts WHERE id = ? AND slug = ? AND deleted_at IS NULL
+              AND NOT EXISTS (SELECT 1 FROM share_links WHERE artefact_id = artefacts.id AND revoked_at IS NULL)`)
+          .bind(linkId, keyHash, sealed, member.id, now, id, slug),
+        auditChange(db, now, member.id, 'share.create', { id: linkId }, id),
+        update,
+        audit,
+      ])
+      if (changed.meta.changes !== 1) throw new ArtefactError('not_found', 'Artefact not found')
+      // Inserting only at zero active links also enforces the active-link limit.
+      return insert.meta.changes === 1 ? { url: shareUrl(config.readOrigin, slug, key) } : {}
+    } catch (error) {
+      if (/UNIQUE constraint failed: share_links\.key_hash\b/.test(diagnostic(error)))
+        throw new ArtefactError('conflict', 'Share key is unavailable')
+      throw error
+    }
+  }
+
+  // D1 runs the batch in one transaction. A failed count guard skips both audit and revocation.
+  const [changed] = await db.batch([
+    update,
+    audit,
+    ...(revokeCount
+      ? [
+          db
+            .prepare(`UPDATE share_links SET revoked_at = ?
+              WHERE artefact_id = ? AND revoked_at IS NULL AND changes() = 1`)
+            .bind(now, id),
+        ]
+      : []),
+  ])
+  if (changed.meta.changes !== 1) {
+    await liveHead(db, slug, expectedId)
+    const count = await db
+      .prepare('SELECT COUNT(*) AS total FROM share_links WHERE artefact_id = ? AND revoked_at IS NULL')
+      .bind(id)
+      .first<number>('total')
+    throw new AccessConfirmationError(count ?? 0)
+  }
+  return {}
+}
+
 export async function renameArtefact(
   { env: { DB: db }, config }: Runtime,
   member: Member,
@@ -1124,12 +1227,20 @@ export async function setRedirects(
 
 const maxActiveShareLinks = 100
 
-async function shareLinkMetadata(db: D1Database, artefactId: string) {
+async function shareLinkMetadata(db: D1Database, artefactId: string, includeCreator = false) {
   const { results } = await db
-    .prepare(`SELECT id, label, created_at AS createdAt, last_used_at AS lastUsedAt FROM share_links
-      WHERE artefact_id = ? AND revoked_at IS NULL ORDER BY created_at DESC, id LIMIT ?`)
+    .prepare(`SELECT s.id, s.label, s.created_at AS createdAt, s.last_used_at AS lastUsedAt
+      ${includeCreator ? ', m.name AS creator' : ''} FROM share_links s
+      ${includeCreator ? 'JOIN members m ON m.id = s.created_by' : ''}
+      WHERE s.artefact_id = ? AND s.revoked_at IS NULL ORDER BY s.created_at DESC, s.id LIMIT ?`)
     .bind(artefactId, maxActiveShareLinks)
-    .all<{ id: string; label: string | null; createdAt: number; lastUsedAt: number | null }>()
+    .all<{
+      id: string
+      label: string | null
+      createdAt: number
+      lastUsedAt: number | null
+      creator?: string
+    }>()
   return results
 }
 

@@ -138,6 +138,45 @@ const style = `
   .forge-empty { color: var(--forge-muted) }
   .forge-link-list { display: grid; gap: var(--forge-space) }
   :where(.forge-panel--sign-in .forge-link-list, .forge-panel--invite .forge-link-list) { padding: 0; list-style: none }
+  .forge-breadcrumb { display: flex; flex-wrap: wrap; align-items: center; gap: 0 var(--forge-space); margin-block-end: var(--forge-space); color: var(--forge-muted); font-size: var(--forge-text-small) }
+  :where(.forge-breadcrumb) > a { display: inline-flex; align-items: center; min-block-size: var(--forge-control-height) }
+  .forge-detail { display: grid; grid-template-columns: minmax(0, 1fr) minmax(17rem, 30%); gap: calc(3 * var(--forge-space)); margin-block-start: calc(3 * var(--forge-space)) }
+  .forge-detail__main:only-child { grid-column: 1 / -1 }
+  .forge-detail__aside { display: grid; align-content: start; gap: calc(2 * var(--forge-space)) }
+  .forge-detail__meta { color: var(--forge-muted); font-size: var(--forge-text-small) }
+  .forge-detail__meta:where(div), .forge-detail__actions { display: flex; flex-wrap: wrap; align-items: center; gap: var(--forge-space) }
+  :where(div.forge-detail__meta) { margin-block-end: var(--forge-space) }
+  .forge-detail__preview { display: block; width: 100%; height: auto; aspect-ratio: 16 / 9; object-fit: contain; background: var(--forge-surface); border: 1px solid var(--forge-hairline); border-radius: var(--forge-radius) }
+  :where(.forge-detail__main .forge-table td) { overflow-wrap: anywhere }
+  :where(.forge-detail__main .forge-table td > a) { display: inline-flex; align-items: center; min-block-size: var(--forge-control-height); max-inline-size: 100%; vertical-align: middle }
+  :where(.forge-detail__main > p > a) { display: inline-flex; align-items: center; min-block-size: var(--forge-control-height) }
+  .forge-versions, .forge-share-links { display: grid; padding: 0; margin: var(--forge-space) 0; list-style: none }
+  .forge-version { display: flex; flex-wrap: wrap; align-items: start; gap: var(--forge-space); padding: var(--forge-space) 0 var(--forge-space) calc(2 * var(--forge-space)); position: relative; border-inline-start: 1px solid var(--forge-hairline) }
+  :where(.forge-version)::before { content: ''; position: absolute; inset: calc(2 * var(--forge-space)) auto auto -.25rem; width: .5rem; height: .5rem; border-radius: 50%; background: var(--forge-muted) }
+  :where(.forge-version:has(.forge-badge--current))::before { background: var(--forge-accent) }
+  :where(.forge-version) > div { min-width: 0; flex: 1 0 min(100%, 15rem) }
+  :where(.forge-version p, .forge-share-links p) { margin-block: calc(.5 * var(--forge-space)) }
+  :where(.forge-version summary, .forge-panel-card summary) { cursor: pointer; min-block-size: var(--forge-control-height); padding-block: var(--forge-space) }
+  .forge-panel-card { min-width: 0; padding: calc(2 * var(--forge-space)); border: 1px solid var(--forge-hairline); border-radius: var(--forge-radius); background: var(--forge-surface) }
+  :where(.forge-panel-card) > h2 { margin-block: 0 var(--forge-space) }
+  :where(.forge-panel-card) > p { margin-block: var(--forge-space); color: var(--forge-muted) }
+  :where(.forge-panel-card .forge-action) > label { flex: 1 0 100% }
+  :where(.forge-share-links) > li { padding-block: var(--forge-space); border-block-start: 1px solid var(--forge-hairline) }
+  .forge-access__options { display: grid; gap: var(--forge-space); min-inline-size: 0; flex: 1 0 100%; border: 0; padding: 0; margin: 0 }
+  :where(.forge-access__options) > label { display: flex; flex-direction: row; align-items: start; gap: var(--forge-space); min-block-size: var(--forge-control-height); padding: var(--forge-space); border: 1px solid var(--forge-hairline); border-radius: var(--forge-radius); cursor: pointer }
+  :where(.forge-access__options) > label:where(:has(:checked)) { border-color: var(--forge-link) }
+  :where(.forge-access__options) input[type="radio"] { flex: none; min-block-size: 0; margin: .25em 0; accent-color: var(--forge-accent) }
+  :where(.forge-access__options) small { display: block; font: inherit; color: var(--forge-muted) }
+  @supports selector(:popover-open) and selector(:has(*)) {
+    :where(.forge-access:not(:has(input[type="radio"][value="private"]:checked)) > div) > .forge-button[popovertarget],
+    :where(.forge-access:has(> div > button[popovertarget]):has(input[type="radio"][value="private"]:checked) > form) > .forge-button { display: none }
+  }
+  @media (prefers-color-scheme: dark) {
+    :where(.forge-detail__aside .forge-sheet)::backdrop { background: color-mix(in srgb, var(--forge-page) 72%, transparent) }
+  }
+  @media (max-width: 66rem) {
+    .forge-detail { grid-template-columns: minmax(0, 1fr) }
+  }
   @media (max-width: 45rem) {
     .forge-shell { display: block }
     .forge-tray { border-inline-end: 0; border-bottom: 1px solid var(--forge-hairline); padding: calc(2 * var(--forge-space)); gap: var(--forge-space) }

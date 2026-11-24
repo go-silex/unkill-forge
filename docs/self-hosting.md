@@ -222,6 +222,13 @@ These classes and the custom properties above are the supported theme contract. 
 | `.forge-panel`, `.forge-panel__header`, `.forge-panel__body`                                      | Single-panel layout, shared brand header, and body                                                         |
 | `.forge-panel--sign-in`, `.forge-panel--invite`, `.forge-panel--consent`, `.forge-panel--handoff` | Manage sign-in, invitation, consent, and read-session relay panels                                         |
 | `.forge-panel--landing`, `.forge-panel--pending`, `.forge-panel--error`                           | Read landing, approval-pending, and error panels (including missing files and handoff retry)               |
+| `.forge-breadcrumb`                                                                               | Artefact detail breadcrumb                                                                                 |
+| `.forge-detail`, `.forge-detail__main`, `.forge-detail__aside`                                    | Detail grid, files and versions column, and role-gated settings column                                     |
+| `.forge-detail__meta`, `.forge-detail__actions`, `.forge-detail__preview`                         | Detail metadata, action groups, and catalogue cover                                                        |
+| `.forge-badge--entry`                                                                             | Marks the entry page in the file table                                                                     |
+| `.forge-versions`, `.forge-version`                                                               | Ordered timeline and individual version entries                                                            |
+| `.forge-panel-card`, `.forge-share-links`                                                         | Detail settings card and active share link list                                                            |
+| `.forge-access`, `.forge-access__options`                                                         | Access form and confirmation wrapper, and radio options                                                    |
 | `.forge-table-scroll`, `.forge-table`                                                             | Horizontal scroll container and dense data table                                                           |
 | `.forge-col--secondary`                                                                           | Marks both the heading and its data cells as secondary metadata; hidden by default at widths up to `45rem` |
 | `.forge-col--folded`, `.forge-fold`                                                               | Paired original column (heading and cells) and folded copies inside the primary cell                       |
@@ -242,7 +249,9 @@ Confirmation sheets use the native `popover` attribute without JavaScript (Chrom
 
 On narrow screens, opening the native drawer pushes the page down. Keep row identifiers and actions visible when hiding secondary table metadata. Dense table buttons use the compact height only when the primary pointer is fine and no coarse pointer is available.
 
-Artefact shares fold both timestamps, personal tokens fold last use and revocation, members fold email, provider and role, and deleted artefacts fold slug, deletion time and state. At widths up to `45rem`, the built-in stylesheet displays `.forge-fold` and hides `.forge-col--folded` with `display: none`. On wider screens and without CSS, the columns are visible and the folded copies stay `hidden`. Preserve this swap when styling folds so each value is visible and exposed to assistive technology only once.
+Personal tokens fold last use and revocation, members fold email, provider and role, and deleted artefacts fold slug, deletion time and state. At widths up to `45rem`, the built-in stylesheet displays `.forge-fold` and hides `.forge-col--folded` with `display: none`. On wider screens and without CSS, the columns are visible and the folded copies stay `hidden`. Preserve this swap when styling folds so each value is visible and exposed to assistive technology only once.
+
+The Access form uses `:has()` and native popovers to swap Save for a confirmation opener when Private is selected and active links exist. Preserve access to that confirmation when customizing the controls; the server also refuses an unconfirmed or stale number of revocations.
 
 ## Upgrades, maintenance and backups
 

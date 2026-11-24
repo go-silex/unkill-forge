@@ -105,7 +105,7 @@ export function pageLink(href: string, label: string) {
   )
 }
 
-function CopyButton({ labels }: { labels: CopyLabels }) {
+export function CopyButton({ labels }: { labels: CopyLabels }) {
   return (
     <button
       class="forge-button"
@@ -161,7 +161,13 @@ const navGroups = [
 
 const roleRank = { viewer: 0, publisher: 1, admin: 2 }
 
-export function Badge({ variant, children }: { variant: CatalogueAccess | 'current'; children: Child }) {
+export function Badge({
+  variant,
+  children,
+}: {
+  variant: CatalogueAccess | 'current' | 'entry'
+  children: Child
+}) {
   return <span class={`forge-badge forge-badge--${variant}`}>{children}</span>
 }
 
@@ -213,6 +219,7 @@ export function Page({
   member,
   path,
   panel,
+  beforeTitle,
   children,
 }: {
   config: Config
@@ -220,6 +227,7 @@ export function Page({
   member?: Member
   path?: string
   panel?: 'sign-in' | 'invite' | 'consent'
+  beforeTitle?: Child
   children: Child
 }) {
   const t = messages(config)
@@ -277,6 +285,7 @@ export function Page({
               <div class="forge-tray__sections">{navigation}</div>
             </header>
             <main class="forge-content">
+              {beforeTitle}
               {heading}
               {children}
             </main>
@@ -390,13 +399,19 @@ async function navigationFlash(c: UiContext, session: BrowserSession) {
   return takeUiFlash(c.env, session, id, query.length ? `${pathname}?${query.join('&')}` : pathname)
 }
 
-export async function page(c: UiContext, session: BrowserSession, title: string, children: Child) {
+export async function page(
+  c: UiContext,
+  session: BrowserSession,
+  title: string,
+  children: Child,
+  beforeTitle?: Child,
+) {
   const { config } = c.env
   const t = messages(config)
   const notice = await navigationFlash(c, session)
   const secret = notice?.secret
   return c.html(
-    <Page config={config} title={title} member={session.member} path={c.req.path}>
+    <Page config={config} title={title} member={session.member} path={c.req.path} beforeTitle={beforeTitle}>
       {notice && (
         <aside
           class="forge-notice"
