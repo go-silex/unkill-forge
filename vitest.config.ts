@@ -1,4 +1,4 @@
-import { cloudflareTest, readD1Migrations } from '@cloudflare/vitest-pool-workers'
+import { cloudflareTest, readD1Migrations } from '@cloudflare/vitest-plugin'
 import { defineConfig } from 'vitest/config'
 
 export default defineConfig({
@@ -14,16 +14,6 @@ export default defineConfig({
         bindings: { TEST_MIGRATIONS: await readD1Migrations('./migrations') },
       },
     }),
-    {
-      name: 'native-istanbul-provider',
-      enforce: 'post',
-      config(config) {
-        // The pool inlines all dependencies for workerd. The provider's host-only
-        // module must keep Node's native CJS interop for its Babel imports.
-        const deps = config.test?.server?.deps
-        if (deps) deps.inline = [/^(?!.*\/@vitest\/coverage-istanbul\/dist\/provider\.js$)/]
-      },
-    },
   ],
   test: {
     coverage: {

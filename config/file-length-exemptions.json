@@ -5,7 +5,7 @@
   "src/i18n.ts": 663,
   "src/manage/login/index.ts": 395,
   "src/manage/login/providers.ts": 372,
-  "src/manage/mcp/index.ts": 396,
+  "src/manage/mcp/index.ts": 400,
   "src/manage/oauth/index.ts": 305,
   "src/manage/ui/admin-pages.tsx": 1087,
   "src/manage/ui/index.tsx": 749,
