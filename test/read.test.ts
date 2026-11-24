@@ -237,6 +237,7 @@ it('themes Forge-authored errors without altering served artefacts, redirects or
   const body = await revoked.text()
   expect(body).toContain('href="/_theme/theme.css"')
   expect(body).toContain('Published Work</div>')
+  expect(body).toContain('forge-panel--error')
   expect(body).toBe(await neverExisted.text())
 })
 
@@ -350,7 +351,9 @@ it('distinguishes anonymous, pending, viewer, publisher and removed canonical re
   await acquire(pendingRead, pendingManage)
   const pending = await pendingRead.request(privateUrl)
   expect(pending.status).toBe(200)
-  expect(await pending.text()).toContain('Pending access')
+  const pendingPage = await pending.text()
+  expect(pendingPage).toContain('forge-panel--pending')
+  expect(pendingPage).not.toContain('forge-card-account')
   const pendingMissing = await pendingRead.request(`${privateUrl}missing`)
   expect(pendingMissing.status).toBe(200)
   expect(await pendingMissing.text()).toContain('Pending access')

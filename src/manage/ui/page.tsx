@@ -249,12 +249,11 @@ export function Table({ columns, children }: { columns: TableColumn[]; children:
   )
 }
 
-export function Page({
+function Page({
   config,
   title,
   member,
   path,
-  panel,
   beforeTitle,
   lead,
   actions,
@@ -262,14 +261,13 @@ export function Page({
 }: {
   config: Config
   title: string
-  member?: Member
+  member: Member
   path?: string
-  panel?: 'sign-in' | 'invite' | 'consent'
   beforeTitle?: Child
   children: Child
 } & PageHead) {
   const t = messages(config)
-  const navigation = member && (
+  const navigation = (
     <>
       {member.status === 'active' && (
         <nav class="forge-nav" aria-label={t.navigation}>
@@ -322,35 +320,23 @@ export function Page({
     <html lang={config.locale}>
       <DocumentHead config={config} title={`${title} · ${config.name}`} />
       <body>
-        {member ? (
-          <div class="forge-shell">
-            <header class="forge-tray">
-              <div class="forge-bar">
-                <BrandBlock config={config} variant="home-link" />
-                <details class="forge-drawer">
-                  <summary class="forge-menu forge-button">{t.menu}</summary>
-                  <div class="forge-drawer__panel">{navigation}</div>
-                </details>
-              </div>
-              <div class="forge-tray__sections">{navigation}</div>
-            </header>
-            <main class="forge-content">
-              {beforeTitle}
-              {heading}
-              {children}
-            </main>
-          </div>
-        ) : (
-          <div class={`forge-panel${panel ? ` forge-panel--${panel}` : ''}`}>
-            <header class="forge-panel__header">
+        <div class="forge-shell">
+          <header class="forge-tray">
+            <div class="forge-bar">
               <BrandBlock config={config} variant="home-link" />
-            </header>
-            <main class="forge-panel__body">
-              {heading}
-              {children}
-            </main>
-          </div>
-        )}
+              <details class="forge-drawer">
+                <summary class="forge-menu forge-button">{t.menu}</summary>
+                <div class="forge-drawer__panel">{navigation}</div>
+              </details>
+            </div>
+            <div class="forge-tray__sections">{navigation}</div>
+          </header>
+          <main class="forge-content">
+            {beforeTitle}
+            {heading}
+            {children}
+          </main>
+        </div>
       </body>
     </html>
   )

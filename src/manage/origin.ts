@@ -20,6 +20,12 @@ export function checkManageOrigin(request: Request, path: string, config: Config
   return null
 }
 
+export function manageCsp(fonts: boolean, formTarget?: string): string {
+  const formAction = formTarget ? `; form-action 'self' ${formTarget}` : "; form-action 'self'"
+  const fontSource = fonts ? "; font-src 'self'" : ''
+  return `default-src 'none'; style-src 'self'; img-src 'self'${fontSource}; script-src ${copyScriptSource}; base-uri 'none'; frame-ancestors 'none'${formAction}`
+}
+
 export function manageHeaders(response: Response, formTarget?: string): Response {
   const headers = new Headers(response.headers)
   headers.set('Cache-Control', 'no-store')
@@ -28,11 +34,9 @@ export function manageHeaders(response: Response, formTarget?: string): Response
   if (!headers.has('Referrer-Policy')) headers.set('Referrer-Policy', 'same-origin')
   // Chrome checks the POST redirect against form-action as well as the form target.
   if (!headers.has('Content-Security-Policy')) {
-    const formAction = formTarget ? `; form-action 'self' ${formTarget}` : "; form-action 'self'"
-    const fonts = headers.get('Content-Type')?.startsWith('text/html') ? "; font-src 'self'" : ''
     headers.set(
       'Content-Security-Policy',
-      `default-src 'none'; style-src 'self'; img-src 'self'${fonts}; script-src ${copyScriptSource}; base-uri 'none'; frame-ancestors 'none'${formAction}`,
+      manageCsp(!!headers.get('Content-Type')?.startsWith('text/html'), formTarget),
     )
   }
   return new Response(response.body, { status: response.status, statusText: response.statusText, headers })

@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Use branded, localized cards for sign-in, invitations, access approval, OAuth consent and browser error pages. API protocols and security checks are unchanged.
 - Ask for confirmation before deleting an artefact or starting an irreversible purge. A purge that's already underway can still be continued directly.
 - Copy the MCP endpoint and command or configuration snippets from the Manage connection page.
 - Open the artefact catalogue at the Manage home. Filter by access with catalogue-wide totals, see access badges and versions at a glance, and find sign-out in the navigation account block.

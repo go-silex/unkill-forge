@@ -68,6 +68,22 @@ const style = `
   .forge-panel { width: min(100%, 42rem); margin: clamp(1rem, 8vh, 5rem) auto; padding: 0 calc(2 * var(--forge-space)) }
   .forge-panel__header { margin-bottom: calc(2 * var(--forge-space)) }
   .forge-panel__body { padding: clamp(1rem, 4vw, 2rem); border: 1px solid var(--forge-hairline); border-radius: var(--forge-radius); background: var(--forge-surface); overflow-wrap: anywhere }
+  .forge-panel__note { text-align: center; color: var(--forge-muted); font-size: var(--forge-text-small); overflow-wrap: anywhere }
+  .forge-card-status { margin-block: 0 var(--forge-space); color: var(--forge-muted); font-size: var(--forge-text-small) }
+  .forge-card-actions { display: grid; gap: var(--forge-space); margin-block-start: calc(3 * var(--forge-space)) }
+  :where(.forge-card-actions) > .forge-card-actions { margin-block-start: 0 }
+  :where(.forge-card-actions > .forge-link-list) { display: grid; gap: var(--forge-space); margin: 0 }
+  :where(.forge-panel--pending .forge-lead) + .forge-card-account { margin-block-start: calc(2 * var(--forge-space)) }
+  :where(.forge-card-actions .forge-button) { width: 100%; justify-content: center; text-align: center }
+  .forge-facts { margin-block: calc(2 * var(--forge-space)) 0 }
+  :where(.forge-facts) > div { display: grid; gap: calc(.5 * var(--forge-space)); padding-block: var(--forge-space); border-block-start: 1px solid var(--forge-hairline) }
+  :where(.forge-facts) dd { margin: 0 }
+  .forge-card-account { display: flex; align-items: center; gap: var(--forge-space); padding: var(--forge-space); border: 1px solid var(--forge-hairline); border-radius: var(--forge-radius) }
+  :where(.forge-card-account) small { color: var(--forge-muted); font-size: var(--forge-text-small) }
+  @media (min-width: 32rem) {
+    .forge-card-actions--pair { grid-template-columns: repeat(2, minmax(0, 1fr)) }
+    :where(.forge-facts) > div { grid-template-columns: minmax(0, 1fr) minmax(0, 2fr); gap: var(--forge-space) }
+  }
   .forge-panel.forge-panel--gallery { width: 100% }
   .forge-panel--gallery > :is(.forge-panel__header, .forge-panel__body) { width: min(100%, 76rem); margin-inline: auto }
   .forge-panel--gallery .forge-panel__header { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: var(--forge-space); overflow-wrap: anywhere }
@@ -81,6 +97,7 @@ const style = `
   .forge-filters__link:where(:hover, [aria-current="page"]) { color: var(--forge-link); box-shadow: inset 0 -.15em var(--forge-link) }
   .forge-filters__count { padding-inline: calc(.75 * var(--forge-space)); border-radius: 1em; background: var(--forge-surface); font-size: var(--forge-text-small); font-variant-numeric: tabular-nums }
   .forge-badge { display: inline-flex; align-items: center; gap: calc(.5 * var(--forge-space)); padding-inline: var(--forge-space); border: 1px solid var(--forge-hairline); border-radius: 1em; font-size: var(--forge-text-small); white-space: nowrap }
+  :where(.forge-facts) .forge-badge { max-inline-size: 100%; white-space: normal }
   .forge-badge:where(:not(:empty))::before { content: ''; inline-size: .42em; block-size: .42em; border-radius: 50%; background: currentColor }
   .forge-badge--private { color: var(--forge-muted) }
   .forge-badge--shared, .forge-badge--current { color: var(--forge-link) }

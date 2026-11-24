@@ -32,6 +32,7 @@ import { shareKeyMax } from '../../core/share-keys'
 import { Gallery, GalleryViews, galleryView } from '../../gallery'
 import { readForm } from '../../http'
 import { type AdminMessage, type AdminTranslate, adminMessages, type CopyLabels, messages } from '../../i18n'
+import { manageError } from '../access'
 import { requireBrowserSession } from '../login'
 import { localClientPath } from '../oauth'
 import {
@@ -132,9 +133,15 @@ function browser(minimum: Role, handler: BrowserHandler) {
       return await handler(c, { ...session, member: actor }, actor, t)
     } catch (error) {
       if (!(error instanceof ArtefactError)) throw error
-      if (error.code === 'forbidden') return c.text(t(error.code), 403)
-      if (error.code === 'not_found') return c.text(t(error.code), 404)
-      return c.text(t(error.code), error.code === 'conflict' ? 409 : 400)
+      const status =
+        error.code === 'forbidden'
+          ? 403
+          : error.code === 'not_found'
+            ? 404
+            : error.code === 'conflict'
+              ? 409
+              : 400
+      return manageError(c.env.config, status, t(error.code), { home: '/artefacts' })
     }
   }
 }
@@ -149,9 +156,9 @@ async function runAction<S extends z.ZodType>(
   missingPath = path,
 ) {
   const form = await readForm(c.req.raw)
-  if (!form) return c.text(t('malformed'), 400)
+  if (!form) return manageError(c.env.config, 400, t('malformed'), { home: '/artefacts' })
   const parsed = schema.safeParse(Object.fromEntries(form))
-  if (!parsed.success) return c.text(t('malformed'), 400)
+  if (!parsed.success) return manageError(c.env.config, 400, t('malformed'), { home: '/artefacts' })
   let result: ActionResult
   try {
     result = await run(parsed.data)
@@ -188,7 +195,8 @@ adminPages.get(
     const q = c.req.query('q') ?? ''
     const rawVisibility = c.req.query('visibility')
     const filter = access.safeParse(rawVisibility)
-    if (rawVisibility && !filter.success) return c.text(t('malformed'), 400)
+    if (rawVisibility && !filter.success)
+      return manageError(c.env.config, 400, t('malformed'), { home: '/artefacts' })
     const selected = filter.data
     const cursor = c.req.query('cursor')
     const [{ artefacts, nextCursor }, counts] = await Promise.all([
@@ -332,7 +340,7 @@ adminPages.get(
   '/artefacts/:slug',
   browser('viewer', async (c, session, actor, t) => {
     const slugValue = slug.safeParse(c.req.param('slug'))
-    if (!slugValue.success) return c.text(t('not_found'), 404)
+    if (!slugValue.success) return manageError(c.env.config, 404, t('not_found'), { home: '/artefacts' })
     const currentSlug = slugValue.data
     const path = detailPath(currentSlug)
     const fileCursor = c.req.query('files')
@@ -627,7 +635,7 @@ adminPages.post(
   '/artefacts/:slug',
   browser('publisher', async (c, session, actor, t) => {
     const slugValue = slug.safeParse(c.req.param('slug'))
-    if (!slugValue.success) return c.text(t('malformed'), 400)
+    if (!slugValue.success) return manageError(c.env.config, 400, t('malformed'), { home: '/artefacts' })
     const currentSlug = slugValue.data
     return runAction(
       c,

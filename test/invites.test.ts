@@ -73,6 +73,7 @@ async function openInvite(browser: Browser, link: string) {
   const page = await browser.request(landing)
   expect(page.status).toBe(200)
   const html = await page.text()
+  expect(html).toContain('accept your invitation')
   expect(html).not.toContain(token)
   const href = /href="(\/login\/team\?invite=[\w-]{43})"/.exec(html)?.[1]
   if (!href) throw new Error('No token-free provider link was shown')
@@ -156,7 +157,10 @@ it('admits only one of two concurrent invite callbacks and shows the URL only at
     `<div class="forge-account"><span class="forge-account__name">${winner === first ? 'first' : 'second'}-invitee</span><span class="forge-account__role">publisher</span>`,
   )
   expect(await homes.find((home) => home.status === 200)?.text()).toContain('Pending access')
-  expect((await send(link)).status).toBe(404)
+  const used = await send(link)
+  const unknown = await send(`/invite/${'a'.repeat(43)}`)
+  expect(used.status).toBe(404)
+  expect(await used.text()).toBe(await unknown.text())
   expect(await (await owner.request(members)).text()).not.toContain('revoke-invite')
   const audit = (
     await DB.prepare(
@@ -207,7 +211,13 @@ it('lists and claims invites using D1 time and can revoke an expired unused invi
   const expired = await send(link)
   const unknown = await send(`/invite/${'a'.repeat(43)}`)
   expect(expired.status).toBe(404)
-  expect(await expired.text()).toBe(await unknown.text())
+  expect(unknown.status).toBe(404)
+  expect(expired.headers.get('Referrer-Policy')).toBe('no-referrer')
+  expect(expired.headers.get('Cache-Control')).toBe('no-store')
+  const page = await expired.text()
+  expect(page).toContain('forge-panel--invite')
+  expect(page).not.toContain(link.split('/').at(-1))
+  expect(page).toBe(await unknown.text())
   // List and callback must ignore a Worker clock that still considers this invite valid.
   const workerTime = Date.now() - 5_000
   const clock = vi.spyOn(Date, 'now').mockReturnValue(workerTime)

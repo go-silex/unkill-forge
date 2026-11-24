@@ -1953,7 +1953,6 @@ it.each(['en', 'fr'] as const)(
       `<a href="/artefacts?visibility=private">${grid}</a><a href="/artefacts?visibility=private&amp;view=list" aria-current="page">${list}</a>`,
     )
     const invalidInvite = await html(anonymous, '/invite/invalid', 404)
-    expect(invalidInvite).toContain(french ? 'Invitation invalide ou expirée' : 'Invite invalid or expired')
     expect(invalidInvite).toContain('forge-panel--invite')
     expect(invalidInvite).toContain('Ember &amp; Co</a>')
     const connection = await owner.request('/connect')
@@ -2038,7 +2037,7 @@ it.each(['en', 'fr'] as const)(
     const missingUrl = `${read}/a/${slug}/missing.html`
     const notFound = await html(anonymous, missingUrl, 404)
     expect(notFound).toContain(`lang="${locale}"`)
-    expect(notFound).toContain(french ? '<title>Page introuvable</title>' : '<title>Not found</title>')
+    expect(notFound).toContain('forge-panel--error')
     expect(notFound).toContain('Ember &amp; Co</div>')
     await post(owner, detail, { action: 'visibility', visibility: 'private', ...identity })
     const unavailable = runtime({
@@ -2058,8 +2057,12 @@ it.each(['en', 'fr'] as const)(
     expect(failed.status).toBe(503)
     const errorPage = await failed.text()
     expect(errorPage).toContain(`lang="${locale}"`)
-    expect(errorPage).toContain(
-      french ? '<title>Forge est indisponible</title>' : '<title>Forge is unavailable</title>',
+    expect(errorPage).toContain('forge-panel--error')
+    expect(failed.headers.get('Content-Type')).toBe('text/html; charset=utf-8')
+    expect(failed.headers.get('Cache-Control')).toBe('private, no-store')
+    expect(failed.headers.get('Referrer-Policy')).toBe('same-origin')
+    expect(failed.headers.get('Content-Security-Policy')).toBe(
+      "default-src 'none'; style-src 'self'; img-src 'self'; font-src 'self'; base-uri 'none'; frame-ancestors 'none'",
     )
 
     const privateUrl = `${read}/a/${slug}/`

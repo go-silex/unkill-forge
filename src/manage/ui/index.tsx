@@ -1,6 +1,8 @@
 import { Hono } from 'hono'
+import { html } from 'hono/html'
 import type { Child } from 'hono/jsx'
 import { z } from 'zod'
+import { AccessCard, CardLink } from '../../access-card'
 import type { Config, Runtime } from '../../config'
 import type { Member, Role } from '../../core'
 import {
@@ -21,9 +23,10 @@ import { countInvites, createInvite, inviteKey, listInvites, revokeInvite } from
 import { adminCountLimit } from '../../core/pagination'
 import { readForm } from '../../http'
 import { messages } from '../../i18n'
+import { manageError, PendingAccess } from '../access'
 import { openInvite, requireBrowserSession, returnPath } from '../login'
 import { adminPages } from './admin-pages'
-import { Action, Avatar, Badge, Fold, flash, Page, page, pageLink, Table, time, type UiContext } from './page'
+import { Action, Avatar, Badge, Fold, flash, page, pageLink, Table, time, type UiContext } from './page'
 
 function withQuery(path: string, params: Record<string, string | undefined>) {
   const query = new URLSearchParams()
@@ -37,9 +40,13 @@ function withQuery(path: string, params: Record<string, string | undefined>) {
 const app = new Hono<{ Bindings: Runtime }>({ getPath: (request) => new URL(request.url).pathname })
 app.onError((error, c) => {
   console.error('Forge UI request failed', error.name)
-  return c.text(messages(c.env.config).unavailable, 503)
+  const { config } = c.env
+  return manageError(config, 503, messages(config).unavailable)
 })
-app.notFound((c) => c.text(messages(c.env.config).notFound, 404))
+app.notFound((c) => {
+  const { config } = c.env
+  return manageError(config, 404, messages(config).access.notFoundLead)
+})
 const roleSchema = z.enum(['viewer', 'publisher', 'admin'])
 const idSchema = z.uuid()
 const labelSchema = z.string().trim().min(1).max(120)
@@ -95,18 +102,28 @@ function RoleSelect({
 }
 
 function SignIn({ config, query }: { config: Config; query: URLSearchParams }) {
+  const t = messages(config)
+  const invite = query.has('invite')
   return (
-    <Page config={config} title={messages(config).signIn} panel={query.has('invite') ? 'invite' : 'sign-in'}>
-      <ul class="forge-link-list">
-        {config.providers.map((provider) => (
-          <li>
-            <a class="forge-button" href={`/login/${provider.id}?${query}`}>
-              {provider.label}
-            </a>
-          </li>
-        ))}
-      </ul>
-    </Page>
+    <AccessCard
+      config={config}
+      variant={invite ? 'invite' : 'sign-in'}
+      title={t.signIn}
+      lead={invite ? t.access.inviteLead : t.access.signInLead}
+      note={t.access.signInNote}
+      homeLink
+      actions={
+        <ul class="forge-link-list">
+          {config.providers.map((provider, index) => (
+            <li>
+              <CardLink href={`/login/${provider.id}?${query}`} primary={index === 0}>
+                {provider.label}
+              </CardLink>
+            </li>
+          ))}
+        </ul>
+      }
+    />
   )
 }
 
@@ -118,21 +135,31 @@ app.get('/login', (c) => {
       ? { invite: context }
       : { return: returnPath(c.req.query('return') ?? null, config.manageOrigin) },
   )
-  return c.html(<SignIn config={config} query={query} />)
+  return c.html(html`<!doctype html>${<SignIn config={config} query={query} />}`)
 })
 
 app.get('/invite/:token', async (c) => {
   const redirect = await openInvite(c.env, c.req.param('token'))
   if (redirect) return redirect
   const { config } = c.env
-  const text = messages(config).legacy
+  const t = messages(config)
   c.header('Referrer-Policy', 'no-referrer')
   return c.html(
-    <Page config={config} title={text.invalidInvite} panel="invite">
-      <a class="forge-button" href="/login">
-        {messages(config).signIn}
-      </a>
-    </Page>,
+    html`<!doctype html>${(
+      <AccessCard
+        config={config}
+        variant="invite"
+        title={t.access.invalidInvite}
+        lead={t.access.invalidInviteLead}
+        status={404}
+        homeLink
+        actions={
+          <CardLink href="/login" primary>
+            {t.signIn}
+          </CardLink>
+        }
+      />
+    )}`,
     404,
   )
 })
@@ -141,16 +168,7 @@ app.get('/', async (c) => {
   const session = await requireBrowserSession(c.req.raw, c.env)
   if (session instanceof Response) return session
   if (session.member.status === 'active') return c.redirect('/artefacts', 303)
-  const common = messages(c.env.config)
-  const text = common.legacy
-  return page(
-    c,
-    session,
-    common.pending,
-    <p>
-      {text.signedIn} {session.member.name}. {text.approvalRequired}
-    </p>,
-  )
+  return c.html(html`<!doctype html>${<PendingAccess config={c.env.config} member={session.member} />}`)
 })
 
 async function memberAdmin(c: UiContext) {
@@ -158,7 +176,7 @@ async function memberAdmin(c: UiContext) {
   if (session instanceof Response) return session
   const { config, env } = c.env
   const common = messages(config)
-  if (!isAdmin(session.member)) return c.text(common.forbidden, 403)
+  if (!isAdmin(session.member)) return manageError(config, 403, common.forbidden, { home: '/artefacts' })
   return { session, config, db: env.DB, common, text: common.legacy, actor: session.member.id }
 }
 
@@ -424,7 +442,7 @@ app.post(membersPath, async (c) => {
   const { session, config, db, text, actor } = admin
   const fields = await readForm(c.req.raw)
   const form = memberAction.safeParse(fields ? Object.fromEntries(fields) : null)
-  if (!form.success) return c.text(text.invalidMemberAction, 400)
+  if (!form.success) return manageError(config, 400, text.invalidMemberAction, { home: '/artefacts' })
   const { data } = form
   const now = Date.now()
   if (data.action === 'create-invite') {
@@ -698,7 +716,7 @@ app.post(botsPath, async (c) => {
   } = admin
   const fields = await readForm(c.req.raw)
   const form = botAction.safeParse(fields ? Object.fromEntries(fields) : null)
-  if (!form.success) return c.text(text.invalidBotAction, 400)
+  if (!form.success) return manageError(c.env.config, 400, text.invalidBotAction, { home: '/artefacts' })
   const { data } = form
   const after = idSchema.safeParse(c.req.query('after')).data
   const now = Date.now()

@@ -227,7 +227,10 @@ These classes and the custom properties above are the supported theme contract. 
 | `.forge-page-head`, `.forge-lead`, `.forge-page-actions`                                          | Optional page header, short description and primary actions that wrap below the title on narrow screens    |
 | `.forge-panel`, `.forge-panel__header`, `.forge-panel__body`                                      | Single-panel layout, shared brand header, and body                                                         |
 | `.forge-panel--sign-in`, `.forge-panel--invite`, `.forge-panel--consent`, `.forge-panel--handoff` | Manage sign-in, invitation, consent, and read-session relay panels                                         |
-| `.forge-panel--landing`, `.forge-panel--pending`, `.forge-panel--error`                           | Read landing, approval-pending, and error panels (including missing files and handoff retry)               |
+| `.forge-panel--landing`, `.forge-panel--pending`, `.forge-panel--error`                           | Read landing, approval pending and error panels (the last two are shared across both hosts)                |
+| `.forge-panel__note`, `.forge-card-status`                                                        | Muted footnote below the access card and visible HTTP status inside the card                               |
+| `.forge-card-actions`, `.forge-card-actions--pair`                                                | Full-width stacked actions; the paired form uses two columns where space permits                           |
+| `.forge-facts`, `.forge-card-account`                                                             | Consent facts and signed-in account chip on the approval card                                              |
 | `.forge-breadcrumb`                                                                               | Artefact detail breadcrumb                                                                                 |
 | `.forge-detail`, `.forge-detail__main`, `.forge-detail__aside`                                    | Detail grid, files and versions column, and role-gated settings column                                     |
 | `.forge-detail__meta`, `.forge-detail__actions`, `.forge-detail__preview`                         | Detail metadata, action groups, and catalogue cover                                                        |
@@ -257,6 +260,8 @@ These classes and the custom properties above are the supported theme contract. 
 | `.forge-link-list`                                                                                | Sign-in provider links or public artefact list                                                             |
 
 Form and confirmation sheets use the native `popover` attribute without JavaScript (Chrome 114+, Safari 17+, Firefox 125+). Older browsers show the heading, editable fields or explanation, and submit button inline, and hide the opener and cancel controls that cannot work there. Themes must not set `display` on `.forge-sheet` outside `:popover-open`, or closed sheets may become visible. `.forge-button--danger-solid` fills with `--forge-danger` and uses `--forge-surface` for its label, the reverse of the outlined danger button.
+
+The sign-in panel promotes the first configured identity provider and gives the other providers secondary buttons. Consent uses a paired form with Deny first and Allow second; the buttons stack on narrow screens.
 
 On narrow screens, opening the native drawer pushes the page down. Keep row identifiers and actions visible when hiding secondary table metadata. Dense table buttons use the compact height only when the primary pointer is fine and no coarse pointer is available.
 

@@ -18,6 +18,7 @@ import {
 import { consumeInviteContext, createInviteContext, inviteKey } from '../../core/invites'
 import { formBodyLimit, isDocumentNavigation, readBoundedBody, readCookie, writeCookie } from '../../http'
 import { messages } from '../../i18n'
+import { manageError } from '../access'
 import {
   authorizationEndpoint,
   discover,
@@ -56,6 +57,10 @@ function respond(status: number, body: string | null, location?: string, cookie?
   if (location) headers.set('Location', location)
   if (cookie) headers.append('Set-Cookie', cookie)
   return new Response(body, { status, headers })
+}
+
+function loginError(runtime: Runtime, status: 400 | 401 | 403 | 404 | 503, lead: string, cookie?: string) {
+  return manageError(runtime.config, status, lead, { retry: true, noReferrer: true, cookie })
 }
 
 export async function openInvite(runtime: Runtime, token: string): Promise<Response | null> {
@@ -152,23 +157,24 @@ async function callback(
   const text = messages(runtime.config).login
   const state = params.get('state')
   const browser = readOpaqueCookie(req, flowCookie)
-  if (!state || params.getAll('state').length !== 1 || !browser) return respond(400, text.invalidFlow)
+  if (!state || params.getAll('state').length !== 1 || !browser)
+    return loginError(runtime, 400, text.invalidFlow)
 
   const now = Date.now()
   const [stateHash, browserHash] = await Promise.all([hashSecret(state), hashSecret(browser)])
   const db = runtime.env.DB
   const flow = await consumeFlow(db, { stateHash, browserHash, provider: provider.id, now })
-  if (!flow) return respond(400, text.invalidFlow)
+  if (!flow) return loginError(runtime, 400, text.invalidFlow)
 
   let previous: BrowserSession | null = null
   if (flow.sessionHash !== null) {
     const session = readOpaqueCookie(req, sessionCookie)
     if (!session || provider.type !== 'oidc' || (await hashSecret(session)) !== flow.sessionHash) {
-      return respond(401, text.invalidSession)
+      return loginError(runtime, 401, text.invalidSession)
     }
     previous = await readSession(db, flow.sessionHash, now)
     if (!previous || previous.provider !== provider.id) {
-      return respond(401, text.invalidSession)
+      return loginError(runtime, 401, text.invalidSession)
     }
   }
 
@@ -202,7 +208,7 @@ async function callback(
       console.warn('Sign-in refused', provider.id, error.constructor.name, error.message)
     }
     if (error instanceof IdentityDenied || error instanceof SessionDenied) {
-      if (!previous) return respond(401, text.loginRefused)
+      if (!previous) return loginError(runtime, 401, text.loginRefused)
       const now = Date.now()
       if (error instanceof IdentityDenied) {
         await recordRevocation(db, {
@@ -215,9 +221,9 @@ async function callback(
       } else {
         await revokeSession(db, previous.idHash, now)
       }
-      return respond(401, text.loginRequired, undefined, writeCookie(sessionCookie, '', 0))
+      return loginError(runtime, 401, text.loginRequired, writeCookie(sessionCookie, '', 0))
     }
-    if (error instanceof InvalidProviderResponse) return respond(401, text.loginRefused)
+    if (error instanceof InvalidProviderResponse) return loginError(runtime, 401, text.loginRefused)
     throw error
   }
 
@@ -237,9 +243,9 @@ async function callback(
       const current = await readSession(db, previous.idHash, Date.now())
       if (current) {
         if (current.validatedAt >= flow.createdAt) return respond(302, null, path)
-        return respond(401, text.invalidSession)
+        return loginError(runtime, 401, text.invalidSession)
       }
-      return respond(401, text.invalidSession, undefined, writeCookie(sessionCookie, '', 0))
+      return loginError(runtime, 401, text.invalidSession, writeCookie(sessionCookie, '', 0))
     }
     return respond(302, null, path)
   }
@@ -256,7 +262,7 @@ async function callback(
       provider.autoJoinRole !== undefined && { autoJoinRole: provider.autoJoinRole }),
     now: validatedAt,
   })
-  if (member.status === 'removed') return respond(403, text.loginRefused)
+  if (member.status === 'removed') return loginError(runtime, 403, text.loginRefused)
   const session = randomSecret()
   const cap = provider.sessionMaxHours * 3_600_000
   if (
@@ -274,7 +280,7 @@ async function callback(
       flowGeneration: flow.generation,
     }))
   )
-    return respond(401, text.loginRefused)
+    return loginError(runtime, 401, text.loginRefused)
   const priorCookie = readOpaqueCookie(req, sessionCookie)
   if (priorCookie) await revokeSession(db, await hashSecret(priorCookie), validatedAt)
   return respond(302, null, path, writeCookie(sessionCookie, session, Math.floor(cap / 1_000)))
@@ -325,16 +331,28 @@ export async function loginRoute(req: Request, runtime: Runtime): Promise<Respon
   const [, encodedId, action] =
     /^\/login\/([^/]+)(?:\/(callback|backchannel-logout))?$/.exec(url.pathname) ?? []
   const backchannelRequest = action === 'backchannel-logout'
-  const notFound = backchannelRequest ? 'Not found' : messages(runtime.config).notFound
-  if (!encodedId) return respond(404, notFound)
+  const notFound = () => {
+    const lead = backchannelRequest ? 'Not found' : messages(runtime.config).notFound
+    if (req.method === 'HEAD')
+      return new Response(null, {
+        status: 404,
+        headers: {
+          'Cache-Control': 'no-store',
+          'Referrer-Policy': 'no-referrer',
+          'Content-Type': 'text/plain;charset=UTF-8',
+        },
+      })
+    return !backchannelRequest && req.method === 'GET' ? loginError(runtime, 404, lead) : respond(404, lead)
+  }
+  if (!encodedId) return notFound()
   let id: string
   try {
     id = decodeURIComponent(encodedId)
   } catch {
-    return respond(404, notFound)
+    return notFound()
   }
   const provider = runtime.config.providers.find((entry) => entry.id === id)
-  if (!provider) return respond(404, notFound)
+  if (!provider) return notFound()
 
   try {
     if (req.method === 'GET' && !action) {
@@ -353,11 +371,13 @@ export async function loginRoute(req: Request, runtime: Runtime): Promise<Respon
       return await callback(req, runtime, provider, url.searchParams)
     if (req.method === 'POST' && action === 'backchannel-logout')
       return await backchannel(req, runtime, provider)
-    return respond(404, notFound)
+    return notFound()
   } catch (error) {
     if (error instanceof ProviderUnavailable) {
       const { login } = messages(backchannelRequest ? { locale: 'en' } : runtime.config)
-      return respond(503, login.providerUnavailable)
+      return backchannelRequest
+        ? respond(503, login.providerUnavailable)
+        : loginError(runtime, 503, login.providerUnavailable)
     }
     throw error
   }
@@ -389,7 +409,7 @@ export async function requireBrowserSession(
   try {
     return await start(req, runtime, provider, path, current)
   } catch (error) {
-    if (error instanceof ProviderUnavailable) return respond(503, text.providerUnavailable)
+    if (error instanceof ProviderUnavailable) return loginError(runtime, 503, text.providerUnavailable)
     throw error
   }
 }

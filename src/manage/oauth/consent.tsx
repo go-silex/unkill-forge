@@ -4,13 +4,15 @@ import {
   CimdFetchError,
   type OAuthHelpers,
 } from '@cloudflare/workers-oauth-provider'
+import { AccessCard } from '../../access-card'
 import type { Runtime } from '../../config'
 import { consumeConsent, type Grant, hashSecret, putConsent, randomSecret, readSession } from '../../core'
 import { readForm } from '../../http'
 import { messages } from '../../i18n'
+import { manageAccessResponse, manageError, PendingAccess } from '../access'
 import { requireBrowserSession } from '../login'
 import { manageHeaders } from '../origin'
-import { Page } from '../ui/page'
+import { Badge } from '../ui/page'
 
 export async function authorize(
   request: Request,
@@ -21,11 +23,15 @@ export async function authorize(
   const common = messages(runtime.config)
   const text = common.consent
   if (request.method !== 'GET' && request.method !== 'POST') {
-    return new Response(text.methodNotAllowed, { status: 405, headers: { Allow: 'GET, POST' } })
+    return new Response(request.method === 'HEAD' ? null : text.methodNotAllowed, {
+      status: 405,
+      headers: { Allow: 'GET, POST', 'Content-Type': 'text/plain;charset=UTF-8' },
+    })
   }
   const session = await requireBrowserSession(request, runtime)
   if (session instanceof Response) return session
-  if (session.member.status !== 'active') return new Response(common.pending, { status: 403 })
+  if (session.member.status !== 'active')
+    return manageAccessResponse(<PendingAccess config={runtime.config} member={session.member} />, 403)
   const {
     config,
     env: { DB },
@@ -47,35 +53,51 @@ export async function authorize(
       const token = randomSecret()
       await putConsent(DB, await hashSecret(token), session.idHash, request.url, Date.now())
       const page = (
-        <Page config={config} title={common.connect} panel="consent">
-          {consent.clientDomain && !local ? (
-            <p>
-              {text.verified} <strong>{consent.clientDomain}</strong>
-            </p>
-          ) : (
-            <p>{local ? text.unverifiedLocal : text.unverified}</p>
-          )}
-          <p>
-            {text.client} {local ? text.localClient : consent.clientName}
-          </p>
-          <p>
-            {text.destination}{' '}
-            <strong>{consent.redirectIsLoopback ? redirect.host : consent.redirectHost}</strong>
-          </p>
-          {consent.redirectIsLoopback && <p>{text.loopback}</p>}
-          <p>
-            {text.actingAs} {session.member.name} ({common.roles[session.member.role]}).
-          </p>
-          <form class="forge-action" method="post" action="/authorize">
-            <input type="hidden" name="consent" value={token} />
-            <button class="forge-button forge-button--primary" type="submit" name="decision" value="approve">
-              {text.allow}
-            </button>
-            <button class="forge-button" type="submit" name="decision" value="deny">
-              {text.deny}
-            </button>
-          </form>
-        </Page>
+        <AccessCard
+          config={config}
+          variant="consent"
+          title={text.title(config.name)}
+          lead={text.lead}
+          note={text.note}
+          homeLink
+          facts={[
+            [text.client, local ? text.localClient : consent.clientName],
+            [
+              text.domain,
+              consent.clientDomain && !local ? (
+                <>
+                  <code>{consent.clientDomain}</code> <Badge variant="ok">{text.verified}</Badge>
+                </>
+              ) : (
+                <Badge variant="warn">{local ? text.unverifiedLocal : text.unverified}</Badge>
+              ),
+            ],
+            [
+              text.destination,
+              <>
+                <code>{consent.redirectIsLoopback ? redirect.host : consent.redirectHost}</code>
+                {consent.redirectIsLoopback && <p>{text.loopback}</p>}
+              </>,
+            ],
+            [text.actingAs, `${session.member.name} (${common.roles[session.member.role]})`],
+          ]}
+          actions={
+            <form class="forge-card-actions forge-card-actions--pair" method="post" action="/authorize">
+              <input type="hidden" name="consent" value={token} />
+              <button class="forge-button" type="submit" name="decision" value="deny">
+                {text.deny}
+              </button>
+              <button
+                class="forge-button forge-button--primary"
+                type="submit"
+                name="decision"
+                value="approve"
+              >
+                {text.allow}
+              </button>
+            </form>
+          }
+        />
       )
       const target =
         redirect.protocol === 'https:' || redirect.protocol === 'http:' ? redirect.origin : redirect.protocol
@@ -87,7 +109,7 @@ export async function authorize(
       )
     }
     const form = await readForm(request)
-    if (!form) return new Response(text.invalidForm, { status: 400 })
+    if (!form) return manageError(config, 400, text.invalidForm, { home: '/artefacts' })
     const token = form.get('consent')
     const decision = form.get('decision')
     if (
@@ -95,10 +117,10 @@ export async function authorize(
       !/^[A-Za-z0-9_-]{43}$/.test(token) ||
       (decision !== 'approve' && decision !== 'deny')
     ) {
-      return new Response(text.invalidForm, { status: 400 })
+      return manageError(config, 400, text.invalidForm, { home: '/artefacts' })
     }
     const stored = await consumeConsent(DB, await hashSecret(token), session.idHash, Date.now())
-    if (!stored) return new Response(text.expiredConsent, { status: 400 })
+    if (!stored) return manageError(config, 400, text.expiredConsent, { home: '/artefacts' })
     // Reconstruct from the request bound at render time, never from editable form fields.
     const authRequest = await helpers.parseAuthRequest(new Request(stored))
     if (decision === 'deny')
@@ -107,7 +129,8 @@ export async function authorize(
     const current = await readSession(DB, session.idHash, grantedAt)
     // Check after timestamping: a concurrent back-channel event either kills this session
     // before this query, or is new enough to kill the grant on code exchange.
-    if (current?.member.status !== 'active') return new Response(text.signInAgain, { status: 401 })
+    if (current?.member.status !== 'active')
+      return manageError(config, 401, text.signInAgain, { home: '/login' })
     const props: Grant = {
       memberId: current.member.id,
       provider: current.provider,
@@ -133,9 +156,10 @@ export async function authorize(
     if (error instanceof AuthorizationError) {
       return error.redirectTo
         ? Response.redirect(error.redirectTo, 303)
-        : new Response(text.invalidRequest, { status: 400 })
+        : manageError(config, 400, text.invalidRequest, { home: '/artefacts' })
     }
-    if (error instanceof CimdFetchError) return new Response(text.metadataUnavailable, { status: 503 })
+    if (error instanceof CimdFetchError)
+      return manageError(config, 503, text.metadataUnavailable, { home: '/artefacts' })
     throw error
   }
 }

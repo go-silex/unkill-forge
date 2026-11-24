@@ -1,5 +1,6 @@
 import type { Child } from 'hono/jsx'
 import { base64url } from 'jose'
+import { AccessCard, CardLink, ErrorCard } from '../access-card'
 import { forgePageSources } from '../brand'
 import { BrandBlock } from '../brand-block'
 import type { Config, Runtime } from '../config'
@@ -29,17 +30,38 @@ function redirect(location: string, status = 302, cookies: string[] = []) {
 }
 
 function notFound(config: Config, head = false) {
-  return statusPage(config, messages(config).notFound, 404, head)
+  return statusPage(config, messages(config).access.notFoundLead, 404, head)
 }
 
-function statusPage(config: Config, title: string, status: number, head: boolean) {
+function statusPage(config: Config, lead: string, status: 404 | 503, head: boolean) {
+  const t = messages(config)
+  return documentResponse(
+    <ErrorCard
+      config={config}
+      status={status}
+      lead={lead}
+      actions={
+        <>
+          <CardLink href="/" primary>
+            {t.access.home}
+          </CardLink>
+          <CardLink href={new URL('/artefacts', config.manageOrigin).href}>{t.signIn}</CardLink>
+        </>
+      }
+    />,
+    head,
+    status,
+  )
+}
+
+function handoffStatus(config: Config, title: string, status: 404 | 503, head = false) {
   return page(config, title, 'error', <h1 class="forge-title">{title}</h1>, head, status)
 }
 
 function page(
   config: Config,
   title: string,
-  panel: 'landing' | 'pending' | 'error',
+  panel: 'landing' | 'error',
   children: Child,
   head: boolean,
   status = 200,
@@ -60,6 +82,10 @@ function page(
       </body>
     </html>
   )
+  return documentResponse(html, head, status)
+}
+
+function documentResponse(html: Child, head: boolean, status = 200) {
   const headers = readHeaders()
   headers.set('Content-Type', 'text/html; charset=utf-8')
   headers.set(
@@ -87,7 +113,7 @@ async function startHandoff(request: Request, url: URL, runtime: Runtime) {
 async function completeHandoff(request: Request, runtime: Runtime) {
   const { config } = runtime
   if (request.headers.get('Content-Type')?.split(';', 1)[0].trim() !== 'application/x-www-form-urlencoded') {
-    return notFound(config)
+    return handoffStatus(config, messages(config).notFound, 404)
   }
   const body = await readBoundedBody(request, handoffBodyLimit)
   if (body === null) return new Response(null, { status: 413, headers: readHeaders() })
@@ -99,7 +125,7 @@ async function completeHandoff(request: Request, runtime: Runtime) {
     fields.get('nonce'),
     readCookie(request, stateCookie),
   )
-  if (!result) return notFound(config)
+  if (!result) return handoffStatus(config, messages(config).notFound, 404)
   if (result.kind === 'retry') {
     const path = readReturnPath(fields.get('return'), config.readOrigin)
     const text = messages(config).read
@@ -131,9 +157,11 @@ export async function read(
   const head = request.method === 'HEAD'
   const { config } = runtime
   const common = messages(config)
-  const text = common.read
   try {
-    if (request.method === 'POST' && url.pathname === callback) return await completeHandoff(request, runtime)
+    if (url.pathname === callback) {
+      if (request.method === 'POST') return await completeHandoff(request, runtime)
+      return handoffStatus(config, common.notFound, 404, head)
+    }
     if (request.method !== 'GET' && !head) return notFound(config)
     let decision: Awaited<ReturnType<typeof canonicalRead> | ReturnType<typeof shareRead>> | undefined
     if (url.pathname.startsWith('/s/')) {
@@ -165,14 +193,19 @@ export async function read(
         if (isDocumentNavigation(request)) return await startHandoff(request, url, runtime)
         return new Response(null, { status: 401, headers: readHeaders() })
       case 'pending':
-        return page(
-          config,
-          `${common.pending} — ${config.name}`,
-          'pending',
-          <>
-            <h1 class="forge-title">{common.pending}</h1>
-            <p>{text.askAdmin}</p>
-          </>,
+        return documentResponse(
+          <AccessCard
+            config={config}
+            variant="pending"
+            title={common.pending}
+            lead={common.legacy.approvalRequired}
+            note={common.access.pendingNote}
+            actions={
+              <CardLink href={config.manageOrigin} primary>
+                {common.access.account}
+              </CardLink>
+            }
+          />,
           head,
         )
       case 'not-found':
@@ -231,6 +264,8 @@ export async function read(
     return notFound(config, head)
   } catch (error) {
     console.error('Forge read failed', error instanceof Error ? error.name : 'unknown')
+    if (url.pathname === callback && request.method === 'POST')
+      return handoffStatus(config, common.unavailable, 503)
     return statusPage(config, common.unavailable, 503, head)
   }
 }

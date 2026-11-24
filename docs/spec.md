@@ -356,6 +356,8 @@ An invitation is valid for seven days and one admission. Admins choose a role in
 
 Management mutations use a 303 redirect and a one-use flash notice. Consent redirects to the registered OAuth callback, not to a management page. See [manage UI security](security.md#manage-ui-forms-and-one-use-notices) for form, continuation and secret-display boundaries.
 
+Sign-in and invitation entry, pending approval on either host, and OAuth consent use branded HTML cards. An invalid, expired or already-used invite returns the same HTML 404. Manage UI document errors, browser sign-in and callback failures, and local consent errors return HTML cards with their existing status and security headers. The read host uses HTML cards for its normal 404 and 503 pages; HEAD still has no response body. Protocol and machine responses (including back-channel logout, non-navigation revalidation, the read-session handoff, OAuth token and registration, and MCP) keep their existing representations and behavior.
+
 ## 12. Configuration, branding, deployment
 
 | Kind     | Names                                                                                                                                                                                                                                      |
