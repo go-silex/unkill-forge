@@ -2,6 +2,7 @@ import { execFileSync } from 'node:child_process'
 import { lstatSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { parseArgs } from 'node:util'
+import { inLengthScope, worktreePaths } from './source-scope.mjs'
 
 const max = 300
 const root = join(import.meta.dirname, '..')
@@ -13,10 +14,6 @@ const gitPaths = (...args) =>
     .split('\0')
     .filter(Boolean)
 const lines = (text) => (text.match(/\n/g)?.length ?? 0) + Number(text.length > 0 && !text.endsWith('\n'))
-const inScope = (path) =>
-  /\.(?:[cm]?[jt]s|[jt]sx)$/.test(path) &&
-  !/(?:^|\/)(?:test|tests|__tests__|__fixtures__)\//.test(path) &&
-  !/\.(?:test|spec|node-test|d)\.[^.]+$/.test(path)
 
 function readLedger(text) {
   const caps = JSON.parse(text)
@@ -32,7 +29,7 @@ try {
   const baseCaps = basePaths.has(ledger) ? readLedger(git('show', `${base}:${ledger}`)) : null
   const errors = []
   for (const [path, cap] of exemptions) {
-    if (!inScope(path) || !Number.isSafeInteger(cap) || cap <= max) {
+    if (!inLengthScope(path) || !Number.isSafeInteger(cap) || cap <= max) {
       errors.push(`${ledger}: invalid exemption for ${path}; expected a source file and a cap above ${max}`)
       continue
     }
@@ -45,9 +42,8 @@ try {
       errors.push(`${ledger}: ${path} cap raised from ${oldCap} to ${cap}; caps only go down`)
   }
 
-  const paths = new Set(gitPaths('ls-files', '-z', '--cached', '--others', '--exclude-standard'))
-  for (const path of paths) {
-    if (!inScope(path) || !lstatSync(join(root, path), { throwIfNoEntry: false })?.isFile()) continue
+  for (const path of worktreePaths()) {
+    if (!inLengthScope(path) || !lstatSync(join(root, path), { throwIfNoEntry: false })?.isFile()) continue
     const size = lines(readFileSync(join(root, path), 'utf8'))
     const cap = exemptions.get(path)
     if (size > (cap ?? max)) errors.push(`${path}: ${size} lines, over ${cap ?? max}; split the file`)

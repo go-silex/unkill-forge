@@ -42,7 +42,7 @@ commands:
   typecheck: npm run typecheck
   lint: npm run lint
   format: npm run format
-  quality_gates: npm run lint && npm run check:file-length && npm run knip
+  quality_gates: npm run lint && npm run check:file-length && npm run check:worker-scope && npm run knip
 standards:
   architecture: docs/architecture.md
   contributing: CONTRIBUTING.md

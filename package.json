@@ -12,6 +12,7 @@
     "format": "biome check --write .",
     "knip": "knip --no-progress",
     "check:file-length": "node scripts/check-file-length.mjs",
+    "check:worker-scope": "node scripts/check-worker-scope.mjs",
     "check:lockfile-cooldown": "node scripts/check-lockfile-cooldown.mjs",
     "deploy": "node scripts/deploy.mjs"
   },

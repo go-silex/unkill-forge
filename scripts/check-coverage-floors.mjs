@@ -1,27 +1,14 @@
-import { execFileSync } from 'node:child_process'
 import { existsSync, readFileSync } from 'node:fs'
-import { join, matchesGlob } from 'node:path'
+import { join } from 'node:path'
+import { inCoverageScope, worktreePaths } from './source-scope.mjs'
 
 const read = (path) => JSON.parse(readFileSync(new URL(path, import.meta.url), 'utf8'))
 const metrics = ['statements', 'branches', 'functions', 'lines']
 const root = join(import.meta.dirname, '..')
 
-function expectedFiles(scope) {
-  const trackedAndNew = execFileSync(
-    'git',
-    ['ls-files', '-z', '--cached', '--others', '--exclude-standard'],
-    {
-      cwd: root,
-      encoding: 'utf8',
-    },
-  )
-  return [...new Set(trackedAndNew.split('\0'))]
-    .filter(
-      (path) =>
-        scope.include.some((pattern) => matchesGlob(path, pattern)) &&
-        !scope.exclude.some((pattern) => matchesGlob(path, pattern)) &&
-        existsSync(join(root, path)),
-    )
+function expectedFiles() {
+  return [...worktreePaths()]
+    .filter((path) => inCoverageScope(path) && existsSync(join(root, path)))
     .map((path) => join(root, path))
 }
 
@@ -41,7 +28,7 @@ function counts(count, label) {
 try {
   const floors = read('../config/coverage-floors.json')
   const { total, ...reports } = read('../coverage/coverage-summary.json')
-  const files = expectedFiles(read('../config/coverage-scope.json'))
+  const files = expectedFiles()
   if (!files.length) throw new Error('no first-party source files found')
   for (const path of files) {
     if (!Object.hasOwn(reports, path)) throw new Error(`missing Istanbul coverage record for ${path}`)

@@ -23,6 +23,24 @@ function read(path, ref) {
   return ref ? git('show', `${ref}:${path}`) : readFileSync(join(root, path), 'utf8')
 }
 
+function regularFileExists(path, ref) {
+  if (ref) {
+    const mode = git('ls-tree', '--format=%(objectmode)', ref, '--', path).trim()
+    if (!mode) return false
+    if (mode === '100644' || mode === '100755') return true
+  } else {
+    const info = lstatSync(join(root, path), { throwIfNoEntry: false })
+    if (!info) return false
+    if (info.isFile()) return true
+  }
+  throw new Error(`${path} must be a regular file${ref ? ` at ${ref}` : ''}`)
+}
+
+function readLockfile(ref) {
+  if (!regularFileExists(lockfile, ref)) throw new Error(`${lockfile} is missing${ref ? ` at ${ref}` : ''}`)
+  return read(lockfile, ref)
+}
+
 async function loadReleases(candidates) {
   const packages = new Map()
   for (const { name, version } of candidates) {
@@ -60,14 +78,12 @@ async function loadReleases(candidates) {
 
 async function check(base, tip) {
   const now = Date.now()
-  const hasShrinkwrap = tip
-    ? Boolean(git('ls-tree', '-z', tip, '--', shrinkwrap))
-    : Boolean(lstatSync(join(root, shrinkwrap), { throwIfNoEntry: false }))
+  const hasShrinkwrap = regularFileExists(shrinkwrap, tip)
   const allowlist = JSON.parse(read(exceptions, tip))
   validateInstallInputs(hasShrinkwrap, allowlist, now)
   const mergeBase = git('merge-base', base, tip ?? 'HEAD').trim()
-  const before = read(lockfile, mergeBase)
-  const after = read(lockfile, tip)
+  const before = readLockfile(mergeBase)
+  const after = readLockfile(tip)
   if (before === after) {
     console.log('lockfile-cooldown: package-lock.json unchanged')
     return

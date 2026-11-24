@@ -18,6 +18,6 @@ pre-push:
       use_stdin: true
       run: node scripts/check-lockfile-cooldown.mjs --pre-push
     - name: quality-gates
-      run: npm run lint && npm run check:file-length && npm run knip && npm run typecheck
+      run: npm run lint && npm run check:file-length && npm run check:worker-scope && npm run knip && npm run typecheck
     - name: tests
       run: npm run test:node && npm run test:coverage

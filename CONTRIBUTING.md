@@ -6,6 +6,7 @@ Use Node.js 24+. From the repository root:
 npm ci
 npm run lint
 npm run check:file-length
+npm run check:worker-scope
 npm run knip
 npm run typecheck
 npm run test:node
@@ -23,13 +24,18 @@ for every in-scope file. Production and tooling source is capped at 300 lines;
 entries in `config/file-length-exemptions.json` grandfather existing files
 only. Split an overlong file instead of adding an entry or raising its cap.
 
+The Worker scope check bundles the configured entry point in memory. All
+bundled first-party inputs must be in the length, coverage, and Knip scopes,
+even if they live outside `src/`.
+
 `npm run check:lockfile-cooldown` checks the working copy against the merge
 base with `origin/main`. Pre-push checks the commits being pushed; set
 `COOLDOWN_BASE` if the PR targets a different branch. CI checks each PR and
-push before `npm ci`. `npm-shrinkwrap.json` is not permitted. Changed entries
-must match their npm registry tarball and integrity and be at least three
-days old, or seven days for a major version change (including after
-relocation to a different install path).
+push before `npm ci`. `package-lock.json` must be a regular file and
+`npm-shrinkwrap.json` is not permitted. Changed entries must match their npm
+registry tarball and integrity and be at least three days old. A major change
+at the same install path or a relocated release on a major line absent from
+the base requires seven days instead.
 
 For a deliberate age exception, add
 `"package@version": {"reason": "why", "expires": "YYYY-MM-DD"}` to
