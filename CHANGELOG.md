@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## v2.2.0 — 2026-11-24
 
 - Add a sign-in action to the read home page that opens the management host.
 - Show cover images in the opt-in public catalogue and the authenticated Manage catalogue. Search, visibility filters and pagination are unchanged.
