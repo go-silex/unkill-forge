@@ -617,8 +617,9 @@ it('negotiates a non-batching protocol, rejects batches, and bounds JSON-RPC env
     '2025-03-26',
   )
   expect(initialize.status).toBe(200)
-  const { result } = await initialize.json<{ result: { protocolVersion: string } }>()
+  const { result } = await initialize.json<{ result: { protocolVersion: string; instructions?: string } }>()
   expect(result.protocolVersion >= '2025-06-18').toBe(true)
+  expect(result.instructions).toContain('expectedRevision 0')
   const slug = 'no-batch'
   const publish = {
     jsonrpc: '2.0',

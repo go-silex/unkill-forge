@@ -41,6 +41,8 @@ After saving the OMP entry, run `/mcp reload` and `/mcp reauth forge` (replace `
 
 `?` marks optional inputs. `tools/list` has the live schemas. Active viewers can use the read tools; writes and share management require publisher or admin. Publishers can change any artefact. Only an admin can add aliases or supply a share key.
 
+On `initialize`, the server also returns `instructions`: the publishing workflow condensed for agents (check `whoami`, get approval for the current audience, validate file paths, recheck before writing, verify after writing, and ask before any access change). Clients that support MCP server instructions give them to the agent, so no plugin skill is needed.
+
 | Tool                | Inputs                                                                          | Use                                                                                                                                                                                                         |
 | ------------------- | ------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `whoami`            | None                                                                            | Check member, role and origins.                                                                                                                                                                             |
