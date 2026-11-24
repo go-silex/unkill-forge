@@ -38,6 +38,7 @@ import {
 import { maxRedirectPrefix } from '../../core/read-path'
 import { shareKeyMax, shareKeyMin } from '../../core/share-keys'
 import { checkUploadCount, createUploads } from '../../core/uploads'
+import { MCP_INSTRUCTIONS } from './instructions'
 
 function result(value: Record<string, unknown>, isError = false) {
   return {
@@ -209,7 +210,10 @@ export async function handleMcp(
     }
   }
 
-  const server = new Server({ name: config.name, version: '0.0.0' }, { capabilities: { tools: {} } })
+  const server = new Server(
+    { name: config.name, version: '0.0.0' },
+    { capabilities: { tools: {} }, instructions: MCP_INSTRUCTIONS },
+  )
   const tools = [
     tool(
       'whoami',

@@ -3,11 +3,15 @@
 ## Unreleased
 
 - Use branded, localized cards for sign-in, invitations, access approval, OAuth consent and browser error pages. Search the public home by title or slug and see result counts and update dates; find agent setup in client-specific accordions on Connect. API protocols and security checks are unchanged.
+
+## v2.6.0 — 2026-11-25
+
+- Return the publishing workflow as MCP server instructions on `initialize`. Clients that surface them (OMP, Claude Code) follow the same audience-approval and verification steps without a plugin skill; for clients that omit or truncate them, see the fallback in `docs/mcp.md`.
 - Ask for confirmation before deleting an artefact or starting an irreversible purge. A purge that's already underway can still be continued directly.
 - Copy the MCP endpoint and command or configuration snippets from the Manage connection page.
-- Open the artefact catalogue at the Manage home. Filter by access with catalogue-wide totals, see access badges and versions at a glance, and find sign-out in the navigation account block.
+- Open the artefact catalogue at the Manage home. Filter by access with catalogue-wide totals (hidden above 1,000 live artefacts; the filters still work), see access badges and versions at a glance, and find sign-out in the navigation account block.
 - Show relative dates in Manage with absolute timestamps on hover. Set the optional `TIMEZONE` to change the display zone; it defaults to UTC.
-- Manage Private, Shared and Public access from one control on the artefact detail page. Copy the canonical address, manage individual share links, and browse or restore older versions from a timeline.
+- Manage Private, Shared and Public access from one control on the artefact detail page. Switching to Private there revokes every active share link after confirmation, so previously sent share URLs stop working. Copy the canonical address, manage individual share links, and browse or restore older versions from a timeline.
 - Separate pending, active and removed people from invitation links on Members. Manage robot roles and credentials in a detail panel, see personal token and redirect metadata, and check how long a deleted artefact can still be restored. Open creation forms and destructive confirmations in native sheets.
 - Reject stale Refuse and Remove confirmations if the member’s status changed after the sheet opened.
 - Upgrade: no D1 migration, binding or required config change.
