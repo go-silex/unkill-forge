@@ -27,9 +27,16 @@ only. Split an overlong file instead of adding an entry or raising its cap.
 The Worker scope check runs Wrangler's default-discovery dry run and inspects
 its build metadata and attached modules. Keep exactly one root Wrangler config.
 The check rejects output-name collisions and requires the upload entry bytes
-to match esbuild's original output. Declaring `rules`, `find_additional_modules`,
-`base_dir`, `alias`, or `no_bundle` is not supported until reviewed and explicitly
-enabled in the scope check.
+to match esbuild's original output.
+
+The scope gate checks the bundle produced by the allowed Wrangler configuration; keys that run commands or change module resolution are refused, and any change to the gate, its policy or that list relies on independent review.
+
+The refused keys (at the root or in a named environment) are `alias`, `base_dir`,
+`build`, `containers`, `data_blobs`, `find_additional_modules`, `no_bundle`,
+`pages_build_output_dir`, `preserve_file_names`, `python_modules`, `rules`,
+`site`, `text_blobs`, `unsafe`, and `wasm_modules`. They can run a build,
+change module discovery or names, select a different packaging flow, or inject
+files outside the JS/TS import graph.
 Bundled first-party code must be in the length, coverage, and Knip scopes, even
 outside `src/`. JSON imports and Wrangler attachments typed as data (for example,
 text files) are exempt from source checks.

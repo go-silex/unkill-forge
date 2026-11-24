@@ -9,7 +9,24 @@ import { inCoverageScope, inLengthScope, worktreePaths } from './source-scope.mj
 const root = join(import.meta.dirname, '..')
 const wrangler = join(root, 'node_modules/wrangler/bin/wrangler.js')
 const configNames = ['wrangler.json', 'wrangler.jsonc', 'wrangler.toml']
-const blockedOptions = ['rules', 'find_additional_modules', 'base_dir', 'alias', 'no_bundle']
+// Commands, module collection/resolution, and files injected outside the JS/TS graph.
+const blockedOptions = [
+  'alias',
+  'base_dir',
+  'build',
+  'containers',
+  'data_blobs',
+  'find_additional_modules',
+  'no_bundle',
+  'pages_build_output_dir',
+  'preserve_file_names',
+  'python_modules',
+  'rules',
+  'site',
+  'text_blobs',
+  'unsafe',
+  'wasm_modules',
+]
 const capture = new URL('./capture-worker-outputs.cjs', import.meta.url)
 const digest = (bytes) => createHash('sha256').update(bytes).digest('hex')
 const dataTypes = new Set([
