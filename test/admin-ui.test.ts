@@ -413,6 +413,15 @@ it('uses bounded index seeks for missing and sparse matches in a large catalogue
     current_revision, created_by, created_at, updated_at FROM artefacts, numbers WHERE slug = ?`)
     .bind(slug)
     .run()
+  // A long revocation history must not be walked by the active-link probe, even after ANALYZE.
+  await db
+    .prepare(`WITH RECURSIVE numbers(n) AS (SELECT 1 UNION ALL SELECT n + 1 FROM numbers WHERE n < 2000)
+    INSERT INTO share_links (id, artefact_id, key_hash, key_sealed, created_by, created_at, revoked_at)
+    SELECT printf('revoked-%04d', n), id, printf('revoked-hash-%04d', n), 'sealed', created_by, created_at, created_at
+    FROM artefacts, numbers WHERE slug = ?`)
+    .bind(slug)
+    .run()
+  await db.prepare('ANALYZE').run()
   let reads = 0
   const planStatements: D1PreparedStatement[] = []
   const measured = new Proxy(db, {
@@ -460,6 +469,9 @@ it('uses bounded index seeks for missing and sparse matches in a large catalogue
   const filtered = await fetch('', 'private')
   expect(filtered.status).toBe(200)
   expect(await filtered.text()).toContain('Exact Élément %_')
+  const shared = await fetch('exact', 'shared')
+  expect(shared.status).toBe(200)
+  expect(await shared.text()).toContain('No results.')
   expect(reads).toBeGreaterThan(0)
   expect(reads).toBeLessThan(20)
   const plans = (await db.batch<{ detail: string }>(planStatements)).flatMap((result) =>
@@ -470,6 +482,9 @@ it('uses bounded index seeks for missing and sparse matches in a large catalogue
       plans.some((plan) => plan.includes(`SEARCH artefacts USING INDEX artefacts_catalogue_${suffix}`)),
     ).toBe(true)
   }
+  const probes = plans.filter((plan) => plan.includes('share_links'))
+  expect(probes.length).toBeGreaterThan(0)
+  for (const probe of probes) expect(probe).toContain('share_links_active_artefact')
 })
 
 it('restores a revision, reveals and revokes share links, then renames and restores the deleted artefact', async () => {

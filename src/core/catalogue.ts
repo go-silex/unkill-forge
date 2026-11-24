@@ -19,7 +19,10 @@ type Row = {
   slug: string
   title: string
   visibility: 'private' | 'public'
-  /** 1 when an active share link exists: one probe of the active-link index per scanned row, never a scan. */
+  /**
+   * 1 when an active share link exists. INDEXED BY pins the partial active-link index so the probe never walks
+   * an artefact's revocation history, whatever the planner statistics.
+   */
   shared: number
   revision: number
   updatedAt: number
@@ -81,7 +84,8 @@ export async function searchArtefacts(
   }
   if (!query) {
     const statement = db.prepare(`SELECT id, slug, title, visibility,
-      EXISTS (SELECT 1 FROM share_links WHERE artefact_id = artefacts.id AND revoked_at IS NULL) AS shared,
+      EXISTS (SELECT 1 FROM share_links INDEXED BY share_links_active_artefact
+        WHERE artefact_id = artefacts.id AND revoked_at IS NULL) AS shared,
       current_revision AS revision, updated_at AS updatedAt
       FROM artefacts WHERE deleted_at IS NULL AND visibility = ? AND (updated_at, id) < (?, ?)
       ORDER BY updated_at DESC, id DESC LIMIT 51`)
@@ -103,7 +107,8 @@ export async function searchArtefacts(
     // The identifier is the closed, internal union of the two indexed columns, never request data.
     const statement =
       db.prepare(`SELECT id, slug, title, visibility, current_revision AS revision, updated_at AS updatedAt,
-      EXISTS (SELECT 1 FROM share_links WHERE artefact_id = artefacts.id AND revoked_at IS NULL) AS shared,
+      EXISTS (SELECT 1 FROM share_links INDEXED BY share_links_active_artefact
+        WHERE artefact_id = artefacts.id AND revoked_at IS NULL) AS shared,
       hex(lower(${column})) || '!' || id AS term FROM artefacts
       WHERE deleted_at IS NULL AND visibility = ? AND term > ? AND term < ? ORDER BY term LIMIT ?`)
     const cursorTerm = resume ? after?.[3] : null
