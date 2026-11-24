@@ -620,6 +620,8 @@ it('negotiates a non-batching protocol, rejects batches, and bounds JSON-RPC env
   const { result } = await initialize.json<{ result: { protocolVersion: string; instructions?: string } }>()
   expect(result.protocolVersion >= '2025-06-18').toBe(true)
   expect(result.instructions).toContain('expectedRevision 0')
+  // Clients cut longer instructions (OMP at 4,000 characters), dropping the last workflow steps.
+  expect(result.instructions?.length).toBeLessThanOrEqual(4000)
   const slug = 'no-batch'
   const publish = {
     jsonrpc: '2.0',
