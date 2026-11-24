@@ -26,7 +26,7 @@ Non-goals:
 - Multi-tenant SaaS. One deployment serves one team.
 - Access control per page inside an artefact; assets shared across artefacts.
 - HTML or CSS rewriting; revision-pinned reads.
-- Preview image generation; built-in URL shorteners.
+- Built-in URL shorteners.
 - A local plugin, native binaries, a CLI or an HTTP API. MCP is the programmatic interface (see §17).
 - Browser upload in the admin UI.
 - Trusted-proxy identity headers (`Cf-Access-Jwt-Assertion`, forward-auth): external managers connect over OIDC.
@@ -136,6 +136,8 @@ Indexes:
 - `redirects(from_prefix)` for exact probes of the URL's slash-delimited prefixes, `redirects(source_slug)` for slug reservations, `redirects(target_artefact_id)` for cascading removal;
 - `uploads(sha256, expires_at)` for stored-upload references to blobs.
 
+`generated_covers` stores one row per artefact: the exact revision, retry and lease state, and an optional bounded JPEG. These are derived catalogue data, not revision files.
+
 `artefact_purges` reserves a slug and tracks the purge by stable artefact ID; `purge_candidates` holds its candidate hashes. `blob_purge_claims` holds the exclusive delete claim per hash, `blob_purge_epoch` advances when claims start or finish, and `purge_attempts` leases R2 deletion per artefact.
 
 Rules:
@@ -181,6 +183,8 @@ Resolution order for a request:
 8. Anything else → 404.
 
 The public gallery and the paginated Manage catalogue use cover files published at the root of the current revision: `og.jpg`, `og.jpeg`, `og.png`, `og.webp` or `index.og.png` in that order. Files must be at most 1 MiB and match the expected raster media type and signature. An artefact with no cover is still listed. Preview requests do not fall back to other paths, revisions, aliases or shares.
+
+Supplying a cover is optional. When cover generation is enabled, a background pass captures the entry of an HTML revision without a valid supplied cover, including already-published artefacts. Forge uses the generated JPEG only for that exact live head. This does not change the revision, its files, visibility or share links.
 
 Unknown artefacts, unauthorized share requests and missing files return the same 404, but a missing file in a private artefact only returns 404 to a reader with access. Other readers get the handoff or pending response regardless of whether the file exists.
 

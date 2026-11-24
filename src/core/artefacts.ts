@@ -168,11 +168,16 @@ async function cacheRevisionEntries(
   else await update
 }
 
-async function revisionEntry(db: D1Database, id: string, revision: number, ctx?: ExecutionContext) {
+export async function revisionEntry(
+  db: D1Database,
+  id: string,
+  revision: number,
+  { ctx, cache = true }: { ctx?: ExecutionContext; cache?: boolean } = {},
+) {
   const cached = await selectRevisionEntry(db, id, revision).first<string>('path')
   if (cached !== null) return cached
   const path = await computeRevisionEntry(db, id, revision).first<string>('path')
-  if (path !== null) await cacheRevisionEntries(db, [{ id, revision, path }], ctx)
+  if (cache && path !== null) await cacheRevisionEntries(db, [{ id, revision, path }], ctx)
   return path
 }
 
@@ -269,7 +274,7 @@ export async function getArtefactDetails(
         WHERE artefact_id = ? AND revision = ? AND path > ? ORDER BY path LIMIT 201`)
       .bind(id, revision, after?.[2] ?? '')
       .all<Pick<File, 'path' | 'size' | 'type'>>(),
-    revisionEntry(db, id, revision, ctx),
+    revisionEntry(db, id, revision, { ctx }),
     shareLinkMetadata(db, id),
   ])
   if (!path) throw new Error('Artefact head has no entry file')
@@ -398,7 +403,7 @@ export async function shareRead(
   if (path === undefined) return { kind: 'slash' } as const
   const resolved = await resolveReadFile(db, link.artefactId, link.revision, path)
   if (resolved.kind === 'not-found' && path === '') {
-    const entry = await revisionEntry(db, link.artefactId, link.revision, ctx)
+    const entry = await revisionEntry(db, link.artefactId, link.revision, { ctx })
     if (entry !== null) return { kind: 'entry', path: encodeFilePath(entry) } as const
   }
   if (resolved.kind !== 'serve') return resolved
