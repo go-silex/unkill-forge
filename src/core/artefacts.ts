@@ -201,7 +201,7 @@ export async function publicArtefacts({ env: { DB: db }, config }: Runtime, ctx?
     await cacheRevisionEntries(db, legacy, ctx)
   }
   return results.flatMap(({ slug, title, path }) =>
-    path === null ? [] : [{ title, url: entryUrl(config.readOrigin, slug, path) }],
+    path === null ? [] : [{ slug, title, url: entryUrl(config.readOrigin, slug, path) }],
   )
 }
 

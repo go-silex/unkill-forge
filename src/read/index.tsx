@@ -4,9 +4,11 @@ import { forgePageSources } from '../brand'
 import { BrandBlock } from '../brand-block'
 import type { Config, Runtime } from '../config'
 import { canonicalRead, publicArtefacts, shareRead } from '../core/artefacts'
+import { galleryPreviewSlugs } from '../core/gallery-previews'
 import { handoffChallenge, readBoundSession, redeemHandoff, validHandoffState } from '../core/handoffs'
 import { randomSecret } from '../core/index'
 import { artefactPath, maxReadReturnLength, readReturnPath, sharePath } from '../core/read-path'
+import { Gallery } from '../gallery'
 import { DocumentHead } from '../head'
 import { isDocumentNavigation, readBoundedBody, readCookie, writeCookie } from '../http'
 import { messages } from '../i18n'
@@ -42,11 +44,12 @@ function page(
   head: boolean,
   status = 200,
 ) {
+  const wide = panel === 'landing' && config.publicIndex ? ' forge-panel--gallery' : ''
   const html = (
     <html lang={config.locale}>
       <DocumentHead config={config} title={title} />
       <body>
-        <main class={`forge-panel forge-panel--${panel}`}>
+        <main class={`forge-panel forge-panel--${panel}${wide}`}>
           <header class="forge-panel__header">
             <BrandBlock config={config} variant={panel === 'landing' ? 'heading' : undefined} />
           </header>
@@ -176,20 +179,34 @@ export async function read(
     if (url.pathname === '/') {
       const { name, publicIndex, brand } = config
       const entries = publicIndex ? await publicArtefacts(runtime, ctx) : null
+      const previews = entries
+        ? await galleryPreviewSlugs(
+            runtime,
+            entries.map(({ slug }) => slug),
+            'public',
+          )
+        : undefined
       return page(
         config,
         name,
         'landing',
         <>
           {!publicIndex && brand.landingText && <p>{brand.landingText}</p>}
+          <a class="forge-button forge-button--primary" href={config.manageOrigin}>
+            {common.signIn}
+          </a>
           {entries && (
-            <ul class="forge-link-list" aria-label={text.artefacts}>
-              {entries.map(({ url, title }) => (
-                <li key={url}>
-                  <a href={url}>{title}</a>
-                </li>
-              ))}
-            </ul>
+            <section>
+              <h2>{text.artefacts}</h2>
+              <Gallery
+                label={text.artefacts}
+                items={entries.map(({ url, title, slug }) => ({
+                  href: url,
+                  title,
+                  preview: previews?.has(slug) ? slug : undefined,
+                }))}
+              />
+            </section>
           )}
         </>,
         head,

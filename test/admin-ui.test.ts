@@ -619,10 +619,17 @@ it.each(['en', 'fr'] as const)(
     expect(catalogue).toMatch(
       /<details class="forge-drawer"><summary class="forge-menu forge-button">Menu<\/summary>.*?href="\/artefacts" aria-current="page".*?action="\/logout".*?<\/details><\/div><div class="forge-tray__sections">.*?href="\/artefacts" aria-current="page".*?action="\/logout"/s,
     )
-    expect(catalogue).toContain('class="forge-table"')
-    expect(catalogue).toContain('<th scope="col" class="forge-col--secondary">')
-    expect(catalogue).toContain(`<td title="${slug}"><code>${slug}</code></td>`)
-    expect(catalogue).toContain('<td title="Quarterly report">')
+    expect(catalogue).toContain('<ul class="forge-gallery" role="list" aria-label="Artefacts">')
+    expect(catalogue).not.toContain('<table')
+    expect(catalogue).toContain(`href="${detail}"`)
+    expect(catalogue).toContain('Quarterly report')
+    expect(catalogue).not.toContain(`/_forge/preview/${slug}`)
+    expect(catalogue).toContain(`<dt>${french ? 'Identifiant' : 'Slug'}</dt><dd><code>${slug}</code></dd>`)
+    expect(catalogue).toContain(
+      french ? '<dt>Visibilité</dt><dd>Privé</dd>' : '<dt>Visibility</dt><dd>Private</dd>',
+    )
+    expect(catalogue).toContain(french ? '<dt>Version</dt><dd>1</dd>' : '<dt>Revision</dt><dd>1</dd>')
+    expect(catalogue).toMatch(new RegExp(`<dt>${french ? 'Mis à jour' : 'Updated'}</dt><dd>[^<]+ UTC</dd>`))
     const invalidInvite = await html(anonymous, '/invite/invalid', 404)
     expect(invalidInvite).toContain(french ? 'Invitation invalide ou expirée' : 'Invite invalid or expired')
     expect(invalidInvite).toContain('forge-panel--invite')
