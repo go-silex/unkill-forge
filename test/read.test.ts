@@ -654,7 +654,7 @@ it('accepts only read artefact return paths and preserves manage origin checks',
     headers: { 'Sec-Fetch-Mode': 'no-cors', 'Sec-Fetch-Dest': 'image' },
   })
   expect(subresource.status).toBe(404)
-  expect(await (await owner.request('/')).text()).toContain('owner (admin)')
+  expect(await (await owner.request('/artefacts')).text()).toContain('class="forge-account__name">owner')
 })
 
 it('sends the specified security and conditional cache headers only after access checks', async () => {

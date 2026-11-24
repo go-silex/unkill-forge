@@ -27,10 +27,34 @@ type Row = {
   revision: number
   updatedAt: number
 }
-const accessOf = ({ visibility, shared }: Row): CatalogueAccess =>
+const accessOf = ({ visibility, shared }: Pick<Row, 'visibility' | 'shared'>): CatalogueAccess =>
   visibility === 'public' ? 'public' : shared ? 'shared' : 'private'
 const compare = (a: string, b: string) => (a < b ? -1 : a > b ? 1 : 0)
 const fold = (value: string) => value.replace(/[A-Z]/g, (ch) => ch.toLowerCase())
+
+export const catalogueCountLimit = 1_000
+
+export async function catalogueCounts({ env: { DB: db } }: Runtime, member: Member) {
+  checkMember(member)
+  // One extra live row detects overflow; never display partial counts.
+  const { results } = await db
+    .prepare(`SELECT visibility, shared, COUNT(*) AS total FROM (
+        SELECT visibility, CASE WHEN visibility = 'private' THEN EXISTS (
+          SELECT 1 FROM share_links INDEXED BY share_links_active_artefact
+          WHERE artefact_id = artefacts.id AND revoked_at IS NULL
+        ) ELSE 0 END AS shared
+        FROM artefacts INDEXED BY artefacts_catalogue_recent
+        WHERE deleted_at IS NULL LIMIT ?
+      ) GROUP BY visibility, shared`)
+    .bind(catalogueCountLimit + 1)
+    .all<Pick<Row, 'visibility' | 'shared'> & { total: number }>()
+  const counts = { all: 0, private: 0, shared: 0, public: 0 }
+  for (const row of results) {
+    counts[accessOf(row)] += row.total
+    counts.all += row.total
+  }
+  return counts.all <= catalogueCountLimit ? counts : null
+}
 
 export async function searchArtefacts(
   { env: { DB: db } }: Runtime,

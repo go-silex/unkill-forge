@@ -5,6 +5,8 @@ import { expect, it, vi } from 'vitest'
 import type { Env } from '../src/config'
 import { hashSecret } from '../src/core'
 import { createOwnToken, revokeOwnToken } from '../src/core/admin'
+import { catalogueCountLimit } from '../src/core/catalogue'
+import { time } from '../src/manage/ui/page'
 import {
   admin,
   Browser,
@@ -153,6 +155,7 @@ it('refuses every browser mutation without the manage origin and refuses insuffi
   const mutations = [
     [detail, { action: 'restore-revision', revision: '1', artefactId: selectedId }],
     [detail, { action: 'visibility', visibility: 'public', artefactId: selectedId }],
+    [detail, { action: 'access', access: 'shared', artefactId: selectedId }],
     [detail, { action: 'create-share', label: 'Test share', artefactId: selectedId }],
     [detail, { action: 'reveal-share', id }],
     [detail, { action: 'revoke-share', id }],
@@ -192,12 +195,61 @@ it('refuses every browser mutation without the manage origin and refuses insuffi
   for (const path of [deleted, redirects, members, bots]) {
     expect((await viewer.request(path)).status).toBe(403)
     expect((await publisher.request(path)).status).toBe(403)
-    expect(await html(publisher, '/artefacts')).not.toContain(`href="${path}"`)
   }
-  expect(await html(viewer, '/artefacts')).not.toContain(`href="${tokens}"`)
-  expect(await html(publisher, '/artefacts')).toContain(`href="${tokens}"`)
+  for (const [browser, name, role, expected] of [
+    [
+      viewer,
+      'viewer',
+      'viewer',
+      [
+        ['Content', ['/artefacts']],
+        ['My account', ['/connect']],
+      ],
+    ],
+    [
+      publisher,
+      'publisher',
+      'publisher',
+      [
+        ['Content', ['/artefacts']],
+        ['My account', ['/connect', tokens]],
+      ],
+    ],
+    [
+      owner,
+      admin,
+      'admin',
+      [
+        ['Content', ['/artefacts', deleted, redirects]],
+        ['Access', [members, bots]],
+        ['My account', ['/connect', tokens]],
+      ],
+    ],
+  ] as const) {
+    const catalogue = await html(browser, '/artefacts')
+    const menus = [...catalogue.matchAll(/<nav class="forge-nav"[^>]*>(.*?)<\/nav>/gs)]
+    expect(menus).toHaveLength(2)
+    for (const [, menu] of menus) {
+      const groups = Array.from(
+        menu.matchAll(/<section class="forge-nav__group" aria-label="([^"]+)">(.*?)<\/section>/gs),
+        ([, label, section]) => [label, [...section.matchAll(/href="([^"]+)"/g)].map(([, href]) => href)],
+      )
+      expect(groups).toEqual(expected)
+    }
+    const accounts = [...catalogue.matchAll(/<div class="forge-account">(.*?)<\/div>/gs)]
+    expect(accounts).toHaveLength(2)
+    for (const [, account] of accounts) {
+      expect(account).toContain(`<span class="forge-account__name">${name}</span>`)
+      expect(account).toContain(`<span class="forge-account__role">${role}</span>`)
+      expect(account).toContain('action="/logout" method="post"')
+    }
+  }
   expect((await viewer.request(tokens)).status).toBe(403)
   expect((await viewer.request(detail)).status).toBe(200)
+  const publisherDetail = await html(publisher, detail)
+  expect(publisherDetail).toContain('forge-detail__aside')
+  expect(publisherDetail).not.toContain('name="key"')
+  expect(await html(owner, detail)).toContain('name="key"')
   expect(
     (
       await publisher.post(detail, {
@@ -247,7 +299,7 @@ it('shows a personal token exactly once, stores its hash, records use and enforc
     .first<number>('last_used_at')
   if (used === null) throw new Error('Expected a timestamp after using the token')
   const list = await html(publisher, tokens)
-  expect(list).toMatch(/\d{2}\/\d{2}\/\d{4}, \d{2}:\d{2} UTC/)
+  expect(list).toContain(`<time datetime="${new Date(used).toISOString()}"`)
   expect(list).not.toContain(token)
   await post(owner, tokens, { action: 'revoke', id: row.id })
   await post(owner, bots, { action: 'revoke', id: row.id })
@@ -324,14 +376,71 @@ it('shows private artefacts with an active share link as shared and filters on t
   await publish(send, token, 'notes', 'Private notes')
   await publish(send, token, 'deck', 'Shared deck')
   await publish(send, token, 'open', 'Open deck')
+  await publish(send, token, 'archived', 'Archived deck')
+  await post(owner, '/artefacts/archived', {
+    action: 'delete',
+    artefactId: await artefactId(owner, '/artefacts/archived'),
+  })
   const deck = { artefactId: await artefactId(owner, '/artefacts/deck') }
   const open = { artefactId: await artefactId(owner, '/artefacts/open') }
   await post(owner, '/artefacts/deck', { action: 'create-share', label: 'Readers', ...deck })
   await post(owner, '/artefacts/open', { action: 'create-share', label: 'Readers', ...open })
   await post(owner, '/artefacts/open', { action: 'visibility', visibility: 'public', ...open })
-  const list = await html(owner, '/artefacts?view=list')
-  for (const state of ['Private', 'Shared', 'Public'])
-    expect(list.split(`<td class="forge-col--folded">${state}</td>`)).toHaveLength(2)
+  const idp = mockProvider()
+  const viewer = await idp.signedIn(send, 'catalogue-reader')
+  const list = await html(viewer, '/artefacts?view=list')
+  const grid = await html(viewer, '/artefacts')
+  for (const state of ['Private', 'Shared', 'Public']) {
+    const badge = `<span class="forge-badge forge-badge--${state.toLowerCase()}">${state}</span>`
+    expect(grid).toContain(badge)
+    expect(list).toContain(`<td class="forge-col--folded">${badge}</td>`)
+  }
+  const filtered = await html(viewer, '/artefacts?q=shared&visibility=shared&view=list')
+  const filters = Array.from(
+    filtered.matchAll(
+      /<a class="forge-filters__link" href="([^"]+)"( aria-current="page")?>([^<]+) <span class="forge-filters__count">(\d+)<\/span><\/a>/g,
+    ),
+    ([, href, current, label, count]) => ({
+      params: Object.fromEntries(new URL(href.replaceAll('&amp;', '&'), manage).searchParams),
+      current: Boolean(current),
+      label,
+      count: Number(count),
+    }),
+  )
+  expect(filters).toEqual([
+    { params: { q: 'shared', view: 'list' }, current: false, label: 'All', count: 3 },
+    {
+      params: { q: 'shared', view: 'list', visibility: 'private' },
+      current: false,
+      label: 'Private',
+      count: 1,
+    },
+    { params: { q: 'shared', view: 'list', visibility: 'shared' }, current: true, label: 'Shared', count: 1 },
+    {
+      params: { q: 'shared', view: 'list', visibility: 'public' },
+      current: false,
+      label: 'Public',
+      count: 1,
+    },
+  ])
+  expect(filtered).toContain('<input type="hidden" name="visibility" value="shared"/>')
+  expect(grid).not.toContain('Archived deck')
+  expect((await viewer.request('/artefacts?visibility=unknown')).status).toBe(400)
+  const guest = new Browser(send)
+  const login = await guest.request('/artefacts')
+  expect(location(login).pathname).toBe('/login')
+  expect(await login.text()).not.toContain('forge-filters__count')
+  const pending = await idp.signedIn(
+    runtime({ AUTH_PROVIDERS: JSON.stringify([{ ...provider, autoJoinRole: undefined }]) }),
+    'pending-reader',
+  )
+  const approval = await pending.request('/artefacts')
+  expect(approval.status).toBe(303)
+  expect(approval.headers.get('Location')).toBe('/')
+  const approvalPage = await html(pending, '/')
+  expect(approvalPage).toContain('Pending access')
+  expect(approvalPage).not.toContain('forge-filters__count')
+  expect(approvalPage).not.toContain('forge-nav__group')
   const titles = async (filter: string) => {
     const page = await html(owner, `/artefacts?${filter}`)
     return ['Private notes', 'Shared deck', 'Open deck'].filter((title) => page.includes(title))
@@ -341,10 +450,6 @@ it('shows private artefacts with an active share link as shared and filters on t
   expect(await titles('visibility=public')).toEqual(['Open deck'])
   expect(await titles('q=shared&visibility=shared')).toEqual(['Shared deck'])
   expect(await titles('q=shared&visibility=private')).toEqual([])
-  expect(await html(owner, '/artefacts?visibility=shared')).toMatch(
-    /<option value="shared" selected[^>]*>Shared</,
-  )
-  expect(await html(owner, '/artefacts/deck')).not.toContain('value="shared"')
 
   const shareId = await db
     .prepare('SELECT s.id FROM share_links s JOIN artefacts a ON a.id = s.artefact_id WHERE a.slug = ?')
@@ -354,6 +459,9 @@ it('shows private artefacts with an active share link as shared and filters on t
   await post(owner, '/artefacts/deck', { action: 'revoke-share', id: shareId })
   expect(await titles('visibility=shared')).toEqual([])
   expect(await titles('visibility=private')).toEqual(['Private notes', 'Shared deck'])
+  expect(await html(viewer, '/artefacts')).toMatch(
+    />Private <span class="forge-filters__count">2<\/span>.*>Shared <span class="forge-filters__count">0<\/span>/s,
+  )
 
   // Filtering scans the usual bounded page of the private index, then continues on the next page.
   await post(owner, '/artefacts/deck', { action: 'create-share', label: 'Readers again', ...deck })
@@ -433,17 +541,41 @@ it('shows a localized end-of-results message when a catalogue continuation exhau
   expect(await french.text()).toContain('Il n’y a plus de résultats.')
 })
 
+it('identifies same-title and blank-title artefacts without covers in both catalogue views', async () => {
+  const send = runtime()
+  const owner = await mockProvider().signedIn(send, admin)
+  const token = await issueToken(owner, 'Identity fixtures')
+  const samples = [
+    ['first-report', 'Report', 'Report'],
+    ['second-report', 'Report', 'Report'],
+    ['blank-report', '  ', 'blank-report'],
+  ] as const
+  for (const [slug, title] of samples) await publish(send, token, slug, title)
+  const grid = await html(owner, '/artefacts')
+  const list = await html(owner, '/artefacts?view=list')
+  for (const [slug, , label] of samples) {
+    expect(grid).toContain(
+      `href="/artefacts/${slug}"><span class="forge-gallery__caption"><span class="forge-gallery__title">${label}</span></span></a><div class="forge-gallery__detail"><code class="forge-catalogue-slug">${slug}</code>`,
+    )
+    expect(list).toContain(`href="/artefacts/${slug}"><span>${label}</span></a>`)
+    expect(list).toContain(`<td class="forge-col--folded" title="${slug}"><code>${slug}</code></td>`)
+  }
+})
+
 it('uses bounded index seeks for missing and sparse matches in a large catalogue', async () => {
   const send = runtime()
   const owner = await mockProvider().signedIn(send, admin)
   await publish(send, await issueToken(owner, 'Catalogue seed'), slug, 'Exact Élément %_')
-  await db
-    .prepare(`WITH RECURSIVE numbers(n) AS (SELECT 1 UNION ALL SELECT n + 1 FROM numbers WHERE n < 1500)
+  const seed =
+    db.prepare(`WITH RECURSIVE numbers(n) AS (SELECT ?1 UNION ALL SELECT n + 1 FROM numbers WHERE n < ?2)
     INSERT INTO artefacts (id, slug, title, visibility, current_revision, created_by, created_at, updated_at)
     SELECT printf('10000000-0000-4000-8000-%012d', n), printf('common-%04d', n), 'Exact other title', 'public',
-    current_revision, created_by, created_at, updated_at FROM artefacts, numbers WHERE slug = ?`)
-    .bind(slug)
-    .run()
+    current_revision, created_by, created_at, updated_at FROM artefacts, numbers WHERE slug = ?3`)
+  await seed.bind(1, catalogueCountLimit - 1, slug).run()
+  expect(await html(owner, '/artefacts?q=missing')).toContain(
+    `All <span class="forge-filters__count">${catalogueCountLimit}</span>`,
+  )
+  await seed.bind(catalogueCountLimit, catalogueCountLimit, slug).run()
   // A long revocation history must not be walked by the active-link probe, even after ANALYZE.
   await db
     .prepare(`WITH RECURSIVE numbers(n) AS (SELECT 1 UNION ALL SELECT n + 1 FROM numbers WHERE n < 2000)
@@ -453,29 +585,51 @@ it('uses bounded index seeks for missing and sparse matches in a large catalogue
     .bind(slug)
     .run()
   await db.prepare('ANALYZE').run()
-  let reads = 0
+  let totalReads = 0
+  let searchReads = 0
   const planStatements: D1PreparedStatement[] = []
+  const originals = new WeakMap<D1PreparedStatement, { statement: D1PreparedStatement; search: boolean }>()
+  const measure = <T>(result: D1Result<T>) => {
+    totalReads += result.meta.rows_read
+    return result
+  }
+  function wrap(statement: D1PreparedStatement, sql: string): D1PreparedStatement {
+    const search = sql.includes('visibility = ?')
+    const wrapped = new Proxy(statement, {
+      get(prepared, key) {
+        if (key === 'bind')
+          return (...args: unknown[]) => {
+            if (search) planStatements.push(db.prepare(`EXPLAIN QUERY PLAN ${sql}`).bind(...args))
+            return wrap(prepared.bind(...args), sql)
+          }
+        if (key === 'all') return async () => measure(await prepared.all())
+        if (key === 'run') return async () => measure(await prepared.run())
+        if (key === 'first')
+          return async (column?: string) => {
+            const { results } = measure(await prepared.all<Record<string, unknown>>())
+            const row = results[0]
+            return row ? (column === undefined ? row : row[column]) : null
+          }
+        if (key === 'raw') throw new Error('Catalogue D1 meter does not support raw results')
+        return Reflect.get(prepared, key, prepared)
+      },
+    })
+    originals.set(wrapped, { statement, search })
+    return wrapped
+  }
   const measured = new Proxy(db, {
     get(target, key) {
-      if (key === 'prepare')
-        return (sql: string) => {
-          const statement = target.prepare(sql)
-          if (!sql.includes('visibility = ?')) return statement
-          return new Proxy(statement, {
-            get(prepared, prop) {
-              if (prop === 'bind')
-                return (...args: unknown[]) => {
-                  planStatements.push(target.prepare(`EXPLAIN QUERY PLAN ${sql}`).bind(...args))
-                  return prepared.bind(...args)
-                }
-              return Reflect.get(prepared, prop, prepared)
-            },
-          })
-        }
+      if (key === 'prepare') return (sql: string) => wrap(target.prepare(sql), sql)
       if (key === 'batch')
         return async (statements: D1PreparedStatement[]) => {
-          const results = await target.batch(statements)
-          reads += results.reduce((sum, result) => sum + result.meta.rows_read, 0)
+          const entries = statements.map((statement) => originals.get(statement))
+          const results = await target.batch(
+            statements.map((statement, i) => entries[i]?.statement ?? statement),
+          )
+          for (const [i, result] of results.entries()) {
+            measure(result)
+            if (entries[i]?.search) searchReads += result.meta.rows_read
+          }
           return results
         }
       const value = Reflect.get(target, key, target)
@@ -493,7 +647,20 @@ it('uses bounded index seeks for missing and sparse matches in a large catalogue
     )
   const empty = await fetch('missing')
   expect(empty.status).toBe(200)
-  expect(await empty.text()).toContain('No results.')
+  const oversized = await empty.text()
+  expect(oversized).toContain('No results.')
+  expect(oversized).not.toContain('forge-filters__count')
+  expect(
+    [...oversized.matchAll(/<a class="forge-filters__link"[^>]*>([^<]+)<\/a>/g)].map(([, label]) => label),
+  ).toEqual(['All', 'Private', 'Shared', 'Public'])
+  const emptyReads = totalReads
+  expect(emptyReads).toBeGreaterThanOrEqual(catalogueCountLimit + 1)
+  // D1 can meter both an index step and a table lookup for each sampled live artefact.
+  expect(emptyReads).toBeLessThan(2 * (catalogueCountLimit + 1) + 30)
+  await seed.bind(catalogueCountLimit + 1, catalogueCountLimit + 500, slug).run()
+  totalReads = 0
+  expect((await fetch('missing')).status).toBe(200)
+  expect(totalReads).toBe(emptyReads)
   const sparse = await fetch('eXaCt Élément %_')
   expect(sparse.status).toBe(200)
   expect(await sparse.text()).toContain('Exact Élément %_')
@@ -503,8 +670,8 @@ it('uses bounded index seeks for missing and sparse matches in a large catalogue
   const shared = await fetch('exact', 'shared')
   expect(shared.status).toBe(200)
   expect(await shared.text()).toContain('No results.')
-  expect(reads).toBeGreaterThan(0)
-  expect(reads).toBeLessThan(20)
+  expect(searchReads).toBeGreaterThan(0)
+  expect(searchReads).toBeLessThan(20)
   const plans = (await db.batch<{ detail: string }>(planStatements)).flatMap((result) =>
     result.results.map((row) => row.detail),
   )
@@ -530,8 +697,8 @@ it('restores a revision, reveals and revokes share links, then renames and resto
     .prepare('SELECT name FROM members WHERE id = (SELECT created_by FROM artefacts WHERE id = ?)')
     .bind(identity.artefactId)
     .first<string>('name')
-  expect(history).toContain(`<td class="forge-col--secondary" title="${author}">${author}</td>`)
-  expect(history).toMatch(/\d{2}\/\d{2}\/\d{4}, \d{2}:\d{2} UTC/)
+  expect(history).toContain(` · ${author}</p>`)
+  expect(history).toMatch(/<time datetime="[^"]+Z" title="[^"]+ UTC">/)
   const first = await post(owner, detail, { action: 'create-share', label: 'Early readers', ...identity })
   const url = /<code>(https:\/\/read\.forge\.example\/s\/quarterly\/[A-Za-z0-9_-]+\/)<\/code>/.exec(
     first,
@@ -564,6 +731,225 @@ it('restores a revision, reveals and revokes share links, then renames and resto
   expect(await html(owner, deleted)).toContain('Quarterly report')
   await post(owner, deleted, { action: 'restore', slug: 'renamed-report', ...identity })
   expect(await (await send(`${read}/a/renamed-report/`)).text()).toBe('<p>Original version</p>')
+})
+
+it('supports all nine access transitions without replacing existing share links', async () => {
+  const send = runtime()
+  const idp = mockProvider()
+  const owner = await idp.signedIn(send, admin)
+  const viewer = await idp.signedIn(send, 'detail-reader')
+  const token = await issueToken(owner, 'Access publisher')
+  const states = ['private', 'shared', 'public'] as const
+  for (const from of states) {
+    for (const to of states) {
+      const name = `${from}-to-${to}`
+      const path = `/artefacts/${name}`
+      await publish(send, token, name, name)
+      const identity = { artefactId: await artefactId(owner, path) }
+      const links = async () =>
+        (
+          await db
+            .prepare('SELECT id, label FROM share_links WHERE artefact_id = ? AND revoked_at IS NULL')
+            .bind(identity.artefactId)
+            .all<{ id: string; label: string | null }>()
+        ).results
+      if (from !== 'private')
+        await post(owner, path, { action: 'create-share', label: 'Existing', ...identity })
+      if (from === 'public')
+        await post(owner, path, { action: 'visibility', visibility: 'public', ...identity })
+      const initialUpdated = Date.UTC(2025, 0, 1)
+      await db
+        .prepare('UPDATE artefacts SET updated_at = ? WHERE id = ?')
+        .bind(initialUpdated, identity.artefactId)
+        .run()
+      const initial = await html(owner, path)
+      expect(initial).toContain(`forge-badge--${from}`)
+      expect(initial).toMatch(new RegExp(`type="radio" name="access" value="${from}" checked`))
+      const before = await links()
+      const result = await post(owner, path, {
+        action: 'access',
+        access: to,
+        ...identity,
+        ...(to === 'private' && before.length ? { revoke: String(before.length) } : {}),
+      })
+      expect(result).toContain(`forge-badge--${to}`)
+      const after = await links()
+      const updated = await db
+        .prepare('SELECT updated_at FROM artefacts WHERE id = ?')
+        .bind(identity.artefactId)
+        .first<number>('updated_at')
+      if (to === from) expect(updated).toBe(initialUpdated)
+      else expect(updated).toBeGreaterThan(initialUpdated)
+      if (to === 'private') expect(after).toEqual([])
+      else if (to === 'shared' && !before.length) {
+        expect(after).toEqual([{ id: expect.any(String), label: null }])
+        expect(result).toContain('data-secret-flash=""')
+      } else {
+        expect(after).toEqual(before)
+        expect(result).not.toContain('data-secret-flash=""')
+      }
+      if (from === 'shared' && to === 'shared') {
+        const readonly = await html(viewer, path)
+        expect(readonly).toContain('forge-badge--shared')
+        expect(readonly).not.toMatch(
+          /forge-detail__aside|value="(?:access|rename|delete|create-share|reveal-share|revoke-share)"/,
+        )
+        expect((await viewer.post(path, { action: 'access', access: 'public', ...identity })).status).toBe(
+          403,
+        )
+      }
+    }
+  }
+}, 20_000)
+
+it('confirms the current revocation count before changing access or auditing the change', async () => {
+  const send = runtime()
+  const owner = await mockProvider().signedIn(send, admin)
+  const token = await issueToken(owner, 'Sharing publisher')
+  await publish(send, token, slug, 'Quarterly report')
+  const identity = { artefactId: await artefactId(owner) }
+  await post(owner, detail, { action: 'access', access: 'public', ...identity })
+  const first = await owner.post(detail, { action: 'access', access: 'shared', ...identity })
+  expect(first.status).toBe(303)
+  const destination = location(first)
+  const flash = await (await owner.request(destination, { headers: flashNavigation })).text()
+  const url = /<code>(https:\/\/read\.forge\.example\/s\/quarterly\/([A-Za-z0-9_-]+)\/)<\/code>/.exec(flash)
+  if (!url) throw new Error('Expected the first generated share link to be flashed')
+  expect(flash.split(url[1])).toHaveLength(2)
+  expect(await (await owner.request(destination, { headers: flashNavigation })).text()).not.toContain(url[2])
+  expect(await html(owner, detail)).not.toContain(url[2])
+
+  const initial = await html(owner, detail)
+  const stale = sheets(initial).find(({ action }) => action === 'access')
+  if (!stale) throw new Error('Expected a Private confirmation')
+  expect(formValue(stale.form, 'revoke')).toBe('1')
+  await post(owner, detail, { action: 'visibility', visibility: 'public', ...identity })
+  const key = 'synthetic-sample-key'
+  await post(owner, detail, { action: 'create-share', label: 'Review', key, ...identity })
+  const initialUpdated = Date.UTC(2025, 0, 1)
+  await db
+    .prepare('UPDATE artefacts SET updated_at = ? WHERE id = ?')
+    .bind(initialUpdated, identity.artefactId)
+    .run()
+  const twoLinks = await html(owner, detail)
+  expect(twoLinks).not.toContain(key)
+  expect(twoLinks).toContain(
+    'Anyone with an active share link can read the current artefact. Share links only with intended recipients.',
+  )
+  const confirmations = sheets(twoLinks)
+  expect(
+    confirmations.filter(({ action }) => action === 'revoke-share').map(({ contents }) => contents),
+  ).toEqual(
+    expect.arrayContaining([
+      expect.stringContaining('Revoke “Review”?'),
+      expect.stringContaining('Revoke “Unlabeled”?'),
+    ]),
+  )
+  expect(confirmations.find(({ action }) => action === 'access')?.contents).toContain('2 active share links')
+  const audit = () =>
+    db
+      .prepare(
+        `SELECT detail_json FROM audit_log WHERE artefact_id = ? AND action = 'artefact.access' ORDER BY at`,
+      )
+      .bind(identity.artefactId)
+      .all<{ detail_json: string }>()
+  const before = (await audit()).results
+  for (const revoke of [undefined, '0', formValue(stale.form, 'revoke'), '3']) {
+    const rejected = await post(owner, detail, {
+      action: 'access',
+      access: 'private',
+      ...identity,
+      ...(revoke === undefined ? {} : { revoke }),
+    })
+    expect(rejected).toContain('Access was not changed. Active share links: 2.')
+    expect(rejected).toContain('forge-badge--public')
+    expect(rejected).toContain('<span>Updated <time datetime="2025-01-01T00:00:00.000Z"')
+    expect((await send(url[1])).status).toBe(200)
+    expect((await send(`${read}/s/${slug}/${key}/`)).status).toBe(200)
+  }
+  expect((await audit()).results).toEqual(before)
+  const success = await post(owner, detail, { action: 'access', access: 'private', revoke: '2', ...identity })
+  expect(success).toContain('forge-badge--private')
+  expect(sheets(success).map(({ action }) => action)).toEqual(['delete'])
+  expect((await send(url[1])).status).toBe(404)
+  expect((await send(`${read}/s/${slug}/${key}/`)).status).toBe(404)
+  expect((await audit()).results.map(({ detail_json }) => JSON.parse(detail_json))).toContainEqual({
+    access: 'private',
+    revoked: 2,
+  })
+  const staleAfterRevoke = await post(owner, detail, {
+    action: 'access',
+    access: 'private',
+    revoke: '2',
+    ...identity,
+  })
+  expect(staleAfterRevoke).toContain('Access was not changed. Active share links: 0.')
+})
+
+it('marks the entry and head, restores older versions only, and keeps long messages readable', async () => {
+  const send = runtime()
+  const idp = mockProvider()
+  const owner = await idp.signedIn(send, admin)
+  const viewer = await idp.signedIn(send, 'version-reader')
+  const token = await issueToken(owner, 'Version publisher')
+  await publish(send, token, slug, 'Quarterly report', 2)
+  await publish(send, token, slug, 'Quarterly report', 2)
+  const identity = { artefactId: await artefactId(owner) }
+  const message = `${'x'.repeat(200)} tail`
+  await db
+    .prepare('UPDATE revisions SET message = ? WHERE artefact_id = ? AND number = 2')
+    .bind(message, identity.artefactId)
+    .run()
+  const document = await html(owner, detail)
+  expect(document).not.toContain('forge-detail__preview')
+  expect(document.match(/forge-badge--entry/g)).toHaveLength(1)
+  expect(document).toMatch(
+    /<code>index\.html<\/code><\/a> <span class="forge-badge forge-badge--entry">Entry page/,
+  )
+  expect(document).toMatch(
+    /<code>https:\/\/read\.forge\.example\/a\/quarterly\/<\/code><button[^>]*data-copy=""[^>]*hidden="">Copy address/,
+  )
+  const timeline = Array.from(
+    document.matchAll(/<li class="forge-version">(.*?)<\/li>/gs),
+    (match) => match[1],
+  )
+  expect(timeline).toHaveLength(2)
+  expect(timeline[0]).toContain('Version 2')
+  expect(timeline[0]).toContain('forge-badge--current')
+  expect(timeline[0]).not.toContain('value="restore-revision"')
+  expect(timeline[0]).toContain(`<summary>Full message</summary><p>${message}</p>`)
+  expect(timeline[1]).toContain('Version 1')
+  expect(timeline[1]).not.toContain('forge-badge--current')
+  expect(timeline[1]).toContain('value="restore-revision"')
+  expect(await html(viewer, detail)).not.toContain('value="restore-revision"')
+})
+
+it('keeps revision authorship separate from later changes and counts all revision files despite a cursor', async () => {
+  const send = runtime()
+  const idp = mockProvider()
+  const alice = await idp.signedIn(send, admin, { userinfo: { name: 'Alice Example' } })
+  const bob = await idp.signedIn(send, 'bob', { userinfo: { name: 'Bob Example' } })
+  const bobId = await listedId(alice, members, 'bob@example.test')
+  await post(alice, members, { action: 'role', id: bobId, role: 'publisher' })
+  const token = await issueToken(alice, 'Alice publisher')
+  await publish(send, token, slug, 'Quarterly report')
+  const id = await artefactId(alice)
+  const publishedAt = Date.UTC(2025, 0, 1)
+  await db.batch([
+    db.prepare('UPDATE revisions SET created_at = ? WHERE artefact_id = ?').bind(publishedAt, id),
+    db.prepare('UPDATE artefacts SET updated_at = ? WHERE id = ?').bind(publishedAt, id),
+  ])
+  await post(bob, detail, { action: 'access', access: 'shared', artefactId: id })
+  const cursor = base64url.encode(JSON.stringify([id, 1, 'index.html']))
+  const document = await html(bob, `${detail}?files=${cursor}`)
+  const metadata = /<div class="forge-detail__meta">(.*?)<\/div>/s.exec(document)?.[1]
+  expect(metadata).toMatch(
+    /<span>v1 by Alice Example · <time datetime="2025-01-01T00:00:00\.000Z"[^>]*>[^<]+<\/time><\/span><span>Updated <time datetime="([^"]+)"[^>]*>[^<]+<\/time><\/span><span>1 file<\/span>/,
+  )
+  const changedAt = /Updated <time datetime="([^"]+)"/.exec(metadata ?? '')?.[1]
+  expect(Date.parse(changedAt ?? '')).toBeGreaterThan(publishedAt)
+  expect(metadata).not.toContain('Bob Example')
+  expect(document).not.toContain('200+ files')
 })
 
 it('confirms deletion and purge with separate forms for each deleted artefact', async () => {
@@ -639,15 +1025,19 @@ it('keeps expiry dates in the primary cells of same-role invite rows', async () 
     .bind(Date.UTC(2099, 0, 2, 3, 4))
     .run()
   const page = await post(owner, members, { action: 'create-invite', role: 'viewer' })
-  expect(page).toContain('<th scope="col">Expires (UTC)</th>')
-  const rows = [...page.matchAll(/<tr><td>viewer<\/td><td>([^<]+ UTC)<\/td><td>.*?<\/tr>/gs)]
+  expect(page).toContain('<th scope="col">Expires</th>')
+  const rows = [
+    ...page.matchAll(
+      /<tr><td>viewer<\/td><td><time datetime="([^"]+)"[^>]+>[^<]+<\/time><\/td><td>.*?<\/tr>/gs,
+    ),
+  ]
   expect(rows).toHaveLength(2)
-  expect(rows.map((row) => row[1])).toContain('02/01/2099, 03:04 UTC')
+  expect(rows.map((row) => row[1])).toContain('2099-01-02T03:04:00.000Z')
   expect(new Set(rows.map((row) => row[1])).size).toBe(2)
   for (const [row] of rows) expect(row).toContain('value="revoke-invite"')
 })
 
-it('folds localized metadata into the primary cells while keeping one column copy without CSS', async () => {
+it('localizes share creation metadata and keeps one visible copy of folded table metadata', async () => {
   const send = runtime({ LOCALE: 'fr' })
   const owner = await mockProvider().signedIn(send, admin)
   const token = await issueToken(owner, 'Jeton de publication')
@@ -657,14 +1047,12 @@ it('folds localized metadata into the primary cells while keeping one column cop
   const artefactIdValue = await artefactId(owner)
   await post(owner, detail, { action: 'create-share', label, artefactId: artefactIdValue })
   const createdAt = Date.UTC(2025, 1, 3, 4, 5)
+  await db.prepare('UPDATE share_links SET created_at = ?').bind(createdAt).run()
   const lastUsedAt = Date.UTC(2025, 2, 4, 5, 6)
-  await db.batch([
-    db.prepare('UPDATE share_links SET created_at = ?, last_used_at = ?').bind(createdAt, lastUsedAt),
-    db.prepare('UPDATE api_tokens SET last_used_at = ?, revoked_at = ?').bind(lastUsedAt, createdAt),
-  ])
+  await db.prepare('UPDATE api_tokens SET last_used_at = ?, revoked_at = ?').bind(lastUsedAt, createdAt).run()
 
-  const created = '03/02/2025 04:05 UTC'
-  const lastUsed = '04/03/2025 05:06 UTC'
+  const created = `<time datetime="2025-02-03T04:05:00.000Z" title="3 févr. 2025, 04:05 UTC">03/02/2025</time>`
+  const lastUsed = `<time datetime="2025-03-04T05:06:00.000Z" title="4 mars 2025, 05:06 UTC">04/03/2025</time>`
   const fold = (value: string, label?: string) => `${label ? `<strong>${label}: </strong>` : ''}${value}`
   function expectRow(document: string, name: string, headings: string[], copies: string[], cells: string[]) {
     for (const heading of headings) {
@@ -685,12 +1073,11 @@ it('folds localized metadata into the primary cells while keeping one column cop
   const column = (value: string, title?: string) =>
     `<td class="forge-col--folded"${title ? ` title="${title}"` : ''}>${value}</td>`
 
-  expectRow(
-    await html(owner, detail),
-    label,
-    ['Créé le', 'Dernière utilisation'],
-    [fold(created, 'Créé le'), fold(lastUsed, 'Dernière utilisation')],
-    [column(created), column(lastUsed)],
+  const sharePage = await html(owner, detail)
+  expect(sharePage).toContain(`<strong>${label}</strong>`)
+  expect(sharePage).toContain(`Créé le ${created} par `)
+  expect(sharePage).toContain(
+    'Toute personne disposant d’un lien de partage actif peut lire l’artefact actuel. Réservez ces liens aux personnes concernées.',
   )
   const prefix = token.slice(0, 12)
   expectRow(
@@ -742,7 +1129,6 @@ it.each(['en', 'fr'] as const)(
     const pages = [
       [anonymous, '/login', 'Sign in', 'Se connecter'],
       [pending, '/', 'Pending access', 'Accès en attente'],
-      [owner, '/', 'Manage', 'Gestion'],
       [owner, '/artefacts', 'Start of title or slug', 'Début du titre ou de l’identifiant'],
       [owner, detail, 'Open artefact', 'Ouvrir l’artefact'],
       [owner, deleted, 'Deleted artefacts', 'Artefacts supprimés'],
@@ -759,6 +1145,9 @@ it.each(['en', 'fr'] as const)(
       expect(document, path).toContain('Ember Studio')
       expect(document, path).toContain('Ember &amp; Co</a>')
     }
+    const home = await owner.request('/')
+    expect(home.status).toBe(303)
+    expect(home.headers.get('Location')).toBe('/artefacts')
     const held = await pending.request('/artefacts?view=list')
     expect(held.status).toBe(303)
     expect(held.headers.get('Location')).toBe('/')
@@ -774,19 +1163,21 @@ it.each(['en', 'fr'] as const)(
     expect(catalogue).toContain(`href="${detail}"`)
     expect(catalogue).toContain('Quarterly report')
     expect(catalogue).not.toContain(`/_forge/preview/${slug}`)
-    expect(catalogue).toContain(`<dt>${french ? 'Identifiant' : 'Slug'}</dt><dd><code>${slug}</code></dd>`)
+    expect(catalogue).not.toContain('<dl>')
+    expect(catalogue).toMatch(/<time datetime="[^"]+Z" title="[^"]+ UTC">[^<]+<\/time> · v1/)
     expect(catalogue).toContain(
-      french ? '<dt>Visibilité</dt><dd>Privé</dd>' : '<dt>Visibility</dt><dd>Private</dd>',
+      `<span class="forge-badge forge-badge--private">${french ? 'Privé' : 'Private'}</span>`,
     )
-    expect(catalogue).toContain(french ? '<dt>Version</dt><dd>1</dd>' : '<dt>Revision</dt><dd>1</dd>')
-    expect(catalogue).toMatch(new RegExp(`<dt>${french ? 'Mis à jour' : 'Updated'}</dt><dd>[^<]+ UTC</dd>`))
+    expect(catalogue).toContain(`class="forge-nav__group" aria-label="${french ? 'Contenu' : 'Content'}"`)
     const [grid, list] = french ? ['Grille', 'Liste'] : ['Grid', 'List']
     expect(catalogue).toContain(
       `<nav class="forge-views" aria-label="${french ? 'Affichage' : 'View'}"><a href="/artefacts" aria-current="page">${grid}</a><a href="/artefacts?view=list">${list}</a></nav>`,
     )
     const listed = await html(owner, '/artefacts?visibility=private&view=list')
     expect(listed).not.toContain('class="forge-gallery')
-    expect(listed).toContain(`<a href="${detail}"><span>Quarterly report</span></a>`)
+    expect(listed).toContain(
+      `<a class="forge-catalogue-link" href="${detail}"><span>Quarterly report</span></a>`,
+    )
     expect(listed).toContain(`<td class="forge-col--folded" title="${slug}"><code>${slug}</code></td>`)
     expect(listed).toContain('<input type="hidden" name="view" value="list"/>')
     expect(listed).toContain(
@@ -989,4 +1380,71 @@ it('fails closed on invalid locale or unsafe brand data', async () => {
   expect(
     (await runtime({ BRAND: '{"accent":"red; background: url(https://example.test)"}' })('/login')).status,
   ).toBe(503)
+})
+
+it('uses UTC by default and a configured named zone for absolute timestamps without changing recent labels', async () => {
+  const send = runtime()
+  const owner = await mockProvider().signedIn(send, admin)
+  await publish(send, await issueToken(owner, 'Date formatting'), slug, 'Date fixture')
+  const clock = vi.spyOn(Date, 'now').mockReturnValue(Date.now())
+  try {
+    const match = /<time datetime="([^"]+)" title="([^"]+)">([^<]+)<\/time>/
+    const utc = match.exec(await html(owner, '/artefacts'))
+    const local = await runtime({ TIMEZONE: 'America/New_York' })('/artefacts', {
+      headers: { Cookie: owner.cookieHeader() },
+    })
+    expect(local.status).toBe(200)
+    const eastern = match.exec(await local.text())
+    expect(utc?.[2]).toMatch(/ UTC$/)
+    expect(eastern?.[2]).toMatch(/ (?:GMT-|\b[EC][SD]T)/)
+    expect(eastern?.[2]).not.toBe(utc?.[2])
+    expect(utc?.[3]).toBe('now')
+    expect([eastern?.[1], eastern?.[3]]).toEqual([utc?.[1], utc?.[3]])
+  } finally {
+    clock.mockRestore()
+  }
+  expect((await runtime({ TIMEZONE: 'Europe/Missing' })('/login')).status).toBe(503)
+  expect((await runtime({ TIMEZONE: '+02:00' })('/login')).status).toBe(503)
+})
+
+it('renders short elapsed and future times and falls back to a short absolute date beyond eight weeks', () => {
+  const now = Date.UTC(2026, 1, 26)
+  const clock = vi.spyOn(Date, 'now').mockReturnValue(now)
+  const zone = { locale: 'en', timeZone: 'UTC' } as const
+  const minute = 60_000
+  const day = 24 * 60 * minute
+  try {
+    for (const [offset, label] of [
+      [-minute + 1, /^now$/],
+      [-minute, /^1 min\.? ago$/],
+      [-60 * minute, /^1 hr\.? ago$/],
+      [-day, /^1 day ago$/],
+      [day, /^in 1 day$/],
+      [-6 * day, /^6 days? ago$/],
+      [-7 * day, /^1 wk\.? ago$/],
+      [-56 * day, /^8 wk\.? ago$/],
+      [-56 * day - 1, /^31\/12\/2025$/],
+      [3 * day, /^in 3 days$/],
+    ] as const) {
+      const rendered = String(time(zone, now + offset))
+      expect(rendered).toContain(`datetime="${new Date(now + offset).toISOString()}"`)
+      expect(/>([^<]+)<\/time>/.exec(rendered)?.[1]).toMatch(label)
+    }
+    expect(time(zone, null)).toBe('—')
+  } finally {
+    clock.mockRestore()
+  }
+})
+
+it.each([
+  ['UTC', '2026-11-21T23:00:00Z', '2026-11-23T00:30:00Z'],
+  // Both instants are on November 1 locally, 24.5 hours apart across the fallback.
+  ['America/New_York', '2026-11-01T04:05:00Z', '2026-11-02T04:35:00Z'],
+])('describes elapsed days without a calendar-day label in %s', (timeZone, timestamp, now) => {
+  const clock = vi.spyOn(Date, 'now').mockReturnValue(Date.parse(now))
+  try {
+    expect(String(time({ locale: 'en', timeZone }, Date.parse(timestamp)))).toMatch(/>1 day ago<\/time>$/)
+  } finally {
+    clock.mockRestore()
+  }
 })

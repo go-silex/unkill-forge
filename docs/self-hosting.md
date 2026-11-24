@@ -115,6 +115,8 @@ By default the read origin shows a sign-in action without a public catalogue. Se
 
 Both galleries use a supported raster preview from the current revision. You can supply a root-level `og.jpg`, `og.jpeg`, `og.png`, `og.webp` or `index.og.png` no larger than 1 MiB. A valid supplied preview always wins. To publish and verify the first private artefact, see [Connect and publish with MCP](mcp.md).
 
+Manage shows access counts for catalogues of up to 1,000 live artefacts. The counts are catalogue-wide, not limited to search matches. Larger catalogues still offer the same filters, without counts.
+
 To generate missing covers for HTML artefacts after publication, add a [Browser Run binding](https://developers.cloudflare.com/browser-run/reference/wrangler/#bindings). Keep the separate cover trigger for retries and backfill:
 
 ```jsonc
@@ -128,10 +130,13 @@ Publication does not wait for capture. The scheduled pass also discovers existin
 
 Set `LOCALE` to `en` (default) or `fr` for Forge-authored UI copy on both hosts. It does not translate published artefacts, provider labels or member names. `FORGE_NAME` supplies the instance name in document titles, MCP and OAuth resource metadata. `BRAND` is a JSON-encoded string; keep `"{}"` for the bundled defaults, or override the six-digit hex accent, the brand block label (trimmed plain text, 1–40 characters; defaults to `FORGE_NAME`), and the non-index read landing's plain text (up to 500 characters). A label does not require a theme binding:
 
+Set the optional `TIMEZONE` to an IANA time zone name (default `UTC`, for example `Europe/Paris`). Manage shows relative dates where possible; this setting applies to the absolute timestamp on hover and to older dates shown directly. Relative labels use elapsed time and do not depend on the time zone.
+
 ```json
 {
   "FORGE_NAME": "Forge",
   "LOCALE": "fr",
+  "TIMEZONE": "Europe/Paris",
   "BRAND": "{\"label\":\"Studio\",\"accent\":\"#a7481c\",\"landingText\":\"Our published work\"}"
 }
 ```
@@ -209,10 +214,24 @@ These classes and the custom properties above are the supported theme contract. 
 | `.forge-drawer`, `.forge-menu`, `.forge-drawer__panel`                                            | Native narrow-screen disclosure, summary control and panel; use `[open]` on `.forge-drawer` for its state  |
 | `.forge-brand`, `.forge-brand__logo`                                                              | Shared instance mark/label group and height-sized image                                                    |
 | `.forge-nav`, `.forge-nav__link`                                                                  | Section navigation and links; use `[aria-current="page"]` for the active section                           |
+| `.forge-nav__group`, `.forge-nav__group-label`                                                    | Role-gated section group and its visible label                                                             |
+| `.forge-account`, `.forge-account__name`, `.forge-account__role`                                  | Signed-in account block with member name, role and sign-out form                                           |
+| `.forge-filters`, `.forge-filters__link`, `.forge-filters__count`                                 | Catalogue visibility filters, links (active via `[aria-current="page"]`) and catalogue-wide counts         |
+| `.forge-badge`, `.forge-badge--current`                                                           | Text badge and current-version variant                                                                     |
+| `.forge-badge--private`, `.forge-badge--shared`, `.forge-badge--public`                           | Private, shared and public access variants                                                                 |
+| `.forge-catalogue-meta`, `.forge-catalogue-link`                                                  | Grid and folded list metadata, and the artefact title/thumbnail link in list view                          |
+| `.forge-catalogue-slug`                                                                           | Visible artefact identifier on grid cards                                                                  |
 | `.forge-title`                                                                                    | Page heading                                                                                               |
 | `.forge-panel`, `.forge-panel__header`, `.forge-panel__body`                                      | Single-panel layout, shared brand header, and body                                                         |
 | `.forge-panel--sign-in`, `.forge-panel--invite`, `.forge-panel--consent`, `.forge-panel--handoff` | Manage sign-in, invitation, consent, and read-session relay panels                                         |
 | `.forge-panel--landing`, `.forge-panel--pending`, `.forge-panel--error`                           | Read landing, approval-pending, and error panels (including missing files and handoff retry)               |
+| `.forge-breadcrumb`                                                                               | Artefact detail breadcrumb                                                                                 |
+| `.forge-detail`, `.forge-detail__main`, `.forge-detail__aside`                                    | Detail grid, files and versions column, and role-gated settings column                                     |
+| `.forge-detail__meta`, `.forge-detail__actions`, `.forge-detail__preview`                         | Detail metadata, action groups, and catalogue cover                                                        |
+| `.forge-badge--entry`                                                                             | Marks the entry page in the file table                                                                     |
+| `.forge-versions`, `.forge-version`                                                               | Ordered timeline and individual version entries                                                            |
+| `.forge-panel-card`, `.forge-share-links`                                                         | Detail settings card and active share link list                                                            |
+| `.forge-access`, `.forge-access__options`                                                         | Access form and confirmation wrapper, and radio options                                                    |
 | `.forge-table-scroll`, `.forge-table`                                                             | Horizontal scroll container and dense data table                                                           |
 | `.forge-col--secondary`                                                                           | Marks both the heading and its data cells as secondary metadata; hidden by default at widths up to `45rem` |
 | `.forge-col--folded`, `.forge-fold`                                                               | Paired original column (heading and cells) and folded copies inside the primary cell                       |
@@ -233,7 +252,9 @@ Confirmation sheets use the native `popover` attribute without JavaScript (Chrom
 
 On narrow screens, opening the native drawer pushes the page down. Keep row identifiers and actions visible when hiding secondary table metadata. Dense table buttons use the compact height only when the primary pointer is fine and no coarse pointer is available.
 
-Artefact shares fold both timestamps, personal tokens fold last use and revocation, members fold email, provider and role, and deleted artefacts fold slug, deletion time and state. At widths up to `45rem`, the built-in stylesheet displays `.forge-fold` and hides `.forge-col--folded` with `display: none`. On wider screens and without CSS, the columns are visible and the folded copies stay `hidden`. Preserve this swap when styling folds so each value is visible and exposed to assistive technology only once.
+Personal tokens fold last use and revocation, members fold email, provider and role, and deleted artefacts fold slug, deletion time and state. At widths up to `45rem`, the built-in stylesheet displays `.forge-fold` and hides `.forge-col--folded` with `display: none`. On wider screens and without CSS, the columns are visible and the folded copies stay `hidden`. Preserve this swap when styling folds so each value is visible and exposed to assistive technology only once.
+
+The Access form uses `:has()` and native popovers to swap Save for a confirmation opener when Private is selected and active links exist. Preserve access to that confirmation when customizing the controls; the server also refuses an unconfirmed or stale number of revocations.
 
 ## Upgrades, maintenance and backups
 

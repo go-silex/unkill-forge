@@ -128,12 +128,12 @@ describe('browser sign-in', () => {
     expect((await owner.request(members)).status).toBe(200)
 
     const member = await idp.signedIn(send, alsoListed)
-    expect((await member.request('/')).status).toBe(200)
+    expect((await member.request('/artefacts')).status).toBe(200)
     expect((await member.request(members)).status).toBe(403)
     const id = await listedId(owner, members, `${alsoListed}@example.test`)
     const crossOriginAlias = await owner.post('/admin/%6dembers', { id, action: 'remove' }, read)
     expect([403, 404]).toContain(crossOriginAlias.status)
-    expect((await member.request('/')).status).toBe(200)
+    expect((await member.request('/artefacts')).status).toBe(200)
     expect((await owner.post(members, { id, action: 'remove' })).status).toBe(303)
     expect(location(await member.request('/', { headers: navigation })).pathname).toBe('/login')
 
@@ -196,7 +196,7 @@ describe('browser sign-in', () => {
     const b = await mockProvider().signedIn(send, 'csrf-member')
     const original = b.cookieHeader()
     expect((await b.post('/logout', {}, read)).status).toBe(403)
-    expect((await send('/', { headers: { ...navigation, cookie: original } })).status).toBe(200)
+    expect((await send('/artefacts', { headers: { ...navigation, cookie: original } })).status).toBe(200)
     expect((await b.post('/logout', {})).status).toBe(303)
     expect(location(await send('/', { headers: { ...navigation, cookie: original } })).pathname).toBe(
       '/login',
@@ -209,9 +209,9 @@ describe('browser sign-in', () => {
     const b = await idp.signedIn(send, 'prior-account')
     const original = b.cookieHeader()
     expect((await idp.login(b, 'different-account', { token: { azp: 'different-client' } })).status).toBe(401)
-    expect((await send('/', { headers: { cookie: original } })).status).toBe(200)
+    expect((await send('/artefacts', { headers: { cookie: original } })).status).toBe(200)
     expect((await idp.login(b, 'different-account')).status).toBe(302)
-    expect(await (await b.request('/')).text()).toContain('different-account')
+    expect(await (await b.request('/artefacts')).text()).toContain('different-account')
     expect(location(await send('/', { headers: { cookie: original } })).pathname).toBe('/login')
   })
 })
@@ -246,7 +246,7 @@ describe('session lifetime', () => {
     expect(renewed.status).toBe(302)
     expect(location(renewed).href).toBe(`${manage}/`)
     vi.setSystemTime(start + 59 * minute)
-    expect((await b.request('/', { headers: api })).status).toBe(200)
+    expect((await b.request('/artefacts', { headers: api })).status).toBe(200)
     vi.setSystemTime(start + 61 * minute)
     const expired = await send('/', { headers: { ...navigation, cookie: original } })
     expect(location(expired)).toMatchObject({ origin: manage, pathname: '/login' })
@@ -257,7 +257,7 @@ describe('session lifetime', () => {
     const idp = mockProvider()
     const b = await idp.signedIn(runtime(), 'two-tabs')
     const original = b.cookie(sessionCookie)
-    const path = '/?tab=second'
+    const path = '/artefacts?view=list'
     vi.setSystemTime(start + 11 * minute)
     const first = await revalidation(b)
     const second = await revalidation(b, path)
@@ -312,7 +312,7 @@ describe('session lifetime', () => {
       const idp = mockProvider()
       const b = await idp.signedIn(runtime(), 'interactive')
       const original = b.cookie(sessionCookie)
-      const path = '/?view=account'
+      const path = '/artefacts?q=report'
       vi.setSystemTime(start + 11 * minute)
       const authorize = await revalidation(b, path)
       const exchanges = idp.exchanges
@@ -351,7 +351,7 @@ describe('session lifetime', () => {
       expect(b.cookie(sessionCookie)).toBeUndefined()
       const expired = await send('/', { headers: { ...navigation, cookie: original } })
       expect(location(expired)).toMatchObject({ origin: manage, pathname: '/login' })
-      expect((await otherBrowser.request('/', { headers: api })).status).toBe(200)
+      expect((await otherBrowser.request('/artefacts', { headers: api })).status).toBe(200)
     },
   )
 
@@ -413,13 +413,13 @@ describe('OIDC back-channel logout', () => {
     expect((await idp.backchannel(send, 'with-nonce', { sid: 'second', nonce: 'prohibited' })).status).toBe(
       400,
     )
-    expect((await second.request('/')).status).toBe(200)
+    expect((await second.request('/artefacts')).status).toBe(200)
     expect((await idp.backchannel(send, 'sid-jti', { sub: subject, sid: 'first' })).status).toBe(200)
     expect(location(await first.request('/', { headers: navigation })).pathname).toBe('/login')
-    expect((await second.request('/')).status).toBe(200)
+    expect((await second.request('/artefacts')).status).toBe(200)
     expect((await idp.backchannel(send, 'sid-jti', { sub: subject, sid: 'first' })).status).toBe(400)
     expect((await idp.backchannel(send, 'sid-jti', { sub: subject, sid: 'second' })).status).toBe(400)
-    expect((await second.request('/')).status).toBe(200)
+    expect((await second.request('/artefacts')).status).toBe(200)
   })
 
   it('ends every session for a sub-only logout without affecting a different identity', async () => {
@@ -433,6 +433,6 @@ describe('OIDC back-channel logout', () => {
     for (const b of [first, second]) {
       expect(location(await b.request('/', { headers: navigation })).pathname).toBe('/login')
     }
-    expect((await unaffected.request('/')).status).toBe(200)
+    expect((await unaffected.request('/artefacts')).status).toBe(200)
   })
 })

@@ -86,10 +86,22 @@ const booleanVar = z
   .default('false')
   .transform((value) => value === 'true')
 
+const timeZone = z.string().refine((value) => {
+  // Intl also accepts numeric offsets in some runtimes; require a named zone.
+  if (!/^[A-Za-z]/.test(value)) return false
+  try {
+    new Intl.DateTimeFormat('en', { timeZone: value })
+    return true
+  } catch {
+    return false
+  }
+}, 'Expected an IANA time zone name')
+
 const vars = z
   .object({
     FORGE_NAME: z.string().trim().min(1),
     LOCALE: z.enum(['en', 'fr']).default('en'),
+    TIMEZONE: timeZone.default('UTC'),
     BRAND: parseJson.pipe(brand).default({ accent }),
     READ_ORIGIN: origin,
     MANAGE_ORIGIN: origin,
@@ -146,6 +158,7 @@ export type Env = Record<string, unknown> & {
 export type Config = {
   name: string
   locale: 'en' | 'fr'
+  timeZone: string
   brand: z.output<typeof brand>
   theme?: Fetcher
   readOrigin: string
@@ -201,6 +214,7 @@ export function configuration(env: Env): Config | null {
       config = {
         name: value.FORGE_NAME,
         locale: value.LOCALE,
+        timeZone: value.TIMEZONE,
         brand: value.BRAND,
         theme: value.THEME,
         readOrigin: value.READ_ORIGIN,
