@@ -7,20 +7,25 @@ import { trimLookahead } from './pagination'
 
 const cursorSchema = z.tuple([
   z.string(),
-  z.enum(['private', 'public']).nullable(),
+  z.enum(['private', 'shared', 'public']).nullable(),
   z.enum(['recent', 'slug', 'title']),
   z.union([z.string(), z.int()]),
   z.string(),
 ])
-type Visibility = 'private' | 'public'
+/** Catalogue state: stored visibility, with private artefacts that have an active share link shown as shared. */
+export type CatalogueAccess = 'private' | 'shared' | 'public'
 type Row = {
   id: string
   slug: string
   title: string
-  visibility: Visibility
+  visibility: 'private' | 'public'
+  /** 1 when an active share link exists: one probe of the active-link index per scanned row, never a scan. */
+  shared: number
   revision: number
   updatedAt: number
 }
+const accessOf = ({ visibility, shared }: Row): CatalogueAccess =>
+  visibility === 'public' ? 'public' : shared ? 'shared' : 'private'
 const compare = (a: string, b: string) => (a < b ? -1 : a > b ? 1 : 0)
 const fold = (value: string) => value.replace(/[A-Z]/g, (ch) => ch.toLowerCase())
 
@@ -28,11 +33,11 @@ export async function searchArtefacts(
   { env: { DB: db } }: Runtime,
   member: Member,
   query: string,
-  visibility?: Visibility,
+  access?: CatalogueAccess,
   cursor?: string,
 ) {
   checkMember(member)
-  const selected = visibility ?? null
+  const selected = access ?? null
   let after: z.infer<typeof cursorSchema> | undefined
   try {
     if (query.length > 200 || (cursor && cursor.length > 4096)) throw new Error()
@@ -50,7 +55,8 @@ export async function searchArtefacts(
   } catch {
     throw new ArtefactError('invalid_input', 'Invalid catalogue query or cursor')
   }
-  const scopes = visibility ? [visibility] : ['private', 'public']
+  // Shared and private both read the private index; the derived state filters each scanned page.
+  const scopes = access === 'public' ? ['public'] : access ? ['private'] : ['private', 'public']
   async function merge<T>(statements: D1PreparedStatement[], limit: number, order: (a: T, b: T) => number) {
     const pages = await db.batch<T>(statements)
     return pages
@@ -61,21 +67,22 @@ export async function searchArtefacts(
   function page<T extends Row>(rows: T[], continuation: (row: T) => unknown[], keep?: (row: T) => boolean) {
     const last = trimLookahead(rows, 50)
     return {
-      artefacts: (keep ? rows.filter(keep) : rows).map(
-        ({ slug, title, visibility, revision, updatedAt }) => ({
-          slug,
-          title,
-          visibility,
-          revision,
-          updatedAt,
-        }),
-      ),
+      artefacts: rows
+        .filter((row) => (keep?.(row) ?? true) && (!access || accessOf(row) === access))
+        .map((row) => ({
+          slug: row.slug,
+          title: row.title,
+          access: accessOf(row),
+          revision: row.revision,
+          updatedAt: row.updatedAt,
+        })),
       nextCursor: last ? base64url.encode(JSON.stringify(continuation(last))) : undefined,
     }
   }
   if (!query) {
-    const statement =
-      db.prepare(`SELECT id, slug, title, visibility, current_revision AS revision, updated_at AS updatedAt
+    const statement = db.prepare(`SELECT id, slug, title, visibility,
+      EXISTS (SELECT 1 FROM share_links WHERE artefact_id = artefacts.id AND revoked_at IS NULL) AS shared,
+      current_revision AS revision, updated_at AS updatedAt
       FROM artefacts WHERE deleted_at IS NULL AND visibility = ? AND (updated_at, id) < (?, ?)
       ORDER BY updated_at DESC, id DESC LIMIT 51`)
     const rows = await merge<Row>(
@@ -96,6 +103,7 @@ export async function searchArtefacts(
     // The identifier is the closed, internal union of the two indexed columns, never request data.
     const statement =
       db.prepare(`SELECT id, slug, title, visibility, current_revision AS revision, updated_at AS updatedAt,
+      EXISTS (SELECT 1 FROM share_links WHERE artefact_id = artefacts.id AND revoked_at IS NULL) AS shared,
       hex(lower(${column})) || '!' || id AS term FROM artefacts
       WHERE deleted_at IS NULL AND visibility = ? AND term > ? AND term < ? ORDER BY term LIMIT ?`)
     const cursorTerm = resume ? after?.[3] : null

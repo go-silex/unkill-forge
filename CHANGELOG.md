@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+- Show private artefacts with an active share link as "Shared" in the Manage catalogue, and add a Shared filter. The Private filter now lists private artefacts without an active link. Creating or revoking links moves an artefact between the two; the artefact visibility setting stays private/public.
+- Upgrade: no D1 migration, binding or config change.
+
 ## v2.4.0 — 2026-11-24
 
 - Offer grid and list views of the public catalogue and the Manage catalogue; the Manage list is a table with slug, visibility, revision and update time. `?view=list` selects the list and is kept across search and pagination.
