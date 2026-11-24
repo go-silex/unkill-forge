@@ -66,7 +66,7 @@ const style = `
   .forge-toolbar { display: flex; flex-wrap: wrap; align-items: end; justify-content: space-between; gap: var(--forge-space) calc(2 * var(--forge-space)); margin-block-end: calc(2 * var(--forge-space)) }
   .forge-toolbar > .forge-views:only-child { margin-inline-start: auto }
   .forge-views { display: inline-flex; flex-wrap: wrap; max-width: 100%; border: 1px solid var(--forge-hairline); border-radius: var(--forge-radius); background: var(--forge-surface) }
-  .forge-views a { display: flex; flex: none; align-items: center; min-height: var(--forge-control-height); padding-inline: calc(2 * var(--forge-space)); border-radius: var(--forge-radius); color: var(--forge-muted); text-decoration: none; white-space: nowrap }
+  .forge-views a { display: flex; flex: 0 1 auto; align-items: center; min-width: 0; min-height: var(--forge-control-height); padding-inline: min(calc(2 * var(--forge-space)), 4vw); border-radius: var(--forge-radius); color: var(--forge-muted); text-decoration: none; overflow-wrap: anywhere }
   .forge-views a[aria-current] { background: var(--forge-accent); color: var(--forge-on-accent) }
   .forge-gallery { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 16rem), 1fr)); align-items: start; gap: calc(2 * var(--forge-space)); list-style: none; padding: 0 }
   .forge-gallery__item { min-width: 0; border: 1px solid var(--forge-hairline); border-radius: var(--forge-radius); background: var(--forge-surface); overflow-wrap: anywhere }
@@ -80,7 +80,7 @@ const style = `
   .forge-gallery--list { grid-template-columns: minmax(0, 1fr); gap: 0 }
   .forge-gallery--list .forge-gallery__item { border-width: 0 0 1px; border-radius: 0; background: none }
   .forge-gallery--list .forge-gallery__item:has(> a:hover) { border-color: var(--forge-hairline); background: var(--forge-page) }
-  .forge-gallery--list .forge-gallery__card { display: grid; grid-template-columns: min(7.5rem, 30%) minmax(0, 1fr); align-items: center; gap: calc(2 * var(--forge-space)); min-height: var(--forge-control-height); padding-block: var(--forge-space) }
+  .forge-gallery--list .forge-gallery__card { display: grid; grid-template-columns: min(7.5rem, 30%) minmax(0, 1fr); align-items: center; gap: min(calc(2 * var(--forge-space)), 4vw); min-height: var(--forge-control-height); padding-block: var(--forge-space) }
   .forge-gallery--list .forge-gallery__preview { grid-column: 1; border-radius: calc(var(--forge-radius) / 2) }
   .forge-gallery--list .forge-gallery__caption { grid-column: 2; padding: 0; min-height: 0 }
   .forge-thumb { display: block; flex: none; width: 4rem; aspect-ratio: 16 / 9; object-fit: contain; background: var(--forge-page); border-radius: calc(var(--forge-radius) / 2) }
