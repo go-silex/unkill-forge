@@ -51,17 +51,17 @@ const memberAction = z.discriminatedUnion('action', [
   z.object({ action: z.literal('revoke-invite'), id: z.string().regex(inviteKey) }),
 ])
 const botAction = z.discriminatedUnion('action', [
-  z.object({ action: z.literal('create'), name: labelSchema, role: z.enum(['viewer', 'publisher']) }),
-  z.object({ action: z.literal('token'), id: idSchema, name: labelSchema }),
-  z.object({ action: z.literal('revoke'), id: idSchema }),
-  z.object({
+  z.strictObject({ action: z.literal('create'), name: labelSchema, role: z.enum(['viewer', 'publisher']) }),
+  z.strictObject({ action: z.literal('token'), id: idSchema, name: labelSchema }),
+  z.strictObject({ action: z.literal('revoke'), id: idSchema }),
+  z.strictObject({
     action: z.literal('role'),
     id: idSchema,
     role: z.enum(['viewer', 'publisher']),
     expect: z.literal('active').optional(),
   }),
-  z.object({ action: z.literal('remove'), id: idSchema, expect: z.literal('active').optional() }),
-  z.object({ action: z.literal('reinstate'), id: idSchema }),
+  z.strictObject({ action: z.literal('remove'), id: idSchema, expect: z.literal('active').optional() }),
+  z.strictObject({ action: z.literal('reinstate'), id: idSchema }),
 ])
 
 function RoleSelect({
@@ -530,45 +530,51 @@ function BotDetails({
       {bot.status === 'active' && (
         <>
           <h3>{robots.newCredential}</h3>
-          <div class="forge-bot-controls">
-            <Action path={path} action="token" label={robots.createCredential} fields={{ id: bot.id }}>
-              <label>
-                {robots.credentialName} <input name="name" required maxlength={120} />
-              </label>
-            </Action>
-            <div class="forge-row-actions">
-              <Action
-                path={path}
-                action="role"
-                label={legacy.changeRole}
-                fields={{ id: bot.id, expect: 'active' }}
-                sheet={{
-                  title: robots.changeRoleTitle(bot.name),
-                  label: legacy.changeRole,
-                  cancel: confirmation.cancel,
-                }}
-              >
-                <RoleSelect config={config} value={bot.role} />
-              </Action>
-              <Action
-                path={path}
-                action="remove"
-                label={robots.deactivate}
-                variant="danger"
-                fields={{ id: bot.id, expect: 'active' }}
-                confirm={{
-                  title: robots.deactivateTitle(bot.name),
-                  body: robots.deactivateBody,
-                  label: robots.deactivate,
-                  cancel: confirmation.cancel,
-                }}
-              />
-            </div>
-          </div>
+          <Action path={path} action="token" label={robots.createCredential} fields={{ id: bot.id }}>
+            <label>
+              {robots.credentialName} <input name="name" required maxlength={120} />
+            </label>
+          </Action>
         </>
       )}
-      {bot.status === 'removed' && (
-        <Action path={path} action="reinstate" label={robots.reactivate} fields={{ id: bot.id }} />
+      {bot.status !== 'pending' && (
+        <section class="forge-bot-controls">
+          <h3>{robots.settings}</h3>
+          <div class="forge-row-actions">
+            {bot.status === 'active' ? (
+              <>
+                <Action
+                  path={path}
+                  action="role"
+                  label={legacy.changeRole}
+                  fields={{ id: bot.id, expect: 'active' }}
+                  sheet={{
+                    title: robots.changeRoleTitle(bot.name),
+                    label: legacy.changeRole,
+                    cancel: confirmation.cancel,
+                  }}
+                >
+                  <RoleSelect config={config} value={bot.role} />
+                </Action>
+                <Action
+                  path={path}
+                  action="remove"
+                  label={robots.deactivate}
+                  variant="danger"
+                  fields={{ id: bot.id, expect: 'active' }}
+                  confirm={{
+                    title: robots.deactivateTitle(bot.name),
+                    body: robots.deactivateBody,
+                    label: robots.deactivate,
+                    cancel: confirmation.cancel,
+                  }}
+                />
+              </>
+            ) : (
+              <Action path={path} action="reinstate" label={robots.reactivate} fields={{ id: bot.id }} />
+            )}
+          </div>
+        </section>
       )}
     </aside>
   )

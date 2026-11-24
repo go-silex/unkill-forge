@@ -7,7 +7,7 @@ import { hashSecret } from '../src/core'
 import { createOwnToken, revokeOwnToken } from '../src/core/admin'
 import { deletedRetentionMs } from '../src/core/artefacts'
 import { catalogueCountLimit } from '../src/core/catalogue'
-import { Action, Avatar, time } from '../src/manage/ui/page'
+import { Action, Avatar, absoluteTime, time } from '../src/manage/ui/page'
 import {
   admin,
   Browser,
@@ -106,7 +106,17 @@ function openedSheet(scope: string, label: string, path: string) {
   const panel = sheets(scope).find(({ id }) => id === opener[0][1])
   if (!panel) throw new Error(`Missing panel for ${label}`)
   expect(panel.path).toBe(path)
-  return panel
+  return { ...panel, path }
+}
+
+function directAction(scope: string, action: string, expectedPath: string) {
+  const matches = Array.from(
+    scope.matchAll(/<form class="forge-action" action="([^"]+)" method="post">(.*?)<\/form>/gs),
+  ).filter(([, , form]) => form.includes(`name="action" value="${action}"`))
+  expect(matches).toHaveLength(1)
+  const [, path, form] = matches[0]
+  expect(path).toBe(expectedPath)
+  return { path, form, action }
 }
 
 async function issueToken(browser: Browser, name: string) {
@@ -333,11 +343,9 @@ it('shows a personal token exactly once, stores its hash, records use and enforc
   await post(owner, bots, { action: 'revoke', id: row.id })
   expect((await mcpCall(send, token)).status).toBe(200)
   const revoke = listTokenSheet(list, 'Terminal token')
-  expect(revoke).toBeDefined()
-  if (!revoke) throw new Error('Expected a token revoke sheet')
   expect(formValue(revoke.form, 'id')).toBe(row.id)
   expect(
-    await post(publisher, tokens, { action: revoke.action, id: formValue(revoke.form, 'id') }),
+    await post(publisher, revoke.path, { action: revoke.action, id: formValue(revoke.form, 'id') }),
   ).toContain('Token revoked.')
   expect(await html(publisher, tokens)).toContain('forge-badge--muted">Revoked')
   expect((await mcpCall(send, token)).status).toBe(401)
@@ -346,11 +354,10 @@ it('shows a personal token exactly once, stores its hash, records use and enforc
 })
 
 function listTokenSheet(document: string, name: string) {
-  const row = bodyRows(document).find((entry) => entry.includes(`<strong>${name}</strong>`))
-  return (
-    row &&
-    sheets(row).find(({ action, contents }) => action === 'revoke' && contents.includes(`Revoke “${name}”?`))
-  )
+  const sheet = openedSheet(namedRow(document, `<strong>${name}</strong>`), 'Revoke token', tokens)
+  expect(sheet.action).toBe('revoke')
+  expect(sheet.contents).toContain(`Revoke “${name}”?`)
+  return sheet
 }
 
 it('opens separate personal token confirmations and revokes only the submitted row', async () => {
@@ -360,16 +367,15 @@ it('opens separate personal token confirmations and revokes only the submitted r
   const first = await issueToken(owner, 'Terminal')
   const second = await issueToken(owner, 'Pipeline')
   const document = await html(owner, tokens)
-  const panels = sheets(document)
-  const create = panels.find(({ action }) => action === 'create')
-  expect(create?.form).toContain('name="name"')
+  const create = openedSheet(document, 'Create a token', tokens)
+  expect(create.action).toBe('create')
+  expect(create.form).toContain('name="name"')
   expect(document).toContain('without a token. <a href="/connect">')
   for (const [name, token] of [
     ['Terminal', first],
     ['Pipeline', second],
   ]) {
     const sheet = listTokenSheet(document, name)
-    if (!sheet) throw new Error(`Missing sheet for ${name}`)
     expect(document).not.toContain(token)
     expect(
       await db
@@ -379,8 +385,7 @@ it('opens separate personal token confirmations and revokes only the submitted r
     ).toBe(name)
   }
   const sheet = listTokenSheet(document, 'Pipeline')
-  if (!sheet) throw new Error('Missing Pipeline sheet')
-  await post(owner, tokens, { action: sheet.action, id: formValue(sheet.form, 'id') })
+  await post(owner, sheet.path, { action: sheet.action, id: formValue(sheet.form, 'id') })
   expect((await mcpCall(send, first)).status).toBe(200)
   expect((await mcpCall(send, second)).status).toBe(401)
 })
@@ -415,7 +420,6 @@ it('selects robots and applies only the submitted lifecycle action and credentia
   const page = await html(owner, selected)
   expect(page).not.toContain(first)
   expect(page).not.toContain(second)
-  const panels = sheets(page)
   const role = openedSheet(page, 'Change role', selected)
   const remove = openedSheet(page, 'Deactivate robot', selected)
   expect(role.action).toBe('role')
@@ -429,7 +433,7 @@ it('selects robots and applies only the submitted lifecycle action and credentia
   expect(formValue(remove.form, 'id')).toBe(id)
   expect(remove.contents).toContain('Deactivate “Build robot”?')
   expect(remove.contents).toContain('all its credentials will stop working')
-  const changed = await post(owner, selected, {
+  const changed = await post(owner, role.path, {
     action: role.action,
     id: formValue(role.form, 'id'),
     role: 'publisher',
@@ -440,14 +444,20 @@ it('selects robots and applies only the submitted lifecycle action and credentia
   )
   expect((await owner.post(selected, { action: 'role', id, role: 'admin' })).status).toBe(400)
   expect((await whoami(send, first)).role).toBe('publisher')
+  const credentialRow = (name: string) => {
+    const row = Array.from(page.matchAll(/<li>(.*?)<\/li>/gs), ([, contents]) => contents).find((contents) =>
+      contents.includes(`<strong>${name}</strong>`),
+    )
+    if (!row) throw new Error(`Missing credential row for ${name}`)
+    return row
+  }
   for (const [name, token] of [
     ['CI runner', first],
     ['Nightly worker', second],
   ]) {
-    const sheet = panels.find(
-      ({ contents, action }) => action === 'revoke' && contents.includes(`Revoke “${name}”?`),
-    )
-    if (!sheet) throw new Error(`Missing credential sheet for ${name}`)
+    const sheet = openedSheet(credentialRow(name), 'Revoke', selected)
+    expect(sheet.action).toBe('revoke')
+    expect(sheet.contents).toContain(`Revoke “${name}”?`)
     expect(
       await db
         .prepare('SELECT name FROM api_tokens WHERE id = ? AND token_hash = ?')
@@ -455,31 +465,71 @@ it('selects robots and applies only the submitted lifecycle action and credentia
         .first('name'),
     ).toBe(name)
   }
-  const revoke = panels.find(
-    ({ contents, action }) => action === 'revoke' && contents.includes('Revoke “CI runner”?'),
-  )
-  if (!revoke) throw new Error('Missing CI runner revoke sheet')
-  expect(await post(owner, selected, { action: revoke.action, id: formValue(revoke.form, 'id') })).toContain(
-    '<s>CI runner</s>',
-  )
+  const revoke = openedSheet(credentialRow('CI runner'), 'Revoke', selected)
+  expect(
+    await post(owner, revoke.path, { action: revoke.action, id: formValue(revoke.form, 'id') }),
+  ).toContain('<s>CI runner</s>')
   expect((await mcpCall(send, first)).status).toBe(401)
   expect((await mcpCall(send, second)).status).toBe(200)
-  const removed = await post(owner, selected, {
+  const removed = await post(owner, remove.path, {
     action: remove.action,
     id: formValue(remove.form, 'id'),
     expect: formValue(remove.form, 'expect'),
   })
   expect(removed).toContain('forge-badge--muted">Removed')
   expect(removed).toContain('<s>Nightly worker</s>')
-  expect(removed).toContain('value="reinstate">Reactivate robot</button>')
-  const reinstateForm = [...removed.matchAll(/<form[^>]*>(.*?)<\/form>/gs)].find(([, form]) =>
-    form.includes('value="reinstate"'),
-  )?.[1]
-  if (!reinstateForm) throw new Error('Missing reactivation form')
+  expect(removed).toContain('Robot deactivated. All its credentials were revoked.')
+  const reinstate = directAction(removed, 'reinstate', selected)
+  expect(reinstate.form).toContain('>Reactivate robot</button>')
+  expect(formValue(reinstate.form, 'id')).toBe(id)
   expect((await mcpCall(send, second)).status).toBe(401)
-  const reinstated = await post(owner, selected, { action: 'reinstate', id: formValue(reinstateForm, 'id') })
-  expect(reinstated).toContain('Robot reactivated.')
+  const reinstated = await post(owner, reinstate.path, {
+    action: reinstate.action,
+    id: formValue(reinstate.form, 'id'),
+  })
+  expect(reinstated).toContain('Previous credentials remain revoked; create new credentials to use it.')
   expect((await mcpCall(send, second)).status).toBe(401)
+})
+
+it('rejects malformed or human-targeted robot mutations without changing access, credentials or audit', async () => {
+  const owner = await mockProvider().signedIn(runtime(), admin)
+  await post(owner, bots, { action: 'create', name: 'Build robot', role: 'viewer' })
+  const id = await createdBotId('Build robot')
+  const human = await db.prepare("SELECT id FROM members WHERE kind = 'human'").first<string>('id')
+  if (!human) throw new Error('Expected a human member')
+  const selected = `${bots}?bot=${id}`
+  await post(owner, selected, { action: 'token', id, name: 'CI runner' })
+  await issueToken(owner, 'Personal fixture')
+  const snapshot = async () => {
+    const [members, credentials, audit] = await db.batch([
+      db.prepare('SELECT id, status, role, removed_at FROM members ORDER BY id'),
+      db.prepare('SELECT id, revoked_at FROM api_tokens ORDER BY id'),
+      db.prepare('SELECT id, action, detail_json FROM audit_log ORDER BY id'),
+    ])
+    return [members.results, credentials.results, audit.results]
+  }
+  const before = await snapshot()
+  const malformed = [
+    new URLSearchParams([
+      ['action', 'remove'],
+      ['id', human],
+      ['id', id],
+      ['expect', 'active'],
+    ]),
+    new URLSearchParams({ action: 'remove', id, expect: 'active', extra: 'unexpected' }),
+    new URLSearchParams({ action: 'remove', expect: 'active' }),
+    new URLSearchParams({ action: 'role', id, expect: 'active' }),
+  ]
+  for (const body of malformed) {
+    expect(
+      (await owner.request(selected, { method: 'POST', headers: { origin: manage }, body })).status,
+    ).toBe(400)
+    expect(await snapshot()).toEqual(before)
+  }
+  expect(await post(owner, selected, { action: 'remove', id: human, expect: 'active' })).toContain(
+    'Bot action not allowed',
+  )
+  expect(await snapshot()).toEqual(before)
 })
 
 it('bounds robot summaries independently of credential history and keeps both cursors', async () => {
@@ -552,6 +602,22 @@ it('bounds robot summaries independently of credential history and keeps both cu
   expect(namedRow(page, 'Robot 03')).toContain('Never used')
   expect(page).toContain(`after=00000000-0000-4000-8000-000000000050&amp;bot=${many}`)
   expect(page).toContain(`tokenAfter=10000000-0000-4000-8000-000000000050#bot-tokens`)
+  const next = (label: string) => {
+    const href = [...page.matchAll(/<a[^>]*href="([^"]+)"[^>]*>([^<]+)<\/a>/g)].find(
+      ([, , text]) => text === label,
+    )?.[1]
+    if (!href) throw new Error(`Missing next link: ${label}`)
+    return html(owner, href.replaceAll('&amp;', '&'))
+  }
+  const nextRobots = await next('Next robots')
+  expect(bodyRows(nextRobots)).toHaveLength(1)
+  expect(namedRow(nextRobots, 'Robot 51')).toContain('Never used')
+  expect(nextRobots).toContain('id="bot-tokens"')
+  const nextCredentials = await next('Next credentials')
+  expect(bodyRows(nextCredentials)).toHaveLength(50)
+  expect(nextCredentials).toContain('<strong>Credential 51</strong>')
+  expect(nextCredentials).toContain('<strong>Credential 100</strong>')
+  expect(nextCredentials).not.toContain('<strong>Credential 50</strong>')
   expect(reads).toHaveLength(3)
   expect(reads.filter(({ operation }) => operation === 'first')).toHaveLength(1)
   expect(reads.find(({ args }) => args.at(-1) === 51)?.rows).toBe(51)
@@ -576,10 +642,11 @@ it('pairs redirect creators and removal confirmations with their exact prefixes'
     expect(row).toContain('<span aria-hidden="true">→</span><span class="forge-sr-only">to</span>')
     expect(row).toContain('<code>/a/target/docs/</code>')
     expect(row).toContain('Alice Example · <time')
-    const [sheet] = sheets(row)
+    const sheet = openedSheet(row, 'Remove redirect', redirects)
+    expect(sheet.action).toBe('remove')
     expect(sheet.contents).toContain(`Remove redirect from “${fromPrefix}”?`)
     expect(formValue(sheet.form, 'fromPrefix')).toBe(fromPrefix)
-    const after = await post(owner, redirects, {
+    const after = await post(owner, sheet.path, {
       action: sheet.action,
       fromPrefix: formValue(sheet.form, 'fromPrefix'),
     })
@@ -593,8 +660,10 @@ it('shows the restore boundary without offering restore once a purge starts', as
   const now = Date.now()
   const ownerId = await db.prepare('SELECT id FROM members').first<string>('id')
   for (const [slug, title, age] of [
+    ['one-day', 'One day', deletedRetentionMs - 86_400_000],
+    ['almost-day', 'Almost a day', deletedRetentionMs - (23 * 60 + 59) * 60_000],
     ['last-hour', '  ', deletedRetentionMs - 3_600_000],
-    ['less-than-hour', 'Nearly expired', deletedRetentionMs - 60_000],
+    ['less-than-hour', 'Nearly expired', deletedRetentionMs - 59 * 60_000],
     ['expired-item', 'Expired item', deletedRetentionMs],
     ['purging-item', 'Purging item', 0],
   ] as const) {
@@ -614,14 +683,19 @@ it('shows the restore boundary without offering restore once a purge starts', as
     const page = await html(owner, deleted)
     const lastHour = namedRow(page, '<code class="forge-admin-meta">last-hour</code>')
     expect(lastHour).toContain('<td title="last-hour"><code')
-    expect(lastHour).toContain('For 1 more day')
+    expect(lastHour).toContain(
+      `title="${absoluteTime({ locale: 'en', timeZone: 'UTC' }, now + 3_600_000)}">For 1 more hour`,
+    )
+    expect(namedRow(page, 'One day')).toContain('For 1 more day')
+    expect(namedRow(page, 'Almost a day')).toContain('For 23 more hours')
     expect(lastHour).toContain('Restore artefact')
-    expect(namedRow(page, 'Nearly expired')).toContain('For less than a day')
+    expect(namedRow(page, 'Nearly expired')).toContain('For less than an hour')
     expect(namedRow(page, 'Expired item')).toContain('forge-badge--muted">Restore period expired')
     expect(namedRow(page, 'Expired item')).not.toContain('Restore artefact')
     const purging = namedRow(page, 'Purging item')
     expect(purging).toContain('forge-badge--warn">Purge started')
     expect(purging).toContain('Resume purge')
+    expect(purging).not.toContain('For 30 more days')
     expect(purging).not.toContain('Restore artefact')
   } finally {
     vi.useRealTimers()
@@ -1045,8 +1119,14 @@ it('restores a revision, reveals and revokes share links, then renames and resto
   expect((await send(`${read}/a/report-alias/`)).status).toBe(404)
   await post(owner, '/artefacts/renamed-report', { action: 'delete', ...identity })
   expect((await send(`${read}/a/renamed-report/`)).status).toBe(404)
-  expect(await html(owner, deleted)).toContain('Quarterly report')
-  await post(owner, deleted, { action: 'restore', slug: 'renamed-report', ...identity })
+  const restore = directAction(namedRow(await html(owner, deleted), 'Quarterly report'), 'restore', deleted)
+  expect(formValue(restore.form, 'slug')).toBe('renamed-report')
+  expect(formValue(restore.form, 'artefactId')).toBe(identity.artefactId)
+  await post(owner, restore.path, {
+    action: restore.action,
+    slug: formValue(restore.form, 'slug'),
+    artefactId: formValue(restore.form, 'artefactId'),
+  })
   expect(await (await send(`${read}/a/renamed-report/`)).text()).toBe('<p>Original version</p>')
 })
 
@@ -1298,13 +1378,19 @@ it('confirms deletion and purge with separate forms for each deleted artefact', 
       entry.includes(`<code class="forge-admin-meta">${name}</code>`),
     )
     if (!row) throw new Error(`Missing row for ${name}`)
-    const [panel] = sheets(row)
+    const panel = openedSheet(row, 'Purger…', deleted)
     expect(panel.action).toBe('purge')
     expect(panel.contents).toContain(`Purger « ${name} » ?`)
     expect(panel.contents).toContain('La purge est irréversible')
     expect(panel.form).toContain('>Purger définitivement</button>')
     expect(formValue(panel.form, 'slug')).toBe(name)
-    await post(owner, deleted, { action: panel.action, slug: name, id: formValue(panel.form, 'id') })
+    const restore = directAction(row, 'restore', deleted)
+    expect(formValue(panel.form, 'id')).toBe(formValue(restore.form, 'artefactId'))
+    await post(owner, panel.path, {
+      action: panel.action,
+      slug: formValue(panel.form, 'slug'),
+      id: formValue(panel.form, 'id'),
+    })
     expect(await html(owner, deleted)).not.toContain(name)
   }
 })
@@ -1317,17 +1403,28 @@ it('continues an interrupted purge after its artefact row has already been remov
   const before = await blobs.list({ prefix: 'blobs/' })
   expect(before.objects).toHaveLength(65)
   await post(owner, detail, { action: 'delete', artefactId: await artefactId(owner) })
-  const id = formValue(await html(owner, deleted), 'id')
-  const intermediate = await post(owner, deleted, { action: 'purge', id, slug })
+  const panel = openedSheet(namedRow(await html(owner, deleted), 'Purge this artefact'), 'Purge…', deleted)
+  const id = formValue(panel.form, 'id')
+  expect(formValue(panel.form, 'slug')).toBe(slug)
+  const intermediate = await post(owner, panel.path, {
+    action: panel.action,
+    id,
+    slug: formValue(panel.form, 'slug'),
+  })
   expect(intermediate).toContain('Resume purge')
   expect(intermediate).not.toContain('popovertarget')
-  expect(intermediate).toMatch(
-    /<form class="forge-action"[^>]*>.*?<button[^>]*type="submit" name="action" value="purge">Resume purge<\/button><\/form>/s,
-  )
+  const resume = directAction(intermediate, 'purge', deleted)
+  expect(resume.form).toContain('>Resume purge</button>')
+  expect(formValue(resume.form, 'id')).toBe(id)
+  expect(formValue(resume.form, 'slug')).toBe(slug)
   expect(intermediate).toContain(`<td title="${slug}"><code class="forge-admin-meta">${slug}</code>`)
   expect(intermediate).not.toContain('Restore artefact')
   expect((await blobs.list({ prefix: 'blobs/' })).objects).toHaveLength(1)
-  const finished = await post(owner, deleted, { action: 'purge', id, slug })
+  const finished = await post(owner, resume.path, {
+    action: resume.action,
+    id: formValue(resume.form, 'id'),
+    slug: formValue(resume.form, 'slug'),
+  })
   expect(finished).toContain('Artefact permanently purged.')
   expect(finished).not.toContain('Resume purge')
   expect((await blobs.list({ prefix: 'blobs/' })).objects).toHaveLength(0)
@@ -1716,7 +1813,7 @@ it('localizes share creation metadata and keeps one visible copy of folded table
   const lastUsedAt = Date.UTC(2025, 2, 4, 5, 6)
   await db
     .prepare('UPDATE api_tokens SET created_at = ?, last_used_at = ?, revoked_at = ?')
-    .bind(createdAt, lastUsedAt, createdAt)
+    .bind(createdAt, lastUsedAt, Date.UTC(2025, 3, 5, 6, 7))
     .run()
 
   const created = `<time datetime="2025-02-03T04:05:00.000Z" title="3 févr. 2025, 04:05 UTC">03/02/2025</time>`
@@ -1746,7 +1843,8 @@ it('localizes share creation metadata and keeps one visible copy of folded table
     'Toute personne disposant d’un lien de partage actif peut lire l’artefact actuel. Réservez ces liens aux personnes concernées.',
   )
   const prefix = `<code>${token.slice(0, 12)}…</code>`
-  const revoked = '<span class="forge-badge forge-badge--muted">Révoqué</span>'
+  const revoked =
+    '<span class="forge-badge forge-badge--muted">Révoqué</span><small class="forge-admin-meta">Révoqué le <time datetime="2025-04-05T06:07:00.000Z" title="5 avr. 2025, 06:07 UTC">05/04/2025</time></small>'
   expectRow(
     await html(owner, tokens),
     '<td title="Jeton de publication"><strong>Jeton de publication</strong>',

@@ -37,6 +37,7 @@ import { localClientPath } from '../oauth'
 import {
   AccessBadge,
   Action,
+  absoluteTime,
   Badge,
   CopyField,
   Fold,
@@ -149,9 +150,7 @@ async function runAction<S extends z.ZodType>(
 ) {
   const form = await readForm(c.req.raw)
   if (!form) return c.text(t('malformed'), 400)
-  const fields = Object.fromEntries(form)
-  if (form.size !== Object.keys(fields).length) return c.text(t('malformed'), 400)
-  const parsed = schema.safeParse(fields)
+  const parsed = schema.safeParse(Object.fromEntries(form))
   if (!parsed.success) return c.text(t('malformed'), 400)
   let result: ActionResult
   try {
@@ -688,7 +687,9 @@ adminPages.get(
   deletedPath,
   browser('admin', async (c, session, actor, t) => {
     const now = Date.now()
-    const { artefacts, nextCursor } = await listDeletedArtefacts(c.env, actor, c.req.query('cursor'))
+    const cursor = c.req.query('cursor')
+    const actionPath = cursor ? `${deletedPath}?${new URLSearchParams({ cursor })}` : deletedPath
+    const { artefacts, nextCursor } = await listDeletedArtefacts(c.env, actor, cursor, now)
     const { adminSheets, confirmation } = messages(c.env.config)
     return page(
       c,
@@ -700,15 +701,18 @@ adminPages.get(
           artefacts.map((entry) => {
             const deletedAt = time(c.env.config, entry.deletedAt)
             const title = entry.title?.trim()
-            const remaining = entry.deletedAt === null ? 0 : entry.deletedAt + deletedRetentionMs - now
+            const deadline = entry.deletedAt === null ? null : entry.deletedAt + deletedRetentionMs
+            const remaining = deadline === null ? 0 : deadline - now
+            const unit = remaining >= dayMs ? 'day' : 'hour'
+            const quantity = Math.floor(remaining / (unit === 'day' ? dayMs : hourMs))
             const status = (
               <>
                 <Badge variant={entry.purging ? 'warn' : entry.restorable ? 'ok' : 'muted'}>
                   {t(entry.purging ? 'purging' : entry.restorable ? 'restorable' : 'expired')}
                 </Badge>
                 {entry.restorable && (
-                  <small class="forge-admin-meta">
-                    {adminSheets.restoreWindow(remaining < hourMs ? 0 : Math.ceil(remaining / dayMs))}
+                  <small class="forge-admin-meta" title={absoluteTime(c.env.config, deadline)}>
+                    {adminSheets.restoreWindow(quantity, unit)}
                   </small>
                 )}
               </>
@@ -727,12 +731,14 @@ adminPages.get(
                   <div class="forge-row-actions">
                     {entry.restorable && (
                       <Action
+                        path={actionPath}
                         action="restore"
                         label={t('restoreDeleted')}
                         fields={{ slug: entry.slug, artefactId: entry.id }}
                       />
                     )}
                     <Action
+                      path={actionPath}
                       action="purge"
                       variant="danger"
                       label={t(entry.purging ? 'resumePurge' : 'purge')}
@@ -781,7 +787,9 @@ adminPages.post(
 adminPages.get(
   tokensPath,
   browser('publisher', async (c, session, actor, t) => {
-    const { tokens, nextCursor } = await listOwnTokens(c.env.env.DB, actor.id, c.req.query('cursor'))
+    const cursor = c.req.query('cursor')
+    const actionPath = cursor ? `${tokensPath}?${new URLSearchParams({ cursor })}` : tokensPath
+    const { tokens, nextCursor } = await listOwnTokens(c.env.env.DB, actor.id, cursor)
     const { adminSheets, confirmation, legacy } = messages(c.env.config)
     return page(
       c,
@@ -809,7 +817,14 @@ adminPages.get(
                 token.lastUsedAt === null ? t('neverUsed') : time(c.env.config, token.lastUsedAt)
               const active = token.revokedAt === null
               const status = (
-                <Badge variant={active ? 'ok' : 'muted'}>{active ? legacy.active : legacy.revoked}</Badge>
+                <>
+                  <Badge variant={active ? 'ok' : 'muted'}>{active ? legacy.active : legacy.revoked}</Badge>
+                  {!active && (
+                    <small class="forge-admin-meta">
+                      {t('revokedOn')} {time(c.env.config, token.revokedAt)}
+                    </small>
+                  )}
+                </>
               )
               return (
                 <tr key={token.id}>
@@ -828,6 +843,7 @@ adminPages.get(
                     {active && (
                       <div class="forge-row-actions">
                         <Action
+                          path={actionPath}
                           action="revoke"
                           variant="danger"
                           label={t('revokeCredential')}
@@ -855,6 +871,7 @@ adminPages.get(
         lead: t('ownCredentialHelp'),
         actions: (
           <Action
+            path={actionPath}
             action="create"
             variant="primary"
             label={t('createCredential')}
@@ -892,7 +909,9 @@ adminPages.post(
 adminPages.get(
   redirectsPath,
   browser('admin', async (c, session, actor, t) => {
-    const { redirects, nextCursor } = await listRedirects(c.env, actor, c.req.query('cursor'))
+    const cursor = c.req.query('cursor')
+    const actionPath = cursor ? `${redirectsPath}?${new URLSearchParams({ cursor })}` : redirectsPath
+    const { redirects, nextCursor } = await listRedirects(c.env, actor, cursor)
     const { adminSheets, confirmation } = messages(c.env.config)
     return page(
       c,
@@ -960,6 +979,7 @@ adminPages.get(
                       <div class="forge-row-actions">
                         <Action
                           action="remove"
+                          path={actionPath}
                           variant="danger"
                           label={t('removeRedirect')}
                           fields={{ fromPrefix: entry.fromPrefix }}

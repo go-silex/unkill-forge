@@ -147,8 +147,9 @@ const en = {
     deactivateBody:
       'The robot and all its credentials will stop working. Reactivating the robot does not restore revoked credentials.',
     reactivate: 'Reactivate robot',
-    remove: 'Robot deactivated.',
-    reinstate: 'Robot reactivated.',
+    settings: 'Robot settings',
+    remove: 'Robot deactivated. All its credentials were revoked.',
+    reinstate: 'Robot reactivated. Previous credentials remain revoked; create new credentials to use it.',
     sampled: 'Sampled history',
     unavailable: 'Unknown (sampled history)',
   },
@@ -157,8 +158,8 @@ const en = {
     revokeTokenBody: 'This token will stop working immediately.',
     removeRedirectTitle: (prefix: string) => `Remove redirect from “${prefix}”?`,
     removeRedirectBody: 'Requests to this prefix will no longer be redirected.',
-    restoreWindow: (days: number) =>
-      days === 0 ? 'For less than a day' : days === 1 ? 'For 1 more day' : `For ${days} more days`,
+    restoreWindow: (quantity: number, unit: 'day' | 'hour') =>
+      quantity === 0 ? 'For less than an hour' : `For ${quantity} more ${unit}${quantity === 1 ? '' : 's'}`,
   },
   legacy: {
     invalidInvite: 'Invite invalid or expired',
@@ -260,6 +261,7 @@ const en = {
     ownCredentialPrefix: 'Token prefix',
     createCredential: 'Create a token',
     revokeCredential: 'Revoke token',
+    revokedOn: 'Revoked on',
     connectHint: 'Interactive agents can sign in through the browser without a token.',
     noOwnCredentials: 'You have no tokens yet.',
     redirectHelp:
@@ -462,8 +464,10 @@ const fr: typeof en = {
     deactivateBody:
       'Le robot et tous ses identifiants cesseront de fonctionner. Réactiver le robot ne rétablit pas les identifiants révoqués.',
     reactivate: 'Réactiver le robot',
-    remove: 'Robot désactivé.',
-    reinstate: 'Robot réactivé.',
+    settings: 'Paramètres du robot',
+    remove: 'Robot désactivé. Tous ses identifiants ont été révoqués.',
+    reinstate:
+      'Robot réactivé. Ses anciens identifiants restent révoqués ; créez-en de nouveaux pour l’utiliser.',
     sampled: 'Historique partiel',
     unavailable: 'Inconnue (historique partiel)',
   },
@@ -472,8 +476,12 @@ const fr: typeof en = {
     revokeTokenBody: 'Ce jeton cessera de fonctionner immédiatement.',
     removeRedirectTitle: (prefix: string) => `Supprimer la redirection depuis « ${prefix} » ?`,
     removeRedirectBody: 'Les requêtes vers ce préfixe ne seront plus redirigées.',
-    restoreWindow: (days: number) =>
-      days === 0 ? 'Pendant moins d’un jour' : days === 1 ? 'Encore 1 jour' : `Encore ${days} jours`,
+    restoreWindow: (quantity: number, unit: 'day' | 'hour') =>
+      quantity === 0
+        ? 'Pendant moins d’une heure'
+        : unit === 'hour'
+          ? `Encore ${quantity} h`
+          : `Encore ${quantity} jour${quantity === 1 ? '' : 's'}`,
   },
   legacy: {
     invalidInvite: 'Invitation invalide ou expirée',
@@ -575,6 +583,7 @@ const fr: typeof en = {
     ownCredentialPrefix: 'Préfixe du jeton',
     createCredential: 'Créer un jeton',
     revokeCredential: 'Révoquer le jeton',
+    revokedOn: 'Révoqué le',
     connectHint: 'Les agents interactifs peuvent se connecter dans le navigateur sans jeton.',
     noOwnCredentials: 'Vous n’avez encore aucun jeton.',
     redirectHelp:

@@ -118,10 +118,7 @@ const style = `
   .forge-row-actions { display: flex; flex-wrap: wrap; justify-content: end; gap: var(--forge-space) }
   .forge-row-actions > :where(.forge-action) > :where(.forge-button) { white-space: nowrap }
   :where(.forge-table td) > .forge-row-actions { flex-wrap: nowrap }
-  .forge-bot-controls { display: flex; flex-wrap: wrap; align-items: end; justify-content: space-between; gap: var(--forge-space) }
-  :where(.forge-bot-controls) > .forge-action { display: grid; flex: 1; min-inline-size: min(100%, 10rem) }
-  :where(.forge-bot-controls > .forge-action) > .forge-button { justify-self: start }
-  :where(.forge-bot-controls) > .forge-row-actions { margin-inline-start: auto }
+  .forge-bot-controls { margin-block-start: calc(2 * var(--forge-space)); border-block-start: 1px solid var(--forge-hairline) }
   :where(.forge-table td:has(.forge-row-actions)) { white-space: normal }
   :where(.forge-table:has(.forge-row-actions) th:last-child) { text-align: end }
   .forge-admin-split { display: grid; grid-template-columns: minmax(0, 1fr) minmax(18rem, 34%); align-items: start; gap: calc(3 * var(--forge-space)); margin-block-start: calc(2 * var(--forge-space)) }

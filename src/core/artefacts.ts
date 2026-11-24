@@ -1114,7 +1114,12 @@ export async function deleteArtefact(
 
 export const deletedRetentionMs = 30 * 24 * 60 * 60 * 1_000
 
-export async function listDeletedArtefacts({ env: { DB: db } }: Runtime, member: Member, after = '') {
+export async function listDeletedArtefacts(
+  { env: { DB: db } }: Runtime,
+  member: Member,
+  after = '',
+  now = Date.now(),
+) {
   requireAdmin(member)
   const { results: artefacts } = await db
     .prepare(`SELECT a.id, a.slug, a.title, a.deleted_at AS deletedAt,
@@ -1125,7 +1130,7 @@ export async function listDeletedArtefacts({ env: { DB: db } }: Runtime, member:
     SELECT p.artefact_id, p.slug, NULL, NULL, 1, 0 FROM artefact_purges p
     WHERE p.slug > ?1 AND NOT EXISTS (SELECT 1 FROM artefacts WHERE id = p.artefact_id)
     ORDER BY slug LIMIT 51`)
-    .bind(after, Date.now() - deletedRetentionMs)
+    .bind(after, now - deletedRetentionMs)
     .all<{
       id: string
       slug: string

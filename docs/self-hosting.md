@@ -243,7 +243,7 @@ These classes and the custom properties above are the supported theme contract. 
 | `.forge-action`, `.forge-button`                                                                  | Form actions and styled action controls                                                                    |
 | `.forge-row-actions`                                                                              | Wraps and end-aligns related row controls with a consistent gap                                            |
 | `.forge-admin-split`, `.forge-admin-panel`, `.forge-admin-panel--first`                           | Responsive list/detail grid and side panel; `--first` places the form above the list on narrow screens     |
-| `.forge-bot-controls`                                                                             | Robot credential creation and account actions in an aligned, wrapping group                                |
+| `.forge-bot-controls`                                                                             | Separate robot settings section below the credential controls                                              |
 | `.forge-admin-meta`, `.forge-credentials`, `.forge-redirect-route`                                | Secondary metadata, robot credential list and redirect prefix pair                                         |
 | `.forge-sr-only`                                                                                  | Text available to assistive technology but not displayed visually                                          |
 | `.forge-button--primary`, `.forge-button--danger`                                                 | Primary and destructive control variants                                                                   |
