@@ -72,7 +72,7 @@ flowchart LR
   M --> KV[(KV: OAuth grants)]
 ```
 
-- **One Worker, two hostnames.** The read host serves untrusted artefact HTML; the manage host carries sessions, OAuth and administration. The Worker first matches the request against the two configured HTTPS origins and answers 404 to anything else, before any authentication, routing or asset lookup. `workers_dev` and preview URLs are disabled. No route exists on both hosts.
+- **One Worker, two hostnames.** The read host serves untrusted artefact HTML; the manage host carries sessions, OAuth and administration. The Worker first matches the request against the two configured HTTPS origins and answers 404 to anything else, before any authentication, routing or asset lookup. `workers_dev` and preview URLs are disabled. The hosts apply separate access policies even when a path exists on both.
 - **Core owns policy.** `src/core/` alone owns Forge's tables and R2, and alone decides access, roles and session validity. Adapters (delivery, MCP, admin UI, sign-in, OAuth glue) verify credentials, call core and render results; they make no authorization decision of their own.
 
 | Concern           | Choice                                                                               | Why                                                                                                                                                                                                                         |
@@ -176,8 +176,11 @@ Resolution order for a request:
 3. `/s/<slug>/<key>` and `/s/<slug>/<key>/<path>` → check that the key belongs to an active link of a live artefact. After the check, redirect the bare URL to its trailing slash with 301, or apply the same path resolution as `/a/`, including the directory-index redirect. The stable root `/s/<slug>/<key>/` serves the root `index.html` if present; otherwise it temporarily redirects (302) to the current revision's entry file within the share prefix. Redirects preserve the query string. Relative subresources stay under the share prefix without a cookie. Successful file resolutions trigger a best-effort `last_used_at` update at most once per minute per link.
 4. `POST /_forge/session` → end of the login handoff.
 5. Otherwise, for a missing canonical or share slug, the longest matching `redirects.from_prefix` → 302 to the target with the remaining encoded path and query string appended. Redirects never shadow a live or soft-deleted slug. A deleted target returns the standard 404 without trying shorter prefixes. A private canonical target requires the normal canonical access check before the 302; login returns to the original alias. A share alias requires an active key of the target artefact before disclosing its slug; other keys receive the standard 404. All alias responses use `private, no-store` and no `ETag`.
-6. `/` → when `PUBLIC_INDEX=true`, list the newest 200 public artefacts by creation time; otherwise show the branded landing page.
-7. Anything else → 404.
+6. `/` → show a sign-in action pointing to Manage and, when `PUBLIC_INDEX=true`, a gallery of the newest 200 public artefacts by creation time.
+7. `GET` or `HEAD /_forge/preview/<slug>` → with `PUBLIC_INDEX=true`, serve the current cover of a live public artefact. The manage host instead requires an active, fresh browser session and a same-origin image request.
+8. Anything else → 404.
+
+The public gallery and the paginated Manage catalogue use cover files published at the root of the current revision: `og.jpg`, `og.jpeg`, `og.png`, `og.webp` or `index.og.png` in that order. Files must be at most 1 MiB and match the expected raster media type and signature. An artefact with no cover is still listed. Preview requests do not fall back to other paths, revisions, aliases or shares.
 
 Unknown artefacts, unauthorized share requests and missing files return the same 404, but a missing file in a private artefact only returns 404 to a reader with access. Other readers get the handoff or pending response regardless of whether the file exists.
 
@@ -364,9 +367,9 @@ Database migrations are additive and must keep the previous Worker working; `INS
 
 ## 13. Security
 
-- **Origins.** Dispatch on the configured origins before anything else; host-only cookies. Only bundled branding and allowlisted operator theme assets are served on both hosts.
+- **Origins.** Dispatch on the configured origins before anything else; host-only cookies. Branding, operator theme assets and the policy-gated catalogue preview route are available on both hosts.
 - **Cross-origin writes.** The two hosts are same-site, so SameSite cookies do not stop a read-origin page from sending requests to the manage host. Every state-changing request authenticated by cookie (UI forms, consent, logout) requires `Origin` to equal the manage origin exactly. MCP rejects any browser `Origin` other than an allowlisted client origin.
-- **Manage host.** Strict CSP, `frame-ancestors 'none'`. Uploaded content is never served from it.
+- **Manage host.** Strict CSP, `frame-ancestors 'none'`. Never serves artefact documents; the preview route responds only to authenticated same-origin image requests with a sandboxed raster response.
 - **Sign-in.** Flow bound to the browser and consumed once; PKCE S256; nonce; strict issuer and audience checks; no implicit or hybrid flows; refusal on any missing required claim; a provider or D1 failure denies access.
 - **Share keys.** 128 random bits, base64url, by default. Only admins may import keys of 16–128 characters in `[A-Za-z0-9_-]`. A unique SHA-256 hash is used for indexed lookups; revoked hashes stay reserved while the link record exists. The revealable copy uses AES-256-GCM with a random 96-bit IV and additional authenticated data binding the share link and artefact IDs. HKDF-SHA-256 derives the AES key from the required `FORGE_SEAL_KEY` under a dedicated share-link context. Keys are never written to application logs or audit entries.
 - **API tokens.** 256 random bits, stored as SHA-256, shown once, revocable, `last_used_at` tracked.

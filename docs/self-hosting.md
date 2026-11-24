@@ -111,7 +111,9 @@ For the [Rulesets API equivalent](https://developers.cloudflare.com/rules/config
 
 Set `ADMIN_EMAILS` **before** the intended admin ever signs in. The address needs to come from the provider as verified; GitHub uses only the primary verified address. On the manage origin, sign in with that new identity and confirm your admin role and the Members page. If that identity was already recorded as pending before bootstrap, changing `ADMIN_EMAILS` will not promote it on retry. Before anyone has bootstrapped, add another verified address and sign in with a not-yet-seen eligible provider identity; then approve or promote the original account from Members. After bootstrap, an existing admin must grant admin roles. A valid one-use invite beats OIDC auto-join; otherwise new members wait for approval. Invite URLs expire after seven days. Always keep an active admin. Removed members must get new sessions, OAuth grants and API tokens after reinstatement.
 
-By default the read origin shows a landing page without a public catalogue. Set `PUBLIC_INDEX=true` to list public artefacts there and `ALLOW_INDEXING=true` to allow search indexing of public canonical URLs. Neither enables public access to private artefacts. To publish and verify the first private artefact, see [Connect and publish with MCP](mcp.md).
+By default the read origin shows a sign-in action without a public catalogue. Set `PUBLIC_INDEX=true` to show the public gallery. `ALLOW_INDEXING=true` separately allows search indexing of public canonical URLs. Neither setting enables public access to private artefacts.
+
+Both the public gallery and the authenticated Manage catalogue show a cover when the current revision contains a supported raster preview. To supply one, publish a root-level `og.jpg` (or `og.jpeg`, `og.png` or `og.webp`) no larger than 1 MiB along with the artefact. Forge does not generate covers. To publish and verify the first private artefact, see [Connect and publish with MCP](mcp.md).
 
 ## Branding and locale
 

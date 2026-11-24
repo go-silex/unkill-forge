@@ -145,6 +145,11 @@ app.get('/', async (c) => {
       <p>
         {text.signedIn} {member.name} ({common.roles[member.role]}).
       </p>
+      <p>
+        <a class="forge-button forge-button--primary" href="/artefacts">
+          {common.artefacts}
+        </a>
+      </p>
       <h2>{common.connect}</h2>
       <p>
         {text.mcpUrl} <code>{config.manageOrigin}/mcp</code>

@@ -21,10 +21,12 @@ import {
   setVisibility,
 } from '../../core/artefacts'
 import { searchArtefacts } from '../../core/catalogue'
+import { galleryPreviewSlugs } from '../../core/gallery-previews'
 import type { BrowserSession, Member, Role } from '../../core/index'
 import { purgeArtefact } from '../../core/purge'
 import { artefactPath, maxRedirectPrefix } from '../../core/read-path'
 import { shareKeyMax } from '../../core/share-keys'
+import { Gallery } from '../../gallery'
 import { readForm } from '../../http'
 import { type AdminMessage, type AdminTranslate, adminMessages } from '../../i18n'
 import { requireBrowserSession } from '../login'
@@ -157,8 +159,8 @@ function VisibilityOptions({
   )
 }
 
-function table(columns: TableColumn[], rows: Child[], t: AdminTranslate, empty: AdminMessage = 'noResults') {
-  if (rows.length === 0) return <p class="forge-empty">{t(empty)}</p>
+function table(columns: TableColumn[], rows: Child[], t: AdminTranslate) {
+  if (rows.length === 0) return <p class="forge-empty">{t('noResults')}</p>
   return <Table columns={columns}>{rows}</Table>
 }
 
@@ -185,6 +187,11 @@ adminPages.get(
     const selected = filter.data
     const cursor = c.req.query('cursor')
     const { artefacts, nextCursor } = await searchArtefacts(c.env, actor, q, selected, cursor)
+    const previews = await galleryPreviewSlugs(
+      c.env,
+      artefacts.map((entry) => entry.slug),
+      'member',
+    )
     const params = new URLSearchParams()
     if (q) params.set('q', q)
     if (selected) params.set('visibility', selected)
@@ -207,23 +214,31 @@ adminPages.get(
             {t('search')}
           </button>
         </form>
-        {table(
-          [t('title'), t('slug'), t('visibility'), { secondary: t('revision') }, { secondary: t('updated') }],
-          artefacts.map((entry) => (
-            <tr>
-              <td title={entry.title}>
-                <a href={detailPath(entry.slug)}>{entry.title}</a>
-              </td>
-              <td title={entry.slug}>
-                <code>{entry.slug}</code>
-              </td>
-              <td>{t(entry.visibility)}</td>
-              <td class="forge-col--secondary">{entry.revision}</td>
-              <td class="forge-col--secondary">{time(c.env.config.locale, entry.updatedAt)}</td>
-            </tr>
-          )),
-          t,
-          nextCursor ? 'noNewMatches' : cursor ? 'noMoreResults' : 'noResults',
+        {artefacts.length > 0 ? (
+          <Gallery
+            label={t('artefacts')}
+            items={artefacts.map((entry) => ({
+              href: detailPath(entry.slug),
+              title: entry.title,
+              preview: previews.has(entry.slug) ? entry.slug : undefined,
+              detail: (
+                <dl>
+                  <dt>{t('slug')}</dt>
+                  <dd>
+                    <code>{entry.slug}</code>
+                  </dd>
+                  <dt>{t('visibility')}</dt>
+                  <dd>{t(entry.visibility)}</dd>
+                  <dt>{t('revision')}</dt>
+                  <dd>{entry.revision}</dd>
+                  <dt>{t('updated')}</dt>
+                  <dd>{time(c.env.config.locale, entry.updatedAt)}</dd>
+                </dl>
+              ),
+            }))}
+          />
+        ) : (
+          <p class="forge-empty">{t(nextCursor ? 'noNewMatches' : cursor ? 'noMoreResults' : 'noResults')}</p>
         )}
         {nextPage(cataloguePath, nextCursor, t('next'), params)}
       </>,

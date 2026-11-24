@@ -60,6 +60,18 @@ const style = `
   .forge-panel { width: min(100%, 42rem); margin: clamp(1rem, 8vh, 5rem) auto; padding: 0 calc(2 * var(--forge-space)) }
   .forge-panel__header { margin-bottom: calc(2 * var(--forge-space)) }
   .forge-panel__body { padding: clamp(1rem, 4vw, 2rem); border: 1px solid var(--forge-hairline); border-radius: var(--forge-radius); background: var(--forge-surface); overflow-wrap: anywhere }
+  .forge-panel.forge-panel--gallery { width: 100% }
+  .forge-panel--gallery > :is(.forge-panel__header, .forge-panel__body) { width: min(100%, 76rem); margin-inline: auto }
+  .forge-panel--gallery .forge-panel__body > .forge-button { width: auto }
+  .forge-gallery { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 16rem), 1fr)); align-items: start; gap: calc(2 * var(--forge-space)); list-style: none; padding: 0 }
+  .forge-gallery__item { min-width: 0; border: 1px solid var(--forge-hairline); border-radius: var(--forge-radius); background: var(--forge-surface); overflow-wrap: anywhere }
+  .forge-gallery__item:has(> a:hover) { border-color: var(--forge-link) }
+  .forge-gallery__card { display: block; border-radius: var(--forge-radius) }
+  .forge-gallery__card:focus-visible { outline: 2px solid var(--forge-focus); outline-offset: 2px }
+  .forge-gallery__preview { display: block; width: 100%; aspect-ratio: 16 / 9; object-fit: contain; background: var(--forge-page); border-radius: var(--forge-radius) var(--forge-radius) 0 0 }
+  .forge-gallery__caption { display: block; padding: calc(2 * var(--forge-space)); min-height: var(--forge-control-height) }
+  .forge-gallery__title { font-weight: 600 }
+  .forge-gallery__detail { padding: 0 calc(2 * var(--forge-space)) calc(2 * var(--forge-space)); color: var(--forge-muted); font-size: var(--forge-text-small) }
   .forge-table-scroll { max-width: 100%; overflow-x: auto; margin-block: calc(2 * var(--forge-space)) }
   .forge-table { width: 100%; border-collapse: collapse; font-size: var(--forge-text-small) }
   :where(.forge-table th, .forge-table td) { text-align: start; vertical-align: middle; padding: var(--forge-space); border-bottom: 1px solid var(--forge-hairline); overflow-wrap: normal }

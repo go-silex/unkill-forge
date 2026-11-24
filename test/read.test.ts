@@ -252,9 +252,86 @@ it('shows the public index only when enabled, without listing private artefacts'
   expect(landing).toContain('Gate 0 Test Forge')
   expect(landing).not.toContain('Public report')
   const index = await (await runtime({ PUBLIC_INDEX: 'true' })(read)).text()
-  expect(index).toContain(`href="${publicUrl}">Public report`)
-  expect(index).toContain(`href="${read}/a/no-index/docs/start%20here.html">Alternate entry`)
+  expect(index).toContain(`href="${publicUrl}"`)
+  expect(index).toContain('Public report')
+  expect(index).toContain(`href="${read}/a/no-index/docs/start%20here.html"`)
+  expect(index).toContain('Alternate entry')
   expect(index).not.toContain('Private report')
+})
+
+it('serves current raster previews without exposing private artefacts or active content', async () => {
+  const { send, idp, owner, call } = await fixture(
+    runtime({
+      PUBLIC_INDEX: 'true',
+      AUTH_PROVIDERS: JSON.stringify([{ ...provider, autoJoinRole: undefined }]),
+    }),
+  )
+  const png = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+X+uoAAAAASUVORK5CYII='
+  for (const slug of ['public', 'private'])
+    await call('publish', {
+      slug,
+      mode: 'merge',
+      files: [{ path: 'og.png', encoding: 'base64', content: png }],
+    })
+  const viewer = await idp.signedIn(send, 'preview-viewer')
+  const viewerId = await listedId(owner, members, 'preview-viewer@example.test')
+  expect((await owner.post(members, { action: 'admit', id: viewerId, role: 'viewer' })).status).toBe(303)
+  const pending = await idp.signedIn(send, 'preview-pending')
+
+  const src = (markup: string, slug: string) => new RegExp(`<img[^>]+src="([^"]+/${slug})"`).exec(markup)?.[1]
+  const publicGallery = await (await send(read)).text()
+  expect(src(publicGallery, 'private')).toBeUndefined()
+  const publicImage = new URL(src(publicGallery, 'public') ?? '/missing-image', read)
+  const catalogue = await (await viewer.request('/artefacts')).text()
+  const privateImage = new URL(src(catalogue, 'private') ?? '/missing-image', manage)
+
+  const image = { headers: { 'Sec-Fetch-Site': 'same-origin', 'Sec-Fetch-Dest': 'image' } }
+  for (const response of [await send(publicImage), await viewer.request(privateImage, image)]) {
+    expect(response.status).toBe(200)
+    expect(response.headers.get('Content-Type')).toBe('image/png')
+    expect(response.headers.get('Cache-Control')).toContain('no-store')
+    expect(response.headers.get('X-Content-Type-Options')).toBe('nosniff')
+    expect(response.headers.get('Content-Security-Policy')).toContain('sandbox')
+    expect(response.headers.get('Cross-Origin-Resource-Policy')).toBe('same-origin')
+    expect(new Uint8Array(await response.arrayBuffer())).toEqual(
+      Uint8Array.from(atob(png), (c) => c.charCodeAt(0)),
+    )
+  }
+  const head = await viewer.request(privateImage, { ...image, method: 'HEAD' })
+  expect(head.status).toBe(200)
+  expect((await head.arrayBuffer()).byteLength).toBe(0)
+  expect(head.headers.get('Content-Length')).toBe(String(atob(png).length))
+  expect(head.headers.get('Content-Disposition')).toBe('attachment')
+  for (const response of [
+    await viewer.request(privateImage, { headers: navigation }),
+    await viewer.request(privateImage, {
+      headers: { 'Sec-Fetch-Site': 'same-site', 'Sec-Fetch-Dest': 'iframe' },
+    }),
+    await viewer.request(privateImage, {
+      headers: { 'Sec-Fetch-Site': 'same-site', 'Sec-Fetch-Dest': 'image' },
+    }),
+    await send(privateImage, image),
+    await pending.request(privateImage, image),
+    await send(new URL(privateImage.pathname, read)),
+    await runtime()(publicImage),
+  ]) {
+    expect(response.status).toBe(404)
+    expect(await response.text()).toBe('')
+  }
+
+  await call('set_visibility', { slug: 'public', visibility: 'private' })
+  expect((await send(publicImage, { headers: { 'If-None-Match': '*' } })).status).toBe(404)
+  expect((await owner.post(members, { action: 'remove', id: viewerId })).status).toBe(303)
+  expect((await viewer.request(privateImage, image)).status).toBe(404)
+  await call('publish', {
+    slug: 'private',
+    mode: 'replace',
+    files: [
+      { path: 'index.html', content: 'Revised report' },
+      { path: 'og.png', content: '<!doctype html><h1>Not an image</h1>' },
+    ],
+  })
+  expect((await owner.request(privateImage, image)).status).toBe(404)
 })
 
 it('distinguishes anonymous, pending, viewer, publisher and removed canonical readers', async () => {
