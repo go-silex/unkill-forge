@@ -74,7 +74,7 @@ const style = `
   .forge-button:where(:hover) { border-color: var(--forge-accent) }
   .forge-button--primary { color: var(--forge-on-accent); background: var(--forge-accent); border-color: var(--forge-accent) }
   .forge-button--danger { color: var(--forge-danger) }
-  @media (pointer: fine) { :where(.forge-table .forge-button) { min-height: 2rem; padding-block: calc(.5 * var(--forge-space)) } }
+  @media (pointer: fine) and (not (any-pointer: coarse)) { :where(.forge-table .forge-button) { min-height: 2rem; padding-block: calc(.5 * var(--forge-space)) } }
   .forge-notice { margin-block: calc(2 * var(--forge-space)); padding: var(--forge-space) calc(2 * var(--forge-space)); background: var(--forge-surface); border-inline-start: .2em solid var(--forge-accent); border-radius: var(--forge-radius) }
   .forge-secret { display: flex; flex-wrap: wrap; align-items: center; gap: var(--forge-space) }
   .forge-empty { color: var(--forge-muted) }
@@ -83,11 +83,11 @@ const style = `
   @media (max-width: 45rem) {
     .forge-shell { display: block }
     .forge-tray { border-inline-end: 0; border-bottom: 1px solid var(--forge-hairline); padding: calc(2 * var(--forge-space)); gap: var(--forge-space) }
-    .forge-bar { position: relative; display: flex; align-items: center; justify-content: space-between; gap: var(--forge-space) }
+    .forge-bar { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: start; gap: var(--forge-space) }
     .forge-tray__sections { display: none }
-    .forge-drawer { display: block }
-    .forge-menu { display: list-item; white-space: nowrap }
-    .forge-drawer__panel { position: absolute; z-index: 1; inset-inline: 0; inset-block-start: calc(100% + var(--forge-space)); max-height: 70vh; overflow-y: auto; padding: var(--forge-space); background: var(--forge-surface); border: 1px solid var(--forge-hairline); border-radius: var(--forge-radius) }
+    .forge-drawer { display: block; max-inline-size: 56vw }
+    .forge-menu { display: list-item; list-style-position: inside; width: max-content; margin-inline-start: auto; white-space: nowrap }
+    .forge-drawer__panel { margin-block-start: var(--forge-space); padding: var(--forge-space); border: 1px solid var(--forge-hairline); border-radius: var(--forge-radius); overflow-wrap: anywhere }
     .forge-content { padding-block: calc(3 * var(--forge-space)) }
     .forge-col--secondary { display: none }
     .forge-member-email { display: block; color: var(--forge-muted) }

@@ -210,6 +210,8 @@ These classes and the custom properties above are the supported theme contract. 
 | `.forge-notice`, `.forge-secret`, `.forge-empty`                                                  | Flash notice, one-use secret and copy action group, and empty-state text                                   |
 | `.forge-link-list`                                                                                | Sign-in provider links or public artefact list                                                             |
 
+On narrow screens, opening the native drawer pushes the page down. Keep row identifiers and actions visible when hiding secondary table metadata. Dense table buttons use the compact height only when the primary pointer is fine and no coarse pointer is available.
+
 ## Upgrades, maintenance and backups
 
 - **Upgrade:** read the [changelog](../CHANGELOG.md), back up, check that your private config includes the new vars or secrets, run `npm ci`, then `npm run deploy -- --config "$FORGE_CONFIG"`. Do not reapply numbered migrations manually; Wrangler records them. Do not run purge during a mixed-version rollout or roll back to an unfenced Worker. Disable the cron trigger before a rollout from an unfenced version and re-enable it only after the rollout is complete.

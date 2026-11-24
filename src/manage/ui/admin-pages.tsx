@@ -208,19 +208,13 @@ adminPages.get(
           </button>
         </form>
         {table(
-          [
-            t('title'),
-            { secondary: t('slug') },
-            t('visibility'),
-            { secondary: t('revision') },
-            { secondary: t('updated') },
-          ],
+          [t('title'), t('slug'), t('visibility'), { secondary: t('revision') }, { secondary: t('updated') }],
           artefacts.map((entry) => (
             <tr>
               <td title={entry.title}>
                 <a href={detailPath(entry.slug)}>{entry.title}</a>
               </td>
-              <td class="forge-col--secondary" title={entry.slug}>
+              <td title={entry.slug}>
                 <code>{entry.slug}</code>
               </td>
               <td>{t(entry.visibility)}</td>
@@ -358,12 +352,12 @@ adminPages.get(
               )}
             </Action>
             {table(
-              [t('shareLabel'), { secondary: t('created') }, { secondary: t('lastUsed') }, t('actions')],
+              [t('shareLabel'), t('created'), t('lastUsed'), t('actions')],
               artefact.shareLinks.map((share) => (
                 <tr>
                   <td title={share.label || t('unlabeled')}>{share.label || t('unlabeled')}</td>
-                  <td class="forge-col--secondary">{time(c.env.config.locale, share.createdAt)}</td>
-                  <td class="forge-col--secondary">{time(c.env.config.locale, share.lastUsedAt)}</td>
+                  <td>{time(c.env.config.locale, share.createdAt)}</td>
+                  <td>{time(c.env.config.locale, share.lastUsedAt)}</td>
                   <td>
                     <Action action="reveal-share" label={t('showShare')} fields={{ id: share.id }} />
                     <Action action="revoke-share" label={t('revokeShare')} fields={{ id: share.id }} />
@@ -453,11 +447,11 @@ adminPages.get(
       <>
         <p>{t('purgeHelp')}</p>
         {table(
-          [t('title'), { secondary: t('slug') }, { secondary: t('deletedAt') }, t('status'), t('actions')],
+          [t('title'), t('slug'), { secondary: t('deletedAt') }, t('status'), t('actions')],
           artefacts.map((entry) => (
             <tr>
               <td title={entry.title ?? undefined}>{entry.title}</td>
-              <td class="forge-col--secondary" title={entry.slug}>
+              <td title={entry.slug}>
                 <code>{entry.slug}</code>
               </td>
               <td class="forge-col--secondary">{time(c.env.config.locale, entry.deletedAt)}</td>
@@ -521,7 +515,7 @@ adminPages.get(
         {table(
           [
             t('ownCredentialName'),
-            { secondary: t('ownCredentialPrefix') },
+            t('ownCredentialPrefix'),
             { secondary: t('lastUsed') },
             t('revokedAt'),
             t('actions'),
@@ -529,7 +523,7 @@ adminPages.get(
           tokens.map((token) => (
             <tr>
               <td title={token.name}>{token.name}</td>
-              <td class="forge-col--secondary" title={token.prefix}>
+              <td title={token.prefix}>
                 <code>{token.prefix}</code>
               </td>
               <td class="forge-col--secondary">{time(c.env.config.locale, token.lastUsedAt)}</td>

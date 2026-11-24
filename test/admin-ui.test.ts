@@ -472,12 +472,31 @@ it('continues an interrupted purge after its artefact row has already been remov
   const id = formValue(await html(owner, deleted), 'id')
   const intermediate = await post(owner, deleted, { action: 'purge', id, slug })
   expect(intermediate).toContain('Continue purge')
+  expect(intermediate).toContain('<th scope="col">Slug</th>')
+  expect(intermediate).toContain(`<td title="${slug}"><code>${slug}</code></td>`)
   expect(intermediate).not.toContain('Restore artefact')
   expect((await blobs.list({ prefix: 'blobs/' })).objects).toHaveLength(1)
   const finished = await post(owner, deleted, { action: 'purge', id, slug })
   expect(finished).toContain('Artefact permanently purged.')
   expect(finished).not.toContain('Continue purge')
   expect((await blobs.list({ prefix: 'blobs/' })).objects).toHaveLength(0)
+})
+
+it('keeps expiry dates in the primary cells of same-role invite rows', async () => {
+  const send = runtime()
+  const owner = await mockProvider().signedIn(send, admin)
+  await post(owner, members, { action: 'create-invite', role: 'viewer' })
+  await db
+    .prepare('UPDATE invites SET expires_at = ?')
+    .bind(Date.UTC(2099, 0, 2, 3, 4))
+    .run()
+  const page = await post(owner, members, { action: 'create-invite', role: 'viewer' })
+  expect(page).toContain('<th scope="col">Expires (UTC)</th>')
+  const rows = [...page.matchAll(/<tr><td>viewer<\/td><td>([^<]+ UTC)<\/td><td>.*?<\/tr>/gs)]
+  expect(rows).toHaveLength(2)
+  expect(rows.map((row) => row[1])).toContain('02/01/2099, 03:04 UTC')
+  expect(new Set(rows.map((row) => row[1])).size).toBe(2)
+  for (const [row] of rows) expect(row).toContain('value="revoke-invite"')
 })
 
 it.each(['en', 'fr'] as const)(
@@ -526,7 +545,7 @@ it.each(['en', 'fr'] as const)(
     )
     expect(catalogue).toContain('class="forge-table"')
     expect(catalogue).toContain('<th scope="col" class="forge-col--secondary">')
-    expect(catalogue).toContain(`<td class="forge-col--secondary" title="${slug}">`)
+    expect(catalogue).toContain(`<td title="${slug}"><code>${slug}</code></td>`)
     expect(catalogue).toContain('<td title="Quarterly report">')
     const invalidInvite = await html(anonymous, '/invite/invalid', 404)
     expect(invalidInvite).toContain(french ? 'Invitation invalide ou expirée' : 'Invite invalid or expired')

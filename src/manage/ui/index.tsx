@@ -181,7 +181,7 @@ app.get('/admin/members', async (c) => {
       <Table
         columns={[
           text.member,
-          { secondary: text.provider },
+          text.provider,
           { secondary: text.email },
           text.status,
           text.role,
@@ -198,9 +198,7 @@ app.get('/admin/members', async (c) => {
                 </span>
               )}
             </td>
-            <td class="forge-col--secondary" title={member.provider ?? text.bot}>
-              {member.provider ?? text.bot}
-            </td>
+            <td title={member.provider ?? text.bot}>{member.provider ?? text.bot}</td>
             <td class="forge-col--secondary" title={member.email ?? undefined}>
               {member.email ?? '—'}
             </td>
@@ -233,11 +231,11 @@ app.get('/admin/members', async (c) => {
       <Action path="/admin/members" action="create-invite" variant="primary" label={text.createInvite}>
         <RoleSelect config={config} human />
       </Action>
-      <Table columns={[text.role, { secondary: text.expires }, common.admin.actions]}>
+      <Table columns={[text.role, text.expires, common.admin.actions]}>
         {invites.map((invite) => (
           <tr key={invite.id}>
             <td>{common.roles[invite.role]}</td>
-            <td class="forge-col--secondary">{time(config.locale, invite.expiresAt)}</td>
+            <td>{time(config.locale, invite.expiresAt)}</td>
             <td>
               <Action
                 path="/admin/members"
