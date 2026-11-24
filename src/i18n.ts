@@ -24,11 +24,12 @@ const en = {
   unavailable: 'Forge is unavailable',
   continueToForge: 'Continue to Forge',
   roles: { viewer: 'viewer', publisher: 'publisher', admin: 'admin' },
+  views: { label: 'View', grid: 'Grid', list: 'List' },
   read: {
     incomplete: 'Sign-in did not complete',
     retry: 'Try signing in again',
     askAdmin: 'Ask a Forge administrator to approve your membership.',
-    artefacts: 'Public artefacts',
+    noArtefacts: 'Nothing has been published yet.',
   },
   login: {
     invalidFlow: 'Invalid login flow',
@@ -231,11 +232,12 @@ const fr: typeof en = {
   unavailable: 'Forge est indisponible',
   continueToForge: 'Continuer vers Forge',
   roles: { viewer: 'lecteur', publisher: 'éditeur', admin: 'administrateur' },
+  views: { label: 'Affichage', grid: 'Grille', list: 'Liste' },
   read: {
     incomplete: 'La connexion n’a pas abouti',
     retry: 'Réessayer de se connecter',
     askAdmin: 'Demandez à un administrateur de Forge d’approuver votre accès.',
-    artefacts: 'Artefacts publics',
+    noArtefacts: 'Aucun artefact publié pour le moment.',
   },
   login: {
     invalidFlow: 'Demande de connexion invalide',

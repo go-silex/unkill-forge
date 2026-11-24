@@ -8,7 +8,7 @@ import { galleryPreviewSlugs } from '../core/gallery-previews'
 import { handoffChallenge, readBoundSession, redeemHandoff, validHandoffState } from '../core/handoffs'
 import { randomSecret } from '../core/index'
 import { artefactPath, maxReadReturnLength, readReturnPath, sharePath } from '../core/read-path'
-import { Gallery } from '../gallery'
+import { Gallery, GalleryViews, galleryView } from '../gallery'
 import { DocumentHead } from '../head'
 import { isDocumentNavigation, readBoundedBody, readCookie, writeCookie } from '../http'
 import { messages } from '../i18n'
@@ -43,6 +43,7 @@ function page(
   children: Child,
   head: boolean,
   status = 200,
+  actions?: Child,
 ) {
   const wide = panel === 'landing' && config.publicIndex ? ' forge-panel--gallery' : ''
   const html = (
@@ -52,6 +53,7 @@ function page(
         <main class={`forge-panel forge-panel--${panel}${wide}`}>
           <header class="forge-panel__header">
             <BrandBlock config={config} variant={panel === 'landing' ? 'heading' : undefined} />
+            {actions}
           </header>
           <div class="forge-panel__body">{children}</div>
         </main>
@@ -186,30 +188,44 @@ export async function read(
             'public',
           )
         : undefined
+      const signIn = (
+        <a class="forge-button forge-button--primary" href={new URL('/artefacts', config.manageOrigin).href}>
+          {common.signIn}
+        </a>
+      )
+      const view = galleryView(url.searchParams.get('view'))
       return page(
         config,
         name,
         'landing',
-        <>
-          {!publicIndex && brand.landingText && <p>{brand.landingText}</p>}
-          <a class="forge-button forge-button--primary" href={config.manageOrigin}>
-            {common.signIn}
-          </a>
-          {entries && (
-            <section>
-              <h2>{text.artefacts}</h2>
+        entries ? (
+          <>
+            <div class="forge-toolbar">
+              <GalleryViews path="/" view={view} labels={common.views} />
+            </div>
+            {entries.length === 0 ? (
+              <p class="forge-empty">{common.read.noArtefacts}</p>
+            ) : (
               <Gallery
-                label={text.artefacts}
+                label={common.artefacts}
+                view={view}
                 items={entries.map(({ url, title, slug }) => ({
                   href: url,
                   title,
                   preview: previews?.has(slug) ? slug : undefined,
                 }))}
               />
-            </section>
-          )}
-        </>,
+            )}
+          </>
+        ) : (
+          <>
+            {brand.landingText && <p>{brand.landingText}</p>}
+            {signIn}
+          </>
+        ),
         head,
+        200,
+        entries && signIn,
       )
     }
     return notFound(config, head)
