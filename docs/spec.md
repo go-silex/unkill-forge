@@ -184,7 +184,7 @@ Resolution order for a request:
 
 The public gallery and the paginated Manage catalogue use cover files published at the root of the current revision: `og.jpg`, `og.jpeg`, `og.png`, `og.webp` or `index.og.png` in that order. Files must be at most 1 MiB and match the expected raster media type and signature. An artefact with no cover is still listed. Preview requests do not fall back to other paths, revisions, aliases or shares.
 
-Supplying a cover is optional. When cover generation is enabled, a background pass captures the entry of an HTML revision without a valid supplied cover, including already-published artefacts. Forge uses the generated JPEG only for that exact live head. This does not change the revision, its files, visibility or share links.
+Supplying a cover is optional. When cover generation is enabled, committing a revision starts background capture of its HTML entry if no valid cover was supplied. A scheduled pass retries failed captures and fills missing covers for already-published artefacts. Forge uses the generated JPEG only for that exact live head. This does not change the revision, its files, visibility or share links.
 
 Unknown artefacts, unauthorized share requests and missing files return the same 404, but a missing file in a private artefact only returns 404 to a reader with access. Other readers get the handoff or pending response regardless of whether the file exists.
 

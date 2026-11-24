@@ -164,7 +164,11 @@ export type Config = {
   maxUploadBytes: number
   revisionRetention: number
 }
-export type Runtime = { config: Config; env: Env }
+export type Runtime = {
+  config: Config
+  env: Env
+  onRevisionCommitted?: (artefactId: string, revision: number) => void
+}
 
 const cache = new WeakMap<Env, Config | null>()
 const secret = z.string().min(1)

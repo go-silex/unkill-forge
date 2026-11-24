@@ -1,7 +1,7 @@
 import { brandAsset, themeAsset, themePrefix } from './brand'
-import { configuration, type Env } from './config'
+import { configuration, type Env, type Runtime } from './config'
 import { previewPrefix } from './core/gallery-previews'
-import { coverCron, generateCovers } from './core/generated-covers'
+import { coverCron, generateCovers, generatePublishedCover } from './core/generated-covers'
 import { maintain } from './core/maintenance'
 import { renderCover } from './cover-renderer'
 import { galleryPreview } from './gallery-preview'
@@ -30,7 +30,7 @@ export default {
     ) {
       return themeAsset(request, url, config.theme)
     }
-    const runtime = { config, env }
+    const runtime: Runtime = { config, env }
     if (url.origin === config.readOrigin) {
       if (url.pathname.startsWith(previewPrefix)) return galleryPreview(request, url, runtime, 'public')
       return brandAsset(request.method, url.pathname, config) ?? read(request, url, runtime, ctx)
@@ -40,6 +40,20 @@ export default {
     const path = url.pathname
     const blocked = checkManageOrigin(request, path, config)
     if (blocked) return manageHeaders(blocked)
+    const browser = env.COVER_BROWSER
+    if (browser) {
+      runtime.onRevisionCommitted = (id, revision) => {
+        ctx.waitUntil(
+          generatePublishedCover(
+            env,
+            id,
+            revision,
+            (entryPath, files) => renderCover(browser, env.BLOBS, entryPath, files),
+            Date.now(),
+          ).catch(() => console.error('Forge cover dispatch failed')),
+        )
+      }
+    }
     try {
       if (path.startsWith(previewPrefix))
         return manageHeaders(await galleryPreview(request, url, runtime, 'member'))

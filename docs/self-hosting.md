@@ -115,14 +115,14 @@ By default the read origin shows a sign-in action without a public catalogue. Se
 
 Both galleries use a supported raster preview from the current revision. You can supply a root-level `og.jpg`, `og.jpeg`, `og.png`, `og.webp` or `index.og.png` no larger than 1 MiB. A valid supplied preview always wins. To publish and verify the first private artefact, see [Connect and publish with MCP](mcp.md).
 
-To generate missing covers for HTML artefacts, add a [Browser Run binding](https://developers.cloudflare.com/browser-run/reference/wrangler/#bindings) and the separate cover trigger to the instance config:
+To generate missing covers for HTML artefacts after publication, add a [Browser Run binding](https://developers.cloudflare.com/browser-run/reference/wrangler/#bindings). Keep the separate cover trigger for retries and backfill:
 
 ```jsonc
 "browser": { "binding": "COVER_BROWSER" },
 "triggers": { "crons": ["0 3 * * *", "*/5 * * * *"] }
 ```
 
-The background pass also discovers existing artefacts without a cover. It takes at most one capture per run; a backlog or retries can delay images. The HTML revision must have at most 128 files; the capture can read up to 4 MiB per file and 16 MiB across all requests. External resources and audio or video playback are disabled; use a local poster or supply a cover for those decks, larger artefacts or a particular frame.
+Publication does not wait for capture. The scheduled pass also discovers existing artefacts without a cover and takes at most one capture per run. Removing `COVER_BROWSER` disables both paths without removing existing previews. The HTML revision must have at most 128 files; the capture can read up to 4 MiB per file and 16 MiB across all requests. External resources and audio or video playback are disabled; use a local poster or supply a cover for those decks, larger artefacts or a particular frame.
 
 ## Branding and locale
 
