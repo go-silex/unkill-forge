@@ -12,9 +12,9 @@ import { sealShareKey, unsealShareKey } from '../src/core/share-keys'
 import {
   admin,
   configuredEnv,
+  createdBotId,
   flashNavigation,
   type Handle,
-  listedId,
   location,
   read,
   runtime,
@@ -50,7 +50,7 @@ async function rpc(send: Handle, token: string, method: string, params: object) 
 async function bot(send: Handle, role: 'viewer' | 'publisher' = 'publisher', name = `Artefact ${role}`) {
   const owner = await mockProvider().signedIn(send, admin)
   expect((await owner.post('/admin/bots', { action: 'create', name, role })).status).toBe(303)
-  const id = await listedId(owner, '/admin/members', name)
+  const id = await createdBotId(name)
   const response = await owner.post('/admin/bots', { action: 'token', id, name: 'Artefact token' })
   expect(response.status).toBe(303)
   const tokenPage = await owner.request(location(response), { headers: flashNavigation })
@@ -617,8 +617,11 @@ it('negotiates a non-batching protocol, rejects batches, and bounds JSON-RPC env
     '2025-03-26',
   )
   expect(initialize.status).toBe(200)
-  const { result } = await initialize.json<{ result: { protocolVersion: string } }>()
+  const { result } = await initialize.json<{ result: { protocolVersion: string; instructions?: string } }>()
   expect(result.protocolVersion >= '2025-06-18').toBe(true)
+  expect(result.instructions).toContain('expectedRevision 0')
+  // Clients cut longer instructions (OMP at 4,000 characters), dropping the last workflow steps.
+  expect(result.instructions?.length).toBeLessThanOrEqual(4000)
   const slug = 'no-batch'
   const publish = {
     jsonrpc: '2.0',

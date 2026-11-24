@@ -237,10 +237,14 @@ it('does not re-admit a removed identity by invite, auto-join or a listed bootst
   const link = await createInvite(owner, 'admin')
   const id = await listedId(owner, members, `${subject}@example.test`)
   expect((await owner.post(members, { id, action: 'remove' })).status).toBe(303)
+  const ownerId = await DB.prepare('SELECT id FROM members WHERE email = ?')
+    .bind(`${admin}@example.test`)
+    .first<string>('id')
+  if (!ownerId) throw new Error('Expected an authenticated administrator')
   expect(
     (
       await owner.post(members, {
-        id: await listedId(owner, members, `${admin}@example.test`),
+        id: ownerId,
         action: 'remove',
       })
     ).status,

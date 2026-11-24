@@ -132,6 +132,14 @@ export async function listedId(adminBrowser: Browser, path: string, display: str
   return formValue(row, 'id')
 }
 
+export async function createdBotId(name: string) {
+  const id = await bindings.DB.prepare("SELECT id FROM members WHERE kind = 'bot' AND name = ? LIMIT 1")
+    .bind(name)
+    .first<string>('id')
+  if (!id) throw new Error(`No bot named ${name}`)
+  return id
+}
+
 export function mcpCall(send: Handle, token?: string, origin?: string) {
   const headers = new Headers({
     ...jsonHeaders,

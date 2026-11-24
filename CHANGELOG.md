@@ -2,11 +2,14 @@
 
 ## Unreleased
 
+- Return the publishing workflow as MCP server instructions on `initialize`, so agents follow the same audience-approval and verification steps without a plugin skill.
 - Ask for confirmation before deleting an artefact or starting an irreversible purge. A purge that's already underway can still be continued directly.
 - Copy the MCP endpoint and command or configuration snippets from the Manage connection page.
 - Open the artefact catalogue at the Manage home. Filter by access with catalogue-wide totals, see access badges and versions at a glance, and find sign-out in the navigation account block.
 - Show relative dates in Manage with absolute timestamps on hover. Set the optional `TIMEZONE` to change the display zone; it defaults to UTC.
 - Manage Private, Shared and Public access from one control on the artefact detail page. Copy the canonical address, manage individual share links, and browse or restore older versions from a timeline.
+- Separate pending, active and removed people from invitation links on Members. Manage robot roles and credentials in a detail panel, see personal token and redirect metadata, and check how long a deleted artefact can still be restored. Open creation forms and destructive confirmations in native sheets.
+- Reject stale Refuse and Remove confirmations if the member’s status changed after the sheet opened.
 - Upgrade: no D1 migration, binding or required config change.
 
 ## v2.5.1 — 2026-11-24
