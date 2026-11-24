@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## v2.5.1 — 2026-11-24
 
 - Start generating a missing HTML cover as soon as its revision is published, without delaying the response. The schedule remains available for retries and backfill.
 - Upgrade: no D1 migration, binding or config change.
