@@ -1,7 +1,7 @@
 import { brandAsset, themeAsset, themePrefix } from './brand'
-import { configuration, type Env } from './config'
+import { configuration, type Env, type Runtime } from './config'
 import { previewPrefix } from './core/gallery-previews'
-import { coverCron, generateCovers } from './core/generated-covers'
+import { coverCron, generateCovers, generatePublishedCover } from './core/generated-covers'
 import { maintain } from './core/maintenance'
 import { renderCover } from './cover-renderer'
 import { galleryPreview } from './gallery-preview'
@@ -30,7 +30,7 @@ export default {
     ) {
       return themeAsset(request, url, config.theme)
     }
-    const runtime = { config, env }
+    const runtime: Runtime = { config, env }
     if (url.origin === config.readOrigin) {
       if (url.pathname.startsWith(previewPrefix)) return galleryPreview(request, url, runtime, 'public')
       return brandAsset(request.method, url.pathname, config) ?? read(request, url, runtime, ctx)
@@ -40,6 +40,14 @@ export default {
     const path = url.pathname
     const blocked = checkManageOrigin(request, path, config)
     if (blocked) return manageHeaders(blocked)
+    const browser = env.COVER_BROWSER
+    let coverJobs: { id: string; revision: number }[] | undefined
+    if (browser) {
+      runtime.onRevisionCommitted = (id, revision) => {
+        coverJobs ??= []
+        coverJobs.push({ id, revision })
+      }
+    }
     try {
       if (path.startsWith(previewPrefix))
         return manageHeaders(await galleryPreview(request, url, runtime, 'member'))
@@ -65,6 +73,25 @@ export default {
     } catch (error) {
       console.error('Forge request failed', error instanceof Error ? error.name : 'unknown')
       return manageHeaders(new Response(messages(config).unavailable, { status: 503 }))
+    } finally {
+      // Leave receipt-dependent D1 writes ahead of cover work, including for browser restores.
+      if (browser && coverJobs) {
+        for (const { id, revision } of coverJobs) {
+          try {
+            ctx.waitUntil(
+              generatePublishedCover(
+                env,
+                id,
+                revision,
+                (entryPath, files) => renderCover(browser, env.BLOBS, entryPath, files),
+                Date.now(),
+              ).catch(() => console.error('Forge cover dispatch failed')),
+            )
+          } catch {
+            console.error('Forge cover registration failed')
+          }
+        }
+      }
     }
   },
   async scheduled(controller: ScheduledController, env: Env): Promise<void> {

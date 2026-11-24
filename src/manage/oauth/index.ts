@@ -31,7 +31,7 @@ const apiToken = z.object({
   viaToken: z.literal(true),
 })
 type Redemption = { grantId?: string; retryableGrantWriteFailed: boolean }
-type OAuthEnv = Env & { redemption?: Redemption }
+type OAuthEnv = Env & Pick<Runtime, 'onRevisionCommitted'> & { redemption?: Redemption }
 const providers = new WeakMap<Config, OAuthProvider<OAuthEnv>>()
 export const localClientPath = '/oauth/clients/local.json'
 
@@ -130,7 +130,7 @@ export async function oauthFetch(
             return new Response(null, { status: 405, headers: { Allow: 'POST, DELETE' } })
           return handleMcp(
             req,
-            { config, env: bindings },
+            { config, env: bindings, onRevisionCommitted: bindings.onRevisionCommitted },
             { ...member, generation: credential.generation },
             auth,
           )
@@ -151,7 +151,11 @@ export async function oauthFetch(
     })
     providers.set(config, provider)
   }
-  const bindings: OAuthEnv = { ...env, OAUTH_PROVIDER: undefined }
+  const bindings: OAuthEnv = {
+    ...env,
+    OAUTH_PROVIDER: undefined,
+    onRevisionCommitted: runtime.onRevisionCommitted,
+  }
   if (request.method !== 'POST' || new URL(request.url).pathname !== '/token') {
     return provider.fetch(request, bindings, ctx)
   }

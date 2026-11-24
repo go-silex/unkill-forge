@@ -511,7 +511,7 @@ type Commit = {
 }
 
 async function commitRevision(
-  { env: { DB: db }, config }: Runtime,
+  { env: { DB: db }, config, onRevisionCommitted }: Runtime,
   member: Member,
   { id, slug, current, title, message, action, detail, source, carry, newFiles, uploaded, epoch }: Commit,
   ctx?: ExecutionContext,
@@ -604,6 +604,7 @@ async function commitRevision(
   const entry = (await db.batch<RevisionEntry>(statements)).at(-1)
   const path = entry?.results[0]?.path
   if (!path) throw new Error('Committed revision has no entry file')
+  onRevisionCommitted?.(id, revision)
   await cacheRevisionEntries(db, [{ id, revision, path }], ctx)
   return { url: entryUrl(config.readOrigin, slug, path), revision }
 }

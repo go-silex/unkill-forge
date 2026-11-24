@@ -14,6 +14,31 @@ const intervalMs = 300_000
 type Job = { artefactId: string; revision: number; attempts: number; leaseUntil: number }
 type RenderFile = { path: string; sha256: string; size: number; type: string }
 type Render = (entryPath: string, files: readonly RenderFile[]) => Promise<Uint8Array<ArrayBuffer>>
+type CoverStorage = Pick<Runtime['env'], 'DB' | 'BLOBS'>
+
+export async function generatePublishedCover(
+  { DB: db, BLOBS: bucket }: CoverStorage,
+  artefactId: string,
+  revision: number,
+  render: Render,
+  now: number,
+) {
+  // Take the same fenced lease as recovery, but never process a different head or pull from the queue.
+  const job = await db
+    .prepare(`INSERT INTO generated_covers (artefact_id, revision, retry_at, attempts)
+      SELECT id, current_revision, ?4, 1 FROM artefacts
+      WHERE id = ?1 AND current_revision = ?2 AND deleted_at IS NULL
+      ON CONFLICT(artefact_id) DO UPDATE SET revision = excluded.revision, retry_at = excluded.retry_at,
+        attempts = CASE WHEN generated_covers.revision = excluded.revision THEN attempts + 1 ELSE 1 END,
+        jpeg = NULL
+      WHERE generated_covers.revision < excluded.revision OR
+        (generated_covers.revision = excluded.revision AND
+          (generated_covers.retry_at <= ?3 OR (attempts = 0 AND generated_covers.retry_at IS NOT NULL)))
+      RETURNING artefact_id AS artefactId, revision, attempts, retry_at AS leaseUntil`)
+    .bind(artefactId, revision, now, now + leaseMs)
+    .first<Job>()
+  if (job) await processCover(db, bucket, job, render, now)
+}
 
 async function discover(db: D1Database, now: number) {
   // Inspect a bounded part of the catalogue even when all existing covers have been checked.
@@ -122,30 +147,34 @@ export async function generateCovers(
   for (let i = 0; i < inspectionsPerRun; i++) {
     const job = await claim(db, now)
     if (!job) return
-    let jpeg: Uint8Array<ArrayBuffer> | null = null
-    let retryAt: number | null = null
-    let rendered = false
-    try {
-      let supplied = false
-      for (const file of await revisionCoverFiles(db, job.artefactId, job.revision)) {
-        if (await openCover(bucket, file, true)) {
-          supplied = true
-          break
-        }
-      }
-      const input = supplied ? null : await renderInput(db, job)
-      if (input) {
-        rendered = true
-        jpeg = await render(input.entry, input.files)
-        if (jpeg.byteLength > maxCoverBytes || !isJpeg(jpeg)) throw new Error('Invalid JPEG')
-      }
-    } catch {
-      // No URLs, artefact names or provider diagnostics in scheduled logs.
-      console.warn('Forge cover attempt failed; retry scheduled')
-      retryAt = now + intervalMs * 2 ** Math.min(job.attempts - 1, 8)
-      jpeg = null
-    }
-    await settle(db, job, retryAt, jpeg)
-    if (rendered || retryAt !== null) return
+    if (await processCover(db, bucket, job, render, now)) return
   }
+}
+
+async function processCover(db: D1Database, bucket: R2Bucket, job: Job, render: Render, now: number) {
+  let jpeg: Uint8Array<ArrayBuffer> | null = null
+  let retryAt: number | null = null
+  let rendered = false
+  try {
+    let supplied = false
+    for (const file of await revisionCoverFiles(db, job.artefactId, job.revision)) {
+      if (await openCover(bucket, file, true)) {
+        supplied = true
+        break
+      }
+    }
+    const input = supplied ? null : await renderInput(db, job)
+    if (input) {
+      rendered = true
+      jpeg = await render(input.entry, input.files)
+      if (jpeg.byteLength > maxCoverBytes || !isJpeg(jpeg)) throw new Error('Invalid JPEG')
+    }
+  } catch {
+    // No URLs, artefact names or provider diagnostics in logs.
+    console.warn('Forge cover attempt failed; retry scheduled')
+    retryAt = now + intervalMs * 2 ** Math.min(job.attempts - 1, 8)
+    jpeg = null
+  }
+  await settle(db, job, retryAt, jpeg)
+  return rendered || retryAt !== null
 }
