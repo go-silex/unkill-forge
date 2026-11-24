@@ -115,17 +115,102 @@ By default the read origin shows a landing page without a public catalogue. Set 
 
 ## Branding and locale
 
-Set `LOCALE` to `en` (default) or `fr` for Forge-authored UI copy on both hosts. It does not translate published artefacts, provider labels or member names. `FORGE_NAME` sets the display name. `BRAND` is a JSON-encoded string; keep `"{}"` for the bundled defaults, or override the six-digit hex accent and the non-index read landing's plain text (up to 500 characters):
+Set `LOCALE` to `en` (default) or `fr` for Forge-authored UI copy on both hosts. It does not translate published artefacts, provider labels or member names. `FORGE_NAME` supplies the instance name in document titles, MCP and OAuth resource metadata. `BRAND` is a JSON-encoded string; keep `"{}"` for the bundled defaults, or override the six-digit hex accent, the brand block label (trimmed plain text, 1–40 characters; defaults to `FORGE_NAME`), and the non-index read landing's plain text (up to 500 characters). A label does not require a theme binding:
 
 ```json
 {
   "FORGE_NAME": "Forge",
   "LOCALE": "fr",
-  "BRAND": "{\"accent\":\"#a7481c\",\"landingText\":\"Our published work\"}"
+  "BRAND": "{\"label\":\"Studio\",\"accent\":\"#a7481c\",\"landingText\":\"Our published work\"}"
 }
 ```
 
-To change the SVG logo or favicon, edit the trusted bundled assets in [`brand/defaults.ts`](../brand/defaults.ts) and rebuild; no template or CSP edits are needed.
+## Theme
+
+Without a theme, both hosts use Forge's bundled light and dark styles, logo and favicon. To override them without forking, ship a private theme directory with your Worker deploy. Merge the following into your external `wrangler.jsonc` (keep the other keys and vars):
+
+```jsonc
+{
+  "assets": {
+    "directory": "./theme",
+    "binding": "THEME",
+    "run_worker_first": true
+  },
+  "vars": {
+    "BRAND": "{\"logo\":\"wordmark.svg\",\"favicon\":\"icon.png\"}"
+  }
+}
+```
+
+`run_worker_first: true` is required so Forge stays in control of routing and headers. Leave Wrangler's asset not-found handling at its default (no fallback). `npm run deploy -- --config "$FORGE_CONFIG"` resolves a relative `assets.directory` from the external config file's directory; `main` and `migrations_dir` remain checkout-relative.
+
+Place `theme.css`, `wordmark.svg` and `icon.png` in `theme/` for this example. `BRAND.logo` and `BRAND.favicon` are optional root filenames matching `^[a-z0-9-]+\.(svg|png)$`. Configuring either without the `THEME` binding makes Forge unavailable. Omit a key to keep its bundled SVG; Forge does not look up a custom mark before linking to it.
+
+Forge-authored pages load `/_theme/theme.css` after `/style.css` whenever `THEME` is bound. Theme assets are public on both configured hosts. Use relative URLs in `theme.css` (for example, `url("fonts/ui.woff2")`); do not reference external origins. The `/_theme/` prefix is separate from canonical `/a/` and share `/s/` routes, whose slugs cannot contain `_`.
+
+The allowlist applies to paths as received by Forge. A client or proxy may normalize `.` or `..` before sending the request; Forge does not decode path components or allow traversal within the theme binding.
+
+| Theme file under `/_theme/` | Response type                 |
+| --------------------------- | ----------------------------- |
+| `theme.css`                 | `text/css`                    |
+| Root `*.svg`                | `image/svg+xml` (sandbox CSP) |
+| Root `*.png`                | `image/png`                   |
+| `fonts/*.woff2`             | `font/woff2`                  |
+
+Image and font basenames start with an ASCII letter, digit, `_` or `-`; remaining characters may also include `.`. Only `GET` and `HEAD` are allowed. Other paths (including encoded path components), missing assets and other methods return 404 with `nosniff`. Assets use `Cache-Control: no-cache` so browsers revalidate across deployments.
+
+### CSS custom properties
+
+Override these properties with ordinary rules; match `@media (prefers-color-scheme: dark)` if your overrides need separate dark values.
+
+| Property                                                                                | Purpose                                                             |
+| --------------------------------------------------------------------------------------- | ------------------------------------------------------------------- |
+| `--forge-font-sans`, `--forge-font-mono`                                                | UI and code font stacks                                             |
+| `--forge-page`, `--forge-surface`                                                       | Page background and raised surfaces                                 |
+| `--forge-ink`, `--forge-muted`, `--forge-hairline`                                      | Main text, secondary text and borders                               |
+| `--forge-accent`, `--forge-on-accent`                                                   | Accent (defaults to `BRAND.accent`) and text on accent              |
+| `--forge-link`, `--forge-danger`, `--forge-focus`                                       | Link, destructive action and focus ring colours                     |
+| `--forge-radius`, `--forge-control-height`, `--forge-space`                             | Corner radius, minimum regular control height and base spacing unit |
+| `--forge-text-small`, `--forge-text-base`, `--forge-text-heading`, `--forge-text-title` | Dense text, body text, section heading and page title sizes         |
+
+For example, `theme.css` can register a font and set the UI stack:
+
+```css
+@font-face {
+  font-family: Instance UI;
+  src: url("fonts/ui.woff2") format("woff2");
+  font-display: swap;
+}
+:root {
+  --forge-font-sans: "Instance UI", system-ui, sans-serif;
+  --forge-radius: 0.25rem;
+}
+```
+
+### CSS classes
+
+These classes and the custom properties above are the supported theme contract. Built-in selectors have low specificity so themes can use plain rules. The rest of the HTML and the built-in layout are not extension APIs; dress the pages without changing their content, order or behaviour.
+
+| Class                                                                                             | Purpose                                                                                                    |
+| ------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------- |
+| `.forge-shell`, `.forge-tray`, `.forge-content`                                                   | Signed-in manage grid, navigation/brand tray, and main content                                             |
+| `.forge-tray__sections`, `.forge-bar`                                                             | Always-visible section links/sign-out on desktop (and without CSS); top bar on narrow screens              |
+| `.forge-drawer`, `.forge-menu`, `.forge-drawer__panel`                                            | Native narrow-screen disclosure, summary control and panel; use `[open]` on `.forge-drawer` for its state  |
+| `.forge-brand`, `.forge-brand__logo`                                                              | Shared instance mark/label group and height-sized image                                                    |
+| `.forge-nav`, `.forge-nav__link`                                                                  | Section navigation and links; use `[aria-current="page"]` for the active section                           |
+| `.forge-title`                                                                                    | Page heading                                                                                               |
+| `.forge-panel`, `.forge-panel__header`, `.forge-panel__body`                                      | Single-panel layout, shared brand header, and body                                                         |
+| `.forge-panel--sign-in`, `.forge-panel--invite`, `.forge-panel--consent`, `.forge-panel--handoff` | Manage sign-in, invitation, consent, and read-session relay panels                                         |
+| `.forge-panel--landing`, `.forge-panel--pending`, `.forge-panel--error`                           | Read landing, approval-pending, and error panels (including missing files and handoff retry)               |
+| `.forge-table-scroll`, `.forge-table`                                                             | Horizontal scroll container and dense data table                                                           |
+| `.forge-col--secondary`                                                                           | Marks both the heading and its data cells as secondary metadata; hidden by default at widths up to `45rem` |
+| `.forge-member-email`                                                                             | Narrow-screen email next to the member name; on wider screens email has its own column                     |
+| `.forge-action`, `.forge-button`                                                                  | Form actions and styled action controls                                                                    |
+| `.forge-button--primary`, `.forge-button--danger`                                                 | Primary and destructive control variants                                                                   |
+| `.forge-notice`, `.forge-secret`, `.forge-empty`                                                  | Flash notice, one-use secret and copy action group, and empty-state text                                   |
+| `.forge-link-list`                                                                                | Sign-in provider links or public artefact list                                                             |
+
+On narrow screens, opening the native drawer pushes the page down. Keep row identifiers and actions visible when hiding secondary table metadata. Dense table buttons use the compact height only when the primary pointer is fine and no coarse pointer is available.
 
 ## Upgrades, maintenance and backups
 

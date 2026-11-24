@@ -54,7 +54,7 @@ async function publisher(send: Handle, owner: Browser) {
     })
     expect(response.status).toBe(200)
     const { result } = await response.json<{
-      result: { isError?: boolean; structuredContent?: { url?: string } }
+      result: { isError?: boolean; structuredContent?: { id?: string; url?: string } }
     }>()
     expect(result.isError ?? false).toBe(false)
     return result.structuredContent
@@ -117,6 +117,7 @@ async function issue(manageBrowser: Browser, handoff: URL): Promise<Handoff> {
   expect(html).toContain(`method="post" action="${url}"`)
   const policy = response.headers.get('Content-Security-Policy')
   expect(policy).toContain(`form-action ${read}`)
+  expect(policy).toContain("style-src 'self'; img-src 'self'; font-src 'self'")
   const script = /<script>([^<]+)<\/script>/.exec(html)?.[1]
   expect(script).toBeTruthy()
   const hash = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(script))
@@ -193,6 +194,49 @@ it('gives the same 404 for unknown artefacts, unknown paths and non-read routes'
     expect([...response.headers]).toEqual([...reference.headers])
   }
   expect((await send(`${manage}/_forge/session`)).status).toBe(404)
+})
+
+it('themes Forge-authored errors without altering served artefacts, redirects or share privacy', async () => {
+  const { send, call } = await fixture()
+  const share = await call('create_share_link', { slug: 'private' })
+  if (!share?.url || !share.id) throw new Error('Expected a share URL and ID')
+  const themed = runtime({
+    THEME: { fetch: () => new Response(':root {}') },
+    BRAND: '{"label":"Published Work"}',
+  })
+  for (const [url, status, body] of [
+    [publicUrl, 200, '<h1>Public</h1>'],
+    [share.url, 200, '<h1>Private</h1>'],
+    [`${read}/a/public?tab=latest`, 301, ''],
+    [share.url.slice(0, -1), 301, ''],
+  ] as const) {
+    const actual = await themed(url)
+    const original = await send(url)
+    expect(actual.status, url).toBe(status)
+    expect(await actual.text()).toBe(body)
+    expect([...actual.headers]).toEqual([...original.headers])
+    expect(actual.headers.has('Content-Security-Policy')).toBe(false)
+  }
+
+  await call('revoke_share_link', { id: share.id })
+  const revoked = await themed(share.url)
+  const neverExisted = await themed(`${read}/s/private/never-existent-share-key/`)
+  expect(revoked.status).toBe(404)
+  expect(neverExisted.status).toBe(404)
+  expect(Object.fromEntries(revoked.headers)).toEqual({
+    'cache-control': 'private, no-store',
+    'content-security-policy':
+      "default-src 'none'; style-src 'self'; img-src 'self'; font-src 'self'; base-uri 'none'; frame-ancestors 'none'",
+    'content-type': 'text/html; charset=utf-8',
+    'referrer-policy': 'same-origin',
+    'x-content-type-options': 'nosniff',
+    'x-robots-tag': 'noindex',
+  })
+  expect([...revoked.headers]).toEqual([...neverExisted.headers])
+  const body = await revoked.text()
+  expect(body).toContain('href="/_theme/theme.css"')
+  expect(body).toContain('Published Work</div>')
+  expect(body).toBe(await neverExisted.text())
 })
 
 it('shows the public index only when enabled, without listing private artefacts', async () => {

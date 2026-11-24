@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- Restyle Forge-authored pages with light and dark defaults, a responsive manage menu and tables, a configurable short brand label, and optional same-origin theme assets; read pages gain a restrictive CSP and the sign-in handoff permits same-origin styles and fonts without changing artefact delivery.
+
 ## v2.0.1 — 2026-11-23
 
 - Use a verified email or the account subject as the OIDC revalidation hint, and retry once interactively when the provider requires it.

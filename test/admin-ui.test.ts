@@ -425,7 +425,7 @@ it('restores a revision, reveals and revokes share links, then renames and resto
     .prepare('SELECT name FROM members WHERE id = (SELECT created_by FROM artefacts WHERE id = ?)')
     .bind(identity.artefactId)
     .first<string>('name')
-  expect(history).toContain(`<td>${author}</td>`)
+  expect(history).toContain(`<td class="forge-col--secondary" title="${author}">${author}</td>`)
   expect(history).toMatch(/\d{2}\/\d{2}\/\d{4}, \d{2}:\d{2} UTC/)
   const first = await post(owner, detail, { action: 'create-share', label: 'Early readers', ...identity })
   const url = /<code>(https:\/\/read\.forge\.example\/s\/quarterly\/[A-Za-z0-9_-]+\/)<\/code>/.exec(
@@ -472,12 +472,31 @@ it('continues an interrupted purge after its artefact row has already been remov
   const id = formValue(await html(owner, deleted), 'id')
   const intermediate = await post(owner, deleted, { action: 'purge', id, slug })
   expect(intermediate).toContain('Continue purge')
+  expect(intermediate).toContain('<th scope="col">Slug</th>')
+  expect(intermediate).toContain(`<td title="${slug}"><code>${slug}</code></td>`)
   expect(intermediate).not.toContain('Restore artefact')
   expect((await blobs.list({ prefix: 'blobs/' })).objects).toHaveLength(1)
   const finished = await post(owner, deleted, { action: 'purge', id, slug })
   expect(finished).toContain('Artefact permanently purged.')
   expect(finished).not.toContain('Continue purge')
   expect((await blobs.list({ prefix: 'blobs/' })).objects).toHaveLength(0)
+})
+
+it('keeps expiry dates in the primary cells of same-role invite rows', async () => {
+  const send = runtime()
+  const owner = await mockProvider().signedIn(send, admin)
+  await post(owner, members, { action: 'create-invite', role: 'viewer' })
+  await db
+    .prepare('UPDATE invites SET expires_at = ?')
+    .bind(Date.UTC(2099, 0, 2, 3, 4))
+    .run()
+  const page = await post(owner, members, { action: 'create-invite', role: 'viewer' })
+  expect(page).toContain('<th scope="col">Expires (UTC)</th>')
+  const rows = [...page.matchAll(/<tr><td>viewer<\/td><td>([^<]+ UTC)<\/td><td>.*?<\/tr>/gs)]
+  expect(rows).toHaveLength(2)
+  expect(rows.map((row) => row[1])).toContain('02/01/2099, 03:04 UTC')
+  expect(new Set(rows.map((row) => row[1])).size).toBe(2)
+  for (const [row] of rows) expect(row).toContain('value="revoke-invite"')
 })
 
 it.each(['en', 'fr'] as const)(
@@ -487,7 +506,7 @@ it.each(['en', 'fr'] as const)(
     const send = runtime({
       LOCALE: locale,
       FORGE_NAME: 'Ember Studio',
-      BRAND: '{"accent":"#123a6f","landingText":"Ember landing"}',
+      BRAND: '{"accent":"#123a6f","landingText":"Ember landing","label":"  Ember & Co  "}',
       ALLOW_DCR: 'true',
       AUTH_PROVIDERS: JSON.stringify([{ ...provider, autoJoinRole: undefined }]),
     })
@@ -515,9 +534,23 @@ it.each(['en', 'fr'] as const)(
       expect(document, path).toContain(french ? fr : en)
       expect(document, path).toContain(`lang="${locale}"`)
       expect(document, path).toContain('Ember Studio')
+      expect(document, path).toContain('Ember &amp; Co</a>')
     }
+    const catalogue = await html(owner, '/artefacts')
+    expect(catalogue).toContain('class="forge-shell"')
+    expect(catalogue).toContain('class="forge-nav__link" href="/artefacts" aria-current="page"')
+    expect(catalogue.match(/aria-current="page"/g)).toHaveLength(2)
+    expect(catalogue).toMatch(
+      /<details class="forge-drawer"><summary class="forge-menu forge-button">Menu<\/summary>.*?href="\/artefacts" aria-current="page".*?action="\/logout".*?<\/details><\/div><div class="forge-tray__sections">.*?href="\/artefacts" aria-current="page".*?action="\/logout"/s,
+    )
+    expect(catalogue).toContain('class="forge-table"')
+    expect(catalogue).toContain('<th scope="col" class="forge-col--secondary">')
+    expect(catalogue).toContain(`<td title="${slug}"><code>${slug}</code></td>`)
+    expect(catalogue).toContain('<td title="Quarterly report">')
     const invalidInvite = await html(anonymous, '/invite/invalid', 404)
     expect(invalidInvite).toContain(french ? 'Invitation invalide ou expirée' : 'Invite invalid or expired')
+    expect(invalidInvite).toContain('forge-panel--invite')
+    expect(invalidInvite).toContain('Ember &amp; Co</a>')
     const connect = await html(owner, '/connect')
     expect(connect).toContain(
       french ? 'Point d’accès MCP (Streamable HTTP) :' : 'MCP endpoint (Streamable HTTP):',
@@ -552,7 +585,7 @@ it.each(['en', 'fr'] as const)(
     expect(publicIndex).toContain(french ? 'Artefacts publics' : 'Public artefacts')
     expect(publicIndex).toContain('Quarterly report')
     const css = await send('/style.css')
-    expect(await css.text()).toContain('--brand-accent:#123a6f')
+    expect(await css.text()).toContain('--forge-accent:#123a6f')
     for (const origin of [read, manage]) {
       const icon = await send(`${origin}/favicon.svg`)
       expect(icon.headers.get('Content-Type')).toContain('image/svg+xml')
@@ -561,10 +594,13 @@ it.each(['en', 'fr'] as const)(
     const landing = await html(anonymous, `${read}/`)
     expect(landing).toContain('Ember landing')
     expect(landing).toContain('href="/favicon.svg"')
+    expect(landing).toContain('<title>Ember Studio</title>')
+    expect(landing).toContain('Ember &amp; Co</h1>')
     const missingUrl = `${read}/a/${slug}/missing.html`
     const notFound = await html(anonymous, missingUrl, 404)
     expect(notFound).toContain(`lang="${locale}"`)
     expect(notFound).toContain(french ? '<title>Page introuvable</title>' : '<title>Not found</title>')
+    expect(notFound).toContain('Ember &amp; Co</div>')
     await post(owner, detail, { action: 'visibility', visibility: 'private', ...identity })
     const unavailable = runtime({
       LOCALE: locale,
@@ -595,6 +631,8 @@ it.each(['en', 'fr'] as const)(
     expect(handoff.status).toBe(200)
     const handoffHtml = await handoff.text()
     expect(handoffHtml).toContain(french ? 'Continuer vers Forge' : 'Continue to Forge')
+    expect(handoffHtml).toContain('Ember &amp; Co</div>')
+    expect(handoff.headers.get('Content-Security-Policy')).toContain("font-src 'self'")
     const handoffFields = (document: string) =>
       new URLSearchParams(
         Object.fromEntries(
@@ -608,7 +646,12 @@ it.each(['en', 'fr'] as const)(
       body: fields,
     })
     expect(complete.status).toBe(303)
-    expect(await html(reader, privateUrl)).toContain(french ? 'Accès en attente' : 'Pending access')
+    const waiting = await html(reader, privateUrl)
+    expect(waiting).toContain(french ? 'Accès en attente' : 'Pending access')
+    expect(waiting).toContain('Ember &amp; Co</div>')
+    expect((await reader.request(privateUrl)).headers.get('Content-Security-Policy')).toContain(
+      "font-src 'self'",
+    )
     const next = await new Browser(send).request(privateUrl, { headers: navigation })
     const nextHandoff = await pending.request(location(next), { headers: navigation })
     const retry = await anonymous.request(`${read}/_forge/session`, {
@@ -617,7 +660,9 @@ it.each(['en', 'fr'] as const)(
       body: handoffFields(await nextHandoff.text()),
     })
     expect(retry.status).toBe(400)
-    expect(await retry.text()).toContain(french ? 'Réessayer de se connecter' : 'Try signing in again')
+    const retryHtml = await retry.text()
+    expect(retryHtml).toContain(french ? 'Réessayer de se connecter' : 'Try signing in again')
+    expect(retryHtml).toContain('Ember &amp; Co</div>')
 
     const register = await send('/register', {
       method: 'POST',
@@ -644,6 +689,10 @@ it.each(['en', 'fr'] as const)(
     const consent = await html(owner, authorize)
     expect(consent).toContain(french ? 'Autoriser' : 'Allow')
     expect(consent).toContain('Locale test client')
+    expect(consent).toContain('forge-panel--consent')
+    expect(consent).toContain('Ember &amp; Co</a>')
+    const metadata = await send('/.well-known/oauth-protected-resource/mcp')
+    expect(await metadata.json()).toMatchObject({ resource_name: 'Ember Studio' })
     const local = new URL(authorize, manage)
     const localClientId = `${manage}/oauth/clients/local.json`
     const fetchIdp = fetch

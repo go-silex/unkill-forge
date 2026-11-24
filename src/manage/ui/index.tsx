@@ -16,7 +16,7 @@ import { readForm } from '../../http'
 import { messages } from '../../i18n'
 import { openInvite, requireBrowserSession, returnPath } from '../login'
 import { adminPages } from './admin-pages'
-import { Action, flash, Page, page, pageLink, time, type UiContext } from './page'
+import { Action, flash, Page, page, pageLink, Table, time, type UiContext } from './page'
 
 const pageSize = 50
 
@@ -26,18 +26,6 @@ function withQuery(path: string, params: Record<string, string | undefined>) {
     if (value !== undefined) query.set(name, value)
   }
   return query.size === 0 ? path : `${path}?${query}`
-}
-
-function tableHead(labels: string[]) {
-  return (
-    <thead>
-      <tr>
-        {labels.map((label) => (
-          <th>{label}</th>
-        ))}
-      </tr>
-    </thead>
-  )
 }
 
 // Keep routing and the outer Origin guard on the same, un-decoded path.
@@ -91,11 +79,13 @@ function RoleSelect({
 
 function SignIn({ config, query }: { config: Config; query: URLSearchParams }) {
   return (
-    <Page config={config} title={messages(config).signIn}>
-      <ul>
+    <Page config={config} title={messages(config).signIn} panel={query.has('invite') ? 'invite' : 'sign-in'}>
+      <ul class="forge-link-list">
         {config.providers.map((provider) => (
           <li>
-            <a href={`/login/${provider.id}?${query}`}>{provider.label}</a>
+            <a class="forge-button" href={`/login/${provider.id}?${query}`}>
+              {provider.label}
+            </a>
           </li>
         ))}
       </ul>
@@ -121,8 +111,10 @@ app.get('/invite/:token', async (c) => {
   const text = messages(config).legacy
   c.header('Referrer-Policy', 'no-referrer')
   return c.html(
-    <Page config={config} title={text.invalidInvite}>
-      <a href="/login">{messages(config).signIn}</a>
+    <Page config={config} title={text.invalidInvite} panel="invite">
+      <a class="forge-button" href="/login">
+        {messages(config).signIn}
+      </a>
     </Page>,
     404,
   )
@@ -186,63 +178,75 @@ app.get('/admin/members', async (c) => {
     session,
     common.members,
     <>
-      <table>
-        {tableHead([text.member, text.provider, text.email, text.status, text.role, common.admin.actions])}
-        <tbody>
-          {members.map((member) => (
-            <tr key={member.id}>
-              <td>{member.name}</td>
-              <td>{member.provider ?? text.bot}</td>
-              <td>{member.email ?? '—'}</td>
-              <td>{text[member.status]}</td>
-              <td>{common.roles[member.role]}</td>
-              <td>
-                {member.status !== 'removed' && (
-                  <Action
-                    path="/admin/members"
-                    action={member.status === 'pending' ? 'admit' : 'role'}
-                    label={member.status === 'pending' ? text.admit : text.changeRole}
-                    fields={{ id: member.id }}
-                  >
-                    <RoleSelect config={config} human={member.kind === 'human'} value={member.role} />
-                  </Action>
-                )}
+      <Table
+        columns={[
+          text.member,
+          text.provider,
+          { secondary: text.email },
+          text.status,
+          text.role,
+          common.admin.actions,
+        ]}
+      >
+        {members.map((member) => (
+          <tr key={member.id}>
+            <td title={member.name}>
+              {member.name}
+              {member.email && (
+                <span class="forge-member-email" title={member.email} hidden>
+                  {member.email}
+                </span>
+              )}
+            </td>
+            <td title={member.provider ?? text.bot}>{member.provider ?? text.bot}</td>
+            <td class="forge-col--secondary" title={member.email ?? undefined}>
+              {member.email ?? '—'}
+            </td>
+            <td>{text[member.status]}</td>
+            <td>{common.roles[member.role]}</td>
+            <td>
+              {member.status !== 'removed' && (
                 <Action
                   path="/admin/members"
-                  action={member.status === 'removed' ? 'reinstate' : 'remove'}
-                  label={member.status === 'removed' ? text.reinstate : text.remove}
+                  action={member.status === 'pending' ? 'admit' : 'role'}
+                  label={member.status === 'pending' ? text.admit : text.changeRole}
                   fields={{ id: member.id }}
-                />
-              </td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
+                >
+                  <RoleSelect config={config} human={member.kind === 'human'} value={member.role} />
+                </Action>
+              )}
+              <Action
+                path="/admin/members"
+                action={member.status === 'removed' ? 'reinstate' : 'remove'}
+                label={member.status === 'removed' ? text.reinstate : text.remove}
+                fields={{ id: member.id }}
+              />
+            </td>
+          </tr>
+        ))}
+      </Table>
       {members.length === pageSize &&
         pageLink(withQuery('/admin/members', { after: members.at(-1)?.id, inviteAfter }), text.nextMembers)}
       <h2>{text.inviteLinks}</h2>
-      <Action path="/admin/members" action="create-invite" label={text.createInvite}>
+      <Action path="/admin/members" action="create-invite" variant="primary" label={text.createInvite}>
         <RoleSelect config={config} human />
       </Action>
-      <table>
-        {tableHead([text.role, text.expires, common.admin.actions])}
-        <tbody>
-          {invites.map((invite) => (
-            <tr key={invite.id}>
-              <td>{common.roles[invite.role]}</td>
-              <td>{time(config.locale, invite.expiresAt)}</td>
-              <td>
-                <Action
-                  path="/admin/members"
-                  action="revoke-invite"
-                  label={text.revoke}
-                  fields={{ id: invite.id }}
-                />
-              </td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
+      <Table columns={[text.role, text.expires, common.admin.actions]}>
+        {invites.map((invite) => (
+          <tr key={invite.id}>
+            <td>{common.roles[invite.role]}</td>
+            <td>{time(config.locale, invite.expiresAt)}</td>
+            <td>
+              <Action
+                path="/admin/members"
+                action="revoke-invite"
+                label={text.revoke}
+                fields={{ id: invite.id }}
+              />
+            </td>
+          </tr>
+        ))}
+      </Table>
       {invites.length === pageSize &&
         pageLink(withQuery('/admin/members', { after, inviteAfter: invites.at(-1)?.id }), text.nextInvites)}
     </>,
@@ -296,7 +300,7 @@ app.get('/admin/bots', async (c) => {
     session,
     common.bots,
     <>
-      <Action path="/admin/bots" action="create" label={text.createBot}>
+      <Action path="/admin/bots" action="create" variant="primary" label={text.createBot}>
         <label>
           {text.botName} <input name="name" required maxlength={120} />
         </label>
@@ -329,7 +333,7 @@ app.get('/admin/bots', async (c) => {
             {common.tokens}
             {selectedBot && ` · ${selectedBot.name}`}
           </h2>
-          {tokens.length === 0 && <p>{text.emptyCredentials}</p>}
+          {tokens.length === 0 && <p class="forge-empty">{text.emptyCredentials}</p>}
           <ul>
             {tokens.map((token) => (
               <li key={token.id}>

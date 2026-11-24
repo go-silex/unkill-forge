@@ -47,7 +47,7 @@ export async function authorize(
       const token = randomSecret()
       await putConsent(DB, await hashSecret(token), session.idHash, request.url, Date.now())
       const page = (
-        <Page config={config} title={common.connect}>
+        <Page config={config} title={common.connect} panel="consent">
           {consent.clientDomain && !local ? (
             <p>
               {text.verified} <strong>{consent.clientDomain}</strong>
@@ -66,12 +66,12 @@ export async function authorize(
           <p>
             {text.actingAs} {session.member.name} ({common.roles[session.member.role]}).
           </p>
-          <form method="post" action="/authorize">
+          <form class="forge-action" method="post" action="/authorize">
             <input type="hidden" name="consent" value={token} />
-            <button type="submit" name="decision" value="approve">
+            <button class="forge-button forge-button--primary" type="submit" name="decision" value="approve">
               {text.allow}
             </button>
-            <button type="submit" name="decision" value="deny">
+            <button class="forge-button" type="submit" name="decision" value="deny">
               {text.deny}
             </button>
           </form>

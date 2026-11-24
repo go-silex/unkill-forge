@@ -11,6 +11,12 @@ Forge protects a single team's private artefacts and management credentials from
 
 Private handoff codes are short-lived and sent in a manage-origin form POST, not in a URL. Codes are consumed once, even if browser binding fails. Binding failures (including racing initial tabs) can require restarting navigation from the read host. Browsers with strict cross-origin cookie policies may block the handoff state. There is no cross-artefact authorization inside a publisher's own origin. Downloaded copies cannot be revoked.
 
+## Operator theme
+
+Theme files are trusted operator content shipped with the Worker, not publisher uploads. Use a dedicated assets directory with `run_worker_first: true`; Forge serves only the supported file types from `/_theme/` on each configured origin, with `nosniff` and the existing SVG sandbox CSP. Do not put secrets or untrusted files in this directory. CSS, images and fonts on Forge-authored pages are restricted to the page's own origin.
+
+Ordinary manage HTML adds only `font-src 'self'` to the existing policy. Forge-authored read HTML, which previously had no CSP, now has a restrictive CSP with same-origin styles, images and fonts. The manage-to-read handoff also allows same-origin styles and fonts while retaining its exact script hash and form target. These policies apply to Forge's own pages, including its errors, not to published files or artefact redirects.
+
 ## Manage UI forms and one-use notices
 
 - **Stale forms:** mutating forms require the exact manage origin, an active session and live core authorization. Form bodies are limited to 32 KiB. Slug-keyed artefact forms bind the displayed stable ID to the slug so a stale form cannot change a replacement artefact.
