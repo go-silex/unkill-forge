@@ -105,7 +105,7 @@ export function pageLink(href: string, label: string) {
   )
 }
 
-export function CopyButton({ labels }: { labels: CopyLabels }) {
+function CopyButton({ labels }: { labels: CopyLabels }) {
   return (
     <button
       class="forge-button"

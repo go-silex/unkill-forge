@@ -146,6 +146,8 @@ const style = `
   .forge-detail__aside { display: grid; align-content: start; gap: calc(2 * var(--forge-space)) }
   .forge-detail__meta { color: var(--forge-muted); font-size: var(--forge-text-small) }
   .forge-detail__meta:where(div), .forge-detail__actions { display: flex; flex-wrap: wrap; align-items: center; gap: var(--forge-space) }
+  :where(.forge-detail__actions > .forge-copy) { min-inline-size: 0; max-inline-size: 100%; align-items: center }
+  :where(.forge-detail__actions > .forge-copy > code) { max-inline-size: 100%; color: var(--forge-muted); font-size: var(--forge-text-small); overflow-wrap: anywhere }
   :where(div.forge-detail__meta) { margin-block-end: var(--forge-space) }
   .forge-detail__preview { display: block; width: 100%; height: auto; aspect-ratio: 16 / 9; object-fit: contain; background: var(--forge-surface); border: 1px solid var(--forge-hairline); border-radius: var(--forge-radius) }
   :where(.forge-detail__main .forge-table td) { overflow-wrap: anywhere }

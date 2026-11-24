@@ -171,7 +171,7 @@ const en = {
     accessSaved: 'Access updated.',
     shareLinks: 'Share links',
     shareWarning:
-      'Anyone with a share link can read the current artefact, even when it is private. Share links only with intended recipients.',
+      'Anyone with an active share link can read the current artefact. Share links only with intended recipients.',
     shareLabel: 'Label (optional)',
     customShare: 'Custom key (optional, 16–128 URL-safe characters)',
     createShare: 'Create share link',
@@ -419,7 +419,7 @@ const fr: typeof en = {
     accessSaved: 'Accès mis à jour.',
     shareLinks: 'Liens de partage',
     shareWarning:
-      'Toute personne disposant d’un lien de partage peut lire l’artefact actuel, même s’il est privé. Réservez ces liens aux personnes concernées.',
+      'Toute personne disposant d’un lien de partage actif peut lire l’artefact actuel. Réservez ces liens aux personnes concernées.',
     shareLabel: 'Libellé (facultatif)',
     customShare: 'Clé personnalisée (facultative, 16 à 128 caractères compatibles avec les URL)',
     createShare: 'Créer un lien de partage',

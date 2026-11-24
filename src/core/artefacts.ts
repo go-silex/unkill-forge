@@ -256,7 +256,7 @@ export async function getArtefact(
   const {
     id: _id,
     entryPath: _entryPath,
-    author: _author,
+    revisionMeta: _revisionMeta,
     ...artefact
   } = await getArtefactDetails(runtime, member, slug, cursor, ctx, false)
   return artefact
@@ -281,7 +281,7 @@ export async function getArtefactDetails(
   if (after && after[0] !== id)
     throw new ArtefactError('invalid_input', 'Cursor belongs to a different artefact')
   if (after) checkRevision(after[1], revision)
-  const [page, path, shareLinks, author] = await Promise.all([
+  const [page, path, shareLinks, revisionMeta] = await Promise.all([
     db
       .prepare(`SELECT path, size, content_type AS type FROM files
         WHERE artefact_id = ? AND revision = ? AND path > ? ORDER BY path LIMIT 201`)
@@ -291,10 +291,12 @@ export async function getArtefactDetails(
     shareLinkMetadata(db, id, ui && member.role !== 'viewer'),
     ui
       ? db
-          .prepare(`SELECT m.name FROM revisions r JOIN members m ON m.id = r.created_by
-            WHERE r.artefact_id = ? AND r.number = ?`)
+          .prepare(`SELECT m.name AS author, r.created_at AS createdAt,
+            (SELECT COUNT(*) FROM (SELECT 1 FROM files WHERE artefact_id = ?1 AND revision = ?2 LIMIT 201)) AS fileCount
+            FROM revisions r JOIN members m ON m.id = r.created_by
+            WHERE r.artefact_id = ?1 AND r.number = ?2`)
           .bind(id, revision)
-          .first<string>('name')
+          .first<{ author: string; createdAt: number; fileCount: number }>()
       : null,
   ])
   if (!path) throw new Error('Artefact head has no entry file')
@@ -309,7 +311,7 @@ export async function getArtefactDetails(
     shareLinks,
     nextCursor,
     entryPath: path,
-    author,
+    revisionMeta,
   }
 }
 
@@ -977,14 +979,6 @@ export async function setAccess(
   const { id } = await liveHead(db, slug, expectedId)
   const now = Date.now()
   const revokeCount = access === 'private' ? (revoke ?? 0) : null
-  const visibility = access === 'public' ? 'public' : 'private'
-  const update = db
-    .prepare(`UPDATE artefacts SET visibility = ?1,
-      updated_at = CASE WHEN visibility <> ?1 OR ?5 > 0 THEN MAX(?2, updated_at) ELSE updated_at END
-      WHERE id = ?3 AND slug = ?4 AND deleted_at IS NULL
-        AND (?5 IS NULL OR ?5 = (SELECT COUNT(*) FROM share_links
-          WHERE artefact_id = ?3 AND revoked_at IS NULL))`)
-    .bind(visibility, now, id, slug, revokeCount)
   const audit = auditChange(db, now, member.id, 'artefact.access', { access, revoked: revokeCount ?? 0 }, id)
 
   if (access === 'shared') {
@@ -1002,7 +996,12 @@ export async function setAccess(
               AND NOT EXISTS (SELECT 1 FROM share_links WHERE artefact_id = artefacts.id AND revoked_at IS NULL)`)
           .bind(linkId, keyHash, sealed, member.id, now, id, slug),
         auditChange(db, now, member.id, 'share.create', { id: linkId }, id),
-        update,
+        // Only this branch has the share.create audit immediately before the artefact update.
+        db
+          .prepare(`UPDATE artefacts SET visibility = 'private',
+            updated_at = CASE WHEN visibility <> 'private' OR changes() = 1 THEN MAX(?, updated_at) ELSE updated_at END
+            WHERE id = ? AND slug = ? AND deleted_at IS NULL`)
+          .bind(now, id, slug),
         audit,
       ])
       if (changed.meta.changes !== 1) throw new ArtefactError('not_found', 'Artefact not found')
@@ -1017,7 +1016,13 @@ export async function setAccess(
 
   // D1 runs the batch in one transaction. A failed count guard skips both audit and revocation.
   const [changed] = await db.batch([
-    update,
+    db
+      .prepare(`UPDATE artefacts SET visibility = ?1,
+        updated_at = CASE WHEN visibility <> ?1 OR ?5 > 0 THEN MAX(?2, updated_at) ELSE updated_at END
+        WHERE id = ?3 AND slug = ?4 AND deleted_at IS NULL
+          AND (?5 IS NULL OR ?5 = (SELECT COUNT(*) FROM share_links
+            WHERE artefact_id = ?3 AND revoked_at IS NULL))`)
+      .bind(access, now, id, slug, revokeCount),
     audit,
     ...(revokeCount
       ? [

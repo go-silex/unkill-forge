@@ -757,6 +757,11 @@ it('supports all nine access transitions without replacing existing share links'
         await post(owner, path, { action: 'create-share', label: 'Existing', ...identity })
       if (from === 'public')
         await post(owner, path, { action: 'visibility', visibility: 'public', ...identity })
+      const initialUpdated = Date.UTC(2025, 0, 1)
+      await db
+        .prepare('UPDATE artefacts SET updated_at = ? WHERE id = ?')
+        .bind(initialUpdated, identity.artefactId)
+        .run()
       const initial = await html(owner, path)
       expect(initial).toContain(`forge-badge--${from}`)
       expect(initial).toMatch(new RegExp(`type="radio" name="access" value="${from}" checked`))
@@ -769,6 +774,12 @@ it('supports all nine access transitions without replacing existing share links'
       })
       expect(result).toContain(`forge-badge--${to}`)
       const after = await links()
+      const updated = await db
+        .prepare('SELECT updated_at FROM artefacts WHERE id = ?')
+        .bind(identity.artefactId)
+        .first<number>('updated_at')
+      if (to === from) expect(updated).toBe(initialUpdated)
+      else expect(updated).toBeGreaterThan(initialUpdated)
       if (to === 'private') expect(after).toEqual([])
       else if (to === 'shared' && !before.length) {
         expect(after).toEqual([{ id: expect.any(String), label: null }])
@@ -815,8 +826,16 @@ it('confirms the current revocation count before changing access or auditing the
   await post(owner, detail, { action: 'visibility', visibility: 'public', ...identity })
   const key = 'synthetic-sample-key'
   await post(owner, detail, { action: 'create-share', label: 'Review', key, ...identity })
+  const initialUpdated = Date.UTC(2025, 0, 1)
+  await db
+    .prepare('UPDATE artefacts SET updated_at = ? WHERE id = ?')
+    .bind(initialUpdated, identity.artefactId)
+    .run()
   const twoLinks = await html(owner, detail)
   expect(twoLinks).not.toContain(key)
+  expect(twoLinks).toContain(
+    'Anyone with an active share link can read the current artefact. Share links only with intended recipients.',
+  )
   const confirmations = sheets(twoLinks)
   expect(
     confirmations.filter(({ action }) => action === 'revoke-share').map(({ contents }) => contents),
@@ -844,6 +863,7 @@ it('confirms the current revocation count before changing access or auditing the
     })
     expect(rejected).toContain('Access was not changed. Active share links: 2.')
     expect(rejected).toContain('forge-badge--public')
+    expect(rejected).toContain('<span>Updated <time datetime="2025-01-01T00:00:00.000Z"')
     expect((await send(url[1])).status).toBe(200)
     expect((await send(`${read}/s/${slug}/${key}/`)).status).toBe(200)
   }
@@ -887,7 +907,7 @@ it('marks the entry and head, restores older versions only, and keeps long messa
     /<code>index\.html<\/code><\/a> <span class="forge-badge forge-badge--entry">Entry page/,
   )
   expect(document).toMatch(
-    /<code hidden="">https:\/\/read\.forge\.example\/a\/quarterly\/<\/code><button[^>]*data-copy=""[^>]*hidden="">Copy address/,
+    /<code>https:\/\/read\.forge\.example\/a\/quarterly\/<\/code><button[^>]*data-copy=""[^>]*hidden="">Copy address/,
   )
   const timeline = Array.from(
     document.matchAll(/<li class="forge-version">(.*?)<\/li>/gs),
@@ -902,6 +922,34 @@ it('marks the entry and head, restores older versions only, and keeps long messa
   expect(timeline[1]).not.toContain('forge-badge--current')
   expect(timeline[1]).toContain('value="restore-revision"')
   expect(await html(viewer, detail)).not.toContain('value="restore-revision"')
+})
+
+it('keeps revision authorship separate from later changes and counts all revision files despite a cursor', async () => {
+  const send = runtime()
+  const idp = mockProvider()
+  const alice = await idp.signedIn(send, admin, { userinfo: { name: 'Alice Example' } })
+  const bob = await idp.signedIn(send, 'bob', { userinfo: { name: 'Bob Example' } })
+  const bobId = await listedId(alice, members, 'bob@example.test')
+  await post(alice, members, { action: 'role', id: bobId, role: 'publisher' })
+  const token = await issueToken(alice, 'Alice publisher')
+  await publish(send, token, slug, 'Quarterly report')
+  const id = await artefactId(alice)
+  const publishedAt = Date.UTC(2025, 0, 1)
+  await db.batch([
+    db.prepare('UPDATE revisions SET created_at = ? WHERE artefact_id = ?').bind(publishedAt, id),
+    db.prepare('UPDATE artefacts SET updated_at = ? WHERE id = ?').bind(publishedAt, id),
+  ])
+  await post(bob, detail, { action: 'access', access: 'shared', artefactId: id })
+  const cursor = base64url.encode(JSON.stringify([id, 1, 'index.html']))
+  const document = await html(bob, `${detail}?files=${cursor}`)
+  const metadata = /<div class="forge-detail__meta">(.*?)<\/div>/s.exec(document)?.[1]
+  expect(metadata).toMatch(
+    /<span>v1 by Alice Example · <time datetime="2025-01-01T00:00:00\.000Z"[^>]*>[^<]+<\/time><\/span><span>Updated <time datetime="([^"]+)"[^>]*>[^<]+<\/time><\/span><span>1 file<\/span>/,
+  )
+  const changedAt = /Updated <time datetime="([^"]+)"/.exec(metadata ?? '')?.[1]
+  expect(Date.parse(changedAt ?? '')).toBeGreaterThan(publishedAt)
+  expect(metadata).not.toContain('Bob Example')
+  expect(document).not.toContain('200+ files')
 })
 
 it('confirms deletion and purge with separate forms for each deleted artefact', async () => {
@@ -1028,6 +1076,9 @@ it('localizes share creation metadata and keeps one visible copy of folded table
   const sharePage = await html(owner, detail)
   expect(sharePage).toContain(`<strong>${label}</strong>`)
   expect(sharePage).toContain(`Créé le ${created} par `)
+  expect(sharePage).toContain(
+    'Toute personne disposant d’un lien de partage actif peut lire l’artefact actuel. Réservez ces liens aux personnes concernées.',
+  )
   const prefix = token.slice(0, 12)
   expectRow(
     await html(owner, tokens),

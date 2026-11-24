@@ -38,7 +38,6 @@ import {
   AccessBadge,
   Action,
   Badge,
-  CopyButton,
   CopyField,
   Fold,
   flash,
@@ -359,22 +358,30 @@ adminPages.get(
         <div class="forge-detail__meta">
           <AccessBadge access={currentAccess} label={t(currentAccess)} />
           <span>
-            v{artefact.revision} · {t('updated')} {time(config, artefact.updatedAt)}
-            {artefact.author && (
+            v{artefact.revision}
+            {artefact.revisionMeta && (
               <>
                 {' '}
-                {labels.by} {artefact.author}
+                {labels.by} {artefact.revisionMeta.author} · {time(config, artefact.revisionMeta.createdAt)}
               </>
             )}
           </span>
-          <span>{labels.fileCount(fileCursor || artefact.nextCursor ? '200+' : artefact.files.length)}</span>
+          <span>
+            {t('updated')} {time(config, artefact.updatedAt)}
+          </span>
+          {artefact.revisionMeta && (
+            <span>
+              {labels.fileCount(
+                artefact.revisionMeta.fileCount === 201 ? '200+' : artefact.revisionMeta.fileCount,
+              )}
+            </span>
+          )}
         </div>
         <div class="forge-detail__actions">
           <a class="forge-button forge-button--primary" href={artefact.url}>
             {t('open')}
           </a>
-          <code hidden>{artefact.url}</code>
-          <CopyButton labels={{ ...copyLabels, copy: labels.copyAddress }} />
+          <CopyField value={artefact.url} labels={{ ...copyLabels, copy: labels.copyAddress }} />
         </div>
         <div class="forge-detail">
           <div class="forge-detail__main">
