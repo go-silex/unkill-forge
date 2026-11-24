@@ -14,7 +14,8 @@ const gitPaths = (...args) =>
     .filter(Boolean)
 const lines = (text) => (text.match(/\n/g)?.length ?? 0) + Number(text.length > 0 && !text.endsWith('\n'))
 const inScope = (path) =>
-  /^(?:(?:src|scripts|brand)\/.*|[^/]+)\.(?:[cm]?[jt]s|[jt]sx)$/.test(path) &&
+  /\.(?:[cm]?[jt]s|[jt]sx)$/.test(path) &&
+  !/(?:^|\/)(?:test|tests|__tests__|__fixtures__)\//.test(path) &&
   !/\.(?:test|spec|node-test|d)\.[^.]+$/.test(path)
 
 function readLedger(text) {

@@ -16,7 +16,7 @@ pre-push:
   jobs:
     - name: lockfile-cooldown
       use_stdin: true
-      run: npm run check:lockfile-cooldown -- --pre-push
+      run: node scripts/check-lockfile-cooldown.mjs --pre-push
     - name: quality-gates
       run: npm run lint && npm run check:file-length && npm run knip && npm run typecheck
     - name: tests

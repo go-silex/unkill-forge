@@ -1,11 +1,17 @@
 import { execFileSync } from 'node:child_process'
-import { readFileSync } from 'node:fs'
+import { lstatSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { parseArgs } from 'node:util'
-import { cooldownCandidates, evaluateCooldown, packageVersion } from './lockfile-cooldown.mjs'
+import {
+  cooldownCandidates,
+  evaluateCooldown,
+  packageVersion,
+  validateInstallInputs,
+} from './lockfile-cooldown.mjs'
 
 const root = join(import.meta.dirname, '..')
 const lockfile = 'package-lock.json'
+const shrinkwrap = 'npm-shrinkwrap.json'
 const exceptions = 'config/lockfile-cooldown-allowlist.json'
 const dayMs = 86_400_000
 
@@ -17,13 +23,13 @@ function read(path, ref) {
   return ref ? git('show', `${ref}:${path}`) : readFileSync(join(root, path), 'utf8')
 }
 
-async function loadPublishTimes(candidates) {
+async function loadReleases(candidates) {
   const packages = new Map()
   for (const { name, version } of candidates) {
     if (!packages.has(name)) packages.set(name, new Set())
     packages.get(name).add(version)
   }
-  const times = new Map()
+  const releases = new Map()
   const entries = packages.entries()
   await Promise.all(
     Array.from({ length: Math.min(packages.size, 8) }, async () => {
@@ -32,9 +38,14 @@ async function loadPublishTimes(candidates) {
           const url = `https://registry.npmjs.org/${encodeURIComponent(name)}`
           const response = await fetch(url, { signal: AbortSignal.timeout(20_000) })
           if (!response.ok) throw new Error(`HTTP ${response.status}`)
-          const { time } = await response.json()
+          const { time, versions: metadata } = await response.json()
           for (const version of versions) {
-            times.set(packageVersion({ name, version }), Date.parse(time?.[version]))
+            const dist = metadata?.[version]?.dist
+            releases.set(packageVersion({ name, version }), {
+              published: Date.parse(time?.[version]),
+              integrity: dist?.integrity,
+              tarball: dist?.tarball,
+            })
           }
         } catch (error) {
           throw new Error(
@@ -44,10 +55,16 @@ async function loadPublishTimes(candidates) {
       }
     }),
   )
-  return times
+  return releases
 }
 
 async function check(base, tip) {
+  const now = Date.now()
+  const hasShrinkwrap = tip
+    ? Boolean(git('ls-tree', '-z', tip, '--', shrinkwrap))
+    : Boolean(lstatSync(join(root, shrinkwrap), { throwIfNoEntry: false }))
+  const allowlist = JSON.parse(read(exceptions, tip))
+  validateInstallInputs(hasShrinkwrap, allowlist, now)
   const mergeBase = git('merge-base', base, tip ?? 'HEAD').trim()
   const before = read(lockfile, mergeBase)
   const after = read(lockfile, tip)
@@ -55,13 +72,9 @@ async function check(base, tip) {
     console.log('lockfile-cooldown: package-lock.json unchanged')
     return
   }
-  const candidates = cooldownCandidates(
-    JSON.parse(before),
-    JSON.parse(after),
-    JSON.parse(read(exceptions, tip)),
-  )
-  const times = await loadPublishTimes(candidates)
-  const offenders = evaluateCooldown(candidates, Date.now(), times)
+  const candidates = cooldownCandidates(JSON.parse(before), JSON.parse(after))
+  const releases = await loadReleases(candidates)
+  const offenders = evaluateCooldown(candidates, now, releases, allowlist)
   if (!offenders.length) {
     console.log(`lockfile-cooldown: ${candidates.length} package entries cleared`)
     return
@@ -84,10 +97,18 @@ try {
   })
   const base = values.base ?? process.env.COOLDOWN_BASE ?? 'origin/main'
   if (values['pre-push']) {
+    const head = git('rev-parse', 'HEAD').trim()
+    if (git('status', '--porcelain', '--untracked-files=normal')) {
+      throw new Error('pre-push checks require a clean worktree; commit or stash local changes first')
+    }
     const updates = readFileSync(0, 'utf8').trim()
     for (const line of updates ? updates.split('\n') : []) {
-      const [, oid, remoteRef] = line.trim().split(/\s+/)
-      if (remoteRef.startsWith('refs/heads/') && !/^0+$/.test(oid)) await check(base, oid)
+      const [, oid, remoteRef, previous] = line.trim().split(/\s+/)
+      if (/^0+$/.test(oid)) continue
+      if (oid !== head) throw new Error(`pre-push checks cover HEAD only; ${remoteRef} points to ${oid}`)
+      const defaultRef = `refs/heads/${process.env.COOLDOWN_DEFAULT_BRANCH ?? 'main'}`
+      const pushBase = remoteRef === defaultRef ? (/^0+$/.test(previous) ? `${head}^1` : previous) : base
+      await check(pushBase, oid)
     }
   } else {
     await check(base, values.head)

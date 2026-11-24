@@ -1,0 +1,15 @@
+{
+  "include": ["**/*.{js,jsx,ts,tsx,mjs,cjs,mts,cts}"],
+  "exclude": [
+    "**/node_modules/**",
+    "**/.git/**",
+    "**/.wrangler/**",
+    "coverage/**",
+    "dist/**",
+    "scripts/**",
+    "test/**",
+    "vitest.config.ts",
+    "**/*.{test,spec,node-test}.{js,jsx,ts,tsx,mjs,cjs,mts,cts}",
+    "**/*.d.{ts,mts,cts}"
+  ]
+}
