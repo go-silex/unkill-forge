@@ -1114,7 +1114,12 @@ export async function deleteArtefact(
 
 export const deletedRetentionMs = 30 * 24 * 60 * 60 * 1_000
 
-export async function listDeletedArtefacts({ env: { DB: db } }: Runtime, member: Member, after = '') {
+export async function listDeletedArtefacts(
+  { env: { DB: db } }: Runtime,
+  member: Member,
+  after = '',
+  now = Date.now(),
+) {
   requireAdmin(member)
   const { results: artefacts } = await db
     .prepare(`SELECT a.id, a.slug, a.title, a.deleted_at AS deletedAt,
@@ -1125,7 +1130,7 @@ export async function listDeletedArtefacts({ env: { DB: db } }: Runtime, member:
     SELECT p.artefact_id, p.slug, NULL, NULL, 1, 0 FROM artefact_purges p
     WHERE p.slug > ?1 AND NOT EXISTS (SELECT 1 FROM artefacts WHERE id = p.artefact_id)
     ORDER BY slug LIMIT 51`)
-    .bind(after, Date.now() - deletedRetentionMs)
+    .bind(after, now - deletedRetentionMs)
     .all<{
       id: string
       slug: string
@@ -1172,11 +1177,13 @@ export async function listRedirects({ env: { DB: db } }: Runtime, member: Member
   requireAdmin(member)
   const { results: redirects } = await db
     .prepare(`SELECT r.from_prefix AS fromPrefix,
-      substr(r.from_prefix, 1, 3) || a.slug || '/' || r.target_path AS toPrefix
+      substr(r.from_prefix, 1, 3) || a.slug || '/' || r.target_path AS toPrefix,
+      r.created_at AS createdAt, creator.name AS creatorName
     FROM redirects r JOIN artefacts a ON a.id = r.target_artefact_id
+    LEFT JOIN members creator ON creator.id = r.created_by
     WHERE r.from_prefix > ? ORDER BY r.from_prefix LIMIT 51`)
     .bind(after)
-    .all<{ fromPrefix: string; toPrefix: string }>()
+    .all<{ fromPrefix: string; toPrefix: string; createdAt: number; creatorName: string | null }>()
   return { redirects, nextCursor: trimLookahead(redirects, 50)?.fromPrefix }
 }
 

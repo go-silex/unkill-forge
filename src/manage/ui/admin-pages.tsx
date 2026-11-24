@@ -37,6 +37,7 @@ import { localClientPath } from '../oauth'
 import {
   AccessBadge,
   Action,
+  absoluteTime,
   Badge,
   CopyField,
   Fold,
@@ -58,6 +59,9 @@ const deletedPath = '/admin/deleted'
 const tokensPath = '/tokens'
 const redirectsPath = '/admin/redirects'
 const detailPath = (slug: string) => `${cataloguePath}/${slug}`
+const connectPath = '/connect'
+const hourMs = 60 * 60 * 1_000
+const dayMs = 24 * hourMs
 
 const id = z.uuid()
 const slug = z
@@ -146,9 +150,7 @@ async function runAction<S extends z.ZodType>(
 ) {
   const form = await readForm(c.req.raw)
   if (!form) return c.text(t('malformed'), 400)
-  const fields = Object.fromEntries(form)
-  if (form.size !== Object.keys(fields).length) return c.text(t('malformed'), 400)
-  const parsed = schema.safeParse(fields)
+  const parsed = schema.safeParse(Object.fromEntries(form))
   if (!parsed.success) return c.text(t('malformed'), 400)
   let result: ActionResult
   try {
@@ -608,11 +610,15 @@ adminPages.get(
           )}
         </div>
       </>,
-      <nav class="forge-breadcrumb" aria-label={labels.breadcrumb}>
-        <a href={cataloguePath}>{t('artefacts')}</a>
-        <span aria-hidden="true"> › </span>
-        <span aria-current="page">{currentSlug}</span>
-      </nav>,
+      {
+        beforeTitle: (
+          <nav class="forge-breadcrumb" aria-label={labels.breadcrumb}>
+            <a href={cataloguePath}>{t('artefacts')}</a>
+            <span aria-hidden="true"> › </span>
+            <span aria-current="page">{currentSlug}</span>
+          </nav>
+        ),
+      },
     )
   }),
 )
@@ -680,64 +686,75 @@ adminPages.post(
 adminPages.get(
   deletedPath,
   browser('admin', async (c, session, actor, t) => {
-    const { artefacts, nextCursor } = await listDeletedArtefacts(c.env, actor, c.req.query('cursor'))
-    const { confirmation } = messages(c.env.config)
+    const now = Date.now()
+    const cursor = c.req.query('cursor')
+    const actionPath = cursor ? `${deletedPath}?${new URLSearchParams({ cursor })}` : deletedPath
+    const { artefacts, nextCursor } = await listDeletedArtefacts(c.env, actor, cursor, now)
+    const { adminSheets, confirmation } = messages(c.env.config)
     return page(
       c,
       session,
       t('deleted'),
       <>
-        <p>{t('purgeHelp')}</p>
         {table(
-          [
-            t('title'),
-            { folded: t('slug') },
-            { folded: t('deletedAt') },
-            { folded: t('status') },
-            t('actions'),
-          ],
+          [t('title'), { folded: t('deletedAt') }, { folded: t('status') }, t('actions')],
           artefacts.map((entry) => {
             const deletedAt = time(c.env.config, entry.deletedAt)
-            const status = t(entry.purging ? 'purging' : entry.restorable ? 'restorable' : 'expired')
+            const title = entry.title?.trim()
+            const deadline = entry.deletedAt === null ? null : entry.deletedAt + deletedRetentionMs
+            const remaining = deadline === null ? 0 : deadline - now
+            const unit = remaining >= dayMs ? 'day' : 'hour'
+            const quantity = Math.floor(remaining / (unit === 'day' ? dayMs : hourMs))
+            const status = (
+              <>
+                <Badge variant={entry.purging ? 'warn' : entry.restorable ? 'ok' : 'muted'}>
+                  {t(entry.purging ? 'purging' : entry.restorable ? 'restorable' : 'expired')}
+                </Badge>
+                {entry.restorable && (
+                  <small class="forge-admin-meta" title={absoluteTime(c.env.config, deadline)}>
+                    {adminSheets.restoreWindow(quantity, unit)}
+                  </small>
+                )}
+              </>
+            )
             return (
               <tr>
-                <td title={entry.title ?? undefined}>
-                  <span>{entry.title}</span>
-                  <Fold>
-                    <code>{entry.slug}</code>
-                  </Fold>
+                <td title={title || entry.slug}>
+                  {title && <strong>{title}</strong>}
+                  <code class="forge-admin-meta">{entry.slug}</code>
                   <Fold label={t('deletedAt')}>{deletedAt}</Fold>
                   <Fold>{status}</Fold>
-                </td>
-                <td class="forge-col--folded" title={entry.slug}>
-                  <code>{entry.slug}</code>
                 </td>
                 <td class="forge-col--folded">{deletedAt}</td>
                 <td class="forge-col--folded">{status}</td>
                 <td>
-                  {entry.restorable && (
+                  <div class="forge-row-actions">
+                    {entry.restorable && (
+                      <Action
+                        path={actionPath}
+                        action="restore"
+                        label={t('restoreDeleted')}
+                        fields={{ slug: entry.slug, artefactId: entry.id }}
+                      />
+                    )}
                     <Action
-                      action="restore"
-                      label={t('restoreDeleted')}
-                      fields={{ slug: entry.slug, artefactId: entry.id }}
+                      path={actionPath}
+                      action="purge"
+                      variant="danger"
+                      label={t(entry.purging ? 'resumePurge' : 'purge')}
+                      fields={{ id: entry.id, slug: entry.slug }}
+                      confirm={
+                        entry.purging
+                          ? undefined
+                          : {
+                              title: confirmation.purgeTitle(entry.title?.trim() || entry.slug),
+                              body: confirmation.purgeBody,
+                              label: confirmation.purgeLabel,
+                              cancel: confirmation.cancel,
+                            }
+                      }
                     />
-                  )}
-                  <Action
-                    action="purge"
-                    variant="danger"
-                    label={t(entry.purging ? 'resumePurge' : 'purge')}
-                    fields={{ id: entry.id, slug: entry.slug }}
-                    confirm={
-                      entry.purging
-                        ? undefined
-                        : {
-                            title: confirmation.purgeTitle(entry.title?.trim() || entry.slug),
-                            body: confirmation.purgeBody,
-                            label: confirmation.purgeLabel,
-                            cancel: confirmation.cancel,
-                          }
-                    }
-                  />
+                  </div>
                 </td>
               </tr>
             )
@@ -746,6 +763,7 @@ adminPages.get(
         )}
         {nextPage(deletedPath, nextCursor, t('next'))}
       </>,
+      { lead: t('purgeHelp') },
     )
   }),
 )
@@ -769,53 +787,106 @@ adminPages.post(
 adminPages.get(
   tokensPath,
   browser('publisher', async (c, session, actor, t) => {
-    const { tokens, nextCursor } = await listOwnTokens(c.env.env.DB, actor.id, c.req.query('cursor'))
+    const cursor = c.req.query('cursor')
+    const actionPath = cursor ? `${tokensPath}?${new URLSearchParams({ cursor })}` : tokensPath
+    const { tokens, nextCursor } = await listOwnTokens(c.env.env.DB, actor.id, cursor)
+    const { adminSheets, confirmation, legacy } = messages(c.env.config)
     return page(
       c,
       session,
       t('tokens'),
       <>
-        <p>{t('ownCredentialHelp')}</p>
-        <Action action="create" variant="primary" label={t('createCredential')}>
-          <label>
-            {t('ownCredentialName')} <input name="name" required maxlength={maxNameLength} />
-          </label>
-        </Action>
-        {table(
-          [
-            t('ownCredentialName'),
-            t('ownCredentialPrefix'),
-            { folded: t('lastUsed') },
-            { folded: t('revokedAt') },
-            t('actions'),
-          ],
-          tokens.map((token) => {
-            const lastUsed = time(c.env.config, token.lastUsedAt)
-            const revoked = time(c.env.config, token.revokedAt)
-            return (
-              <tr>
-                <td title={token.name}>
-                  <span>{token.name}</span>
-                  <Fold label={t('lastUsed')}>{lastUsed}</Fold>
-                  <Fold label={t('revokedAt')}>{revoked}</Fold>
-                </td>
-                <td title={token.prefix}>
-                  <code>{token.prefix}</code>
-                </td>
-                <td class="forge-col--folded">{lastUsed}</td>
-                <td class="forge-col--folded">{revoked}</td>
-                <td>
-                  {token.revokedAt === null && (
-                    <Action action="revoke" label={t('revokeCredential')} fields={{ id: token.id }} />
+        <p class="forge-admin-meta">
+          {t('connectHint')} <a href={connectPath}>{t('connect')}</a>
+        </p>
+        {tokens.length ? (
+          <Table
+            columns={[
+              t('ownCredentialName'),
+              { folded: t('ownCredentialPrefix') },
+              { folded: t('created') },
+              { folded: t('lastUsed') },
+              { folded: t('status') },
+              t('actions'),
+            ]}
+          >
+            {tokens.map((token) => {
+              const prefix = <code>{token.prefix}…</code>
+              const created = time(c.env.config, token.createdAt)
+              const lastUsed =
+                token.lastUsedAt === null ? t('neverUsed') : time(c.env.config, token.lastUsedAt)
+              const active = token.revokedAt === null
+              const status = (
+                <>
+                  <Badge variant={active ? 'ok' : 'muted'}>{active ? legacy.active : legacy.revoked}</Badge>
+                  {!active && (
+                    <small class="forge-admin-meta">
+                      {t('revokedOn')} {time(c.env.config, token.revokedAt)}
+                    </small>
                   )}
-                </td>
-              </tr>
-            )
-          }),
-          t,
+                </>
+              )
+              return (
+                <tr key={token.id}>
+                  <td title={token.name}>
+                    <strong>{token.name}</strong>
+                    <Fold>{prefix}</Fold>
+                    <Fold label={t('created')}>{created}</Fold>
+                    <Fold label={t('lastUsed')}>{lastUsed}</Fold>
+                    <Fold>{status}</Fold>
+                  </td>
+                  <td class="forge-col--folded">{prefix}</td>
+                  <td class="forge-col--folded">{created}</td>
+                  <td class="forge-col--folded">{lastUsed}</td>
+                  <td class="forge-col--folded">{status}</td>
+                  <td>
+                    {active && (
+                      <div class="forge-row-actions">
+                        <Action
+                          path={actionPath}
+                          action="revoke"
+                          variant="danger"
+                          label={t('revokeCredential')}
+                          fields={{ id: token.id }}
+                          confirm={{
+                            title: adminSheets.revokeTokenTitle(token.name),
+                            body: adminSheets.revokeTokenBody,
+                            label: t('revokeCredential'),
+                            cancel: confirmation.cancel,
+                          }}
+                        />
+                      </div>
+                    )}
+                  </td>
+                </tr>
+              )
+            })}
+          </Table>
+        ) : (
+          <p class="forge-empty">{t('noOwnCredentials')}</p>
         )}
         {nextPage(tokensPath, nextCursor, t('next'))}
       </>,
+      {
+        lead: t('ownCredentialHelp'),
+        actions: (
+          <Action
+            path={actionPath}
+            action="create"
+            variant="primary"
+            label={t('createCredential')}
+            sheet={{
+              title: t('createCredential'),
+              label: t('createCredential'),
+              cancel: confirmation.cancel,
+            }}
+          >
+            <label>
+              {t('ownCredentialName')} <input name="name" required maxlength={maxNameLength} />
+            </label>
+          </Action>
+        ),
+      },
     )
   }),
 )
@@ -838,46 +909,100 @@ adminPages.post(
 adminPages.get(
   redirectsPath,
   browser('admin', async (c, session, actor, t) => {
-    const { redirects, nextCursor } = await listRedirects(c.env, actor, c.req.query('cursor'))
+    const cursor = c.req.query('cursor')
+    const actionPath = cursor ? `${redirectsPath}?${new URLSearchParams({ cursor })}` : redirectsPath
+    const { redirects, nextCursor } = await listRedirects(c.env, actor, cursor)
+    const { adminSheets, confirmation } = messages(c.env.config)
     return page(
       c,
       session,
       t('redirects'),
-      <>
-        <p>{t('redirectHelp')}</p>
-        <Action action="add" label={t('addRedirect')}>
-          <label>
-            {t('fromPrefix')}{' '}
-            <input name="fromPrefix" required maxlength={maxRedirectPrefix} placeholder="/a/old/" />
-          </label>
-          <label>
-            {t('toPrefix')}{' '}
-            <input name="toPrefix" required maxlength={maxRedirectPrefix} placeholder="/a/new/" />
-          </label>
-        </Action>
-        {table(
-          [t('fromPrefix'), t('toPrefix'), t('actions')],
-          redirects.map((entry) => (
-            <tr>
-              <td title={entry.fromPrefix}>
-                <code>{entry.fromPrefix}</code>
-              </td>
-              <td title={entry.toPrefix}>
-                <code>{entry.toPrefix}</code>
-              </td>
-              <td>
-                <Action
-                  action="remove"
-                  label={t('removeRedirect')}
-                  fields={{ fromPrefix: entry.fromPrefix }}
+      <div class="forge-admin-split">
+        <aside class="forge-admin-panel forge-admin-panel--first" aria-labelledby="new-redirect">
+          <h2 id="new-redirect">{t('newRedirect')}</h2>
+          <Action action="add" variant="primary" label={t('addRedirect')}>
+            <div>
+              <label>
+                {t('fromPrefix')}
+                <input
+                  name="fromPrefix"
+                  required
+                  maxlength={maxRedirectPrefix}
+                  placeholder="/a/old/"
+                  aria-describedby="redirect-from-hint"
                 />
-              </td>
-            </tr>
-          )),
-          t,
-        )}
-        {nextPage(redirectsPath, nextCursor, t('next'))}
-      </>,
+              </label>
+              <small class="forge-admin-meta" id="redirect-from-hint">
+                {t('redirectFromHint')}
+              </small>
+            </div>
+            <div>
+              <label>
+                {t('toPrefix')}
+                <input
+                  name="toPrefix"
+                  required
+                  maxlength={maxRedirectPrefix}
+                  placeholder="/a/new/"
+                  aria-describedby="redirect-to-hint"
+                />
+              </label>
+              <small class="forge-admin-meta" id="redirect-to-hint">
+                {t('redirectToHint')}
+              </small>
+            </div>
+          </Action>
+        </aside>
+        <section aria-label={t('redirects')}>
+          {redirects.length ? (
+            <Table columns={[t('redirectRoute'), { folded: t('createdBy') }, t('actions')]}>
+              {redirects.map((entry) => {
+                const creator = (
+                  <>
+                    {entry.creatorName && <>{entry.creatorName} · </>}
+                    {time(c.env.config, entry.createdAt)}
+                  </>
+                )
+                return (
+                  <tr key={entry.fromPrefix}>
+                    <td>
+                      <div class="forge-redirect-route">
+                        <code>{entry.fromPrefix}</code>
+                        <span aria-hidden="true">→</span>
+                        <span class="forge-sr-only">{t('redirectTo')}</span>
+                        <code>{entry.toPrefix}</code>
+                      </div>
+                      <Fold label={t('createdBy')}>{creator}</Fold>
+                    </td>
+                    <td class="forge-col--folded">{creator}</td>
+                    <td>
+                      <div class="forge-row-actions">
+                        <Action
+                          action="remove"
+                          path={actionPath}
+                          variant="danger"
+                          label={t('removeRedirect')}
+                          fields={{ fromPrefix: entry.fromPrefix }}
+                          confirm={{
+                            title: adminSheets.removeRedirectTitle(entry.fromPrefix),
+                            body: adminSheets.removeRedirectBody,
+                            label: t('removeRedirect'),
+                            cancel: confirmation.cancel,
+                          }}
+                        />
+                      </div>
+                    </td>
+                  </tr>
+                )
+              })}
+            </Table>
+          ) : (
+            <p class="forge-empty">{t('noRedirects')}</p>
+          )}
+          {nextPage(redirectsPath, nextCursor, t('next'))}
+        </section>
+      </div>,
+      { lead: t('redirectHelp') },
     )
   }),
 )
@@ -912,7 +1037,7 @@ function connectSection(labels: CopyLabels, name: string, instructions: string, 
 }
 
 adminPages.get(
-  '/connect',
+  connectPath,
   browser('viewer', async (c, session, _actor, t) => {
     const origin = c.env.config.manageOrigin
     const labels = messages(c.env.config)
