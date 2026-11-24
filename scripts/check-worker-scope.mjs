@@ -1,13 +1,17 @@
 import { spawnSync } from 'node:child_process'
+import { createHash } from 'node:crypto'
 import { lstatSync, mkdtempSync, readdirSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join, matchesGlob, relative, resolve } from 'node:path'
-import { unstable_readConfig } from 'wrangler'
+import { experimental_readRawConfig, unstable_readConfig } from 'wrangler'
 import { inCoverageScope, inLengthScope, worktreePaths } from './source-scope.mjs'
 
 const root = join(import.meta.dirname, '..')
 const wrangler = join(root, 'node_modules/wrangler/bin/wrangler.js')
 const configNames = ['wrangler.json', 'wrangler.jsonc', 'wrangler.toml']
+const blockedOptions = ['rules', 'find_additional_modules', 'base_dir', 'alias', 'no_bundle']
+const capture = new URL('./capture-worker-outputs.cjs', import.meta.url)
+const digest = (bytes) => createHash('sha256').update(bytes).digest('hex')
 const dataTypes = new Set([
   'application/json',
   'application/octet-stream',
@@ -22,11 +26,16 @@ async function uploadParts(path, outdir) {
   const response = new Response(bytes, {
     headers: { 'content-type': `multipart/form-data; boundary=${boundary}` },
   })
-  return new Map(
-    [...(await response.formData())].flatMap(([name, part]) =>
-      typeof part === 'string' ? [] : [[relative(outdir, resolve(outdir, name)), part]],
-    ),
-  )
+  const form = await response.formData()
+  const metadata = JSON.parse(form.get('metadata'))
+  const parts = new Map()
+  for (const [name, part] of form) {
+    if (typeof part === 'string') continue
+    const path = relative(outdir, resolve(outdir, name))
+    if (parts.has(path)) throw new Error(`Wrangler upload contains colliding module names: ${path}`)
+    parts.set(path, part)
+  }
+  return { main: metadata.main_module ?? metadata.body_part, parts }
 }
 
 let temporary
@@ -38,18 +47,38 @@ try {
   }
   // Use the same cwd and default config discovery as the deployment script.
   process.chdir(root)
+  const { rawConfig, configPath } = experimental_readRawConfig({})
+  if (configPath !== join(root, configs[0])) {
+    throw new Error(`Wrangler must use the root config directly; resolved to ${configPath}`)
+  }
+  for (const [location, section] of [['root', rawConfig], ...Object.entries(rawConfig.env ?? {})]) {
+    const declared = blockedOptions.filter((key) => Object.hasOwn(section, key))
+    if (declared.length) {
+      throw new Error(
+        `Wrangler config ${location} declares unsupported bundling settings: ${declared.join(', ')}`,
+      )
+    }
+  }
   const config = unstable_readConfig({})
   if (!config.main) throw new Error('Wrangler has no Worker entry point')
   temporary = mkdtempSync(join(tmpdir(), 'forge-worker-scope-'))
   const outdir = join(temporary, 'out')
   const metafile = join(temporary, 'meta.json')
   const outfile = join(temporary, 'upload')
+  const snapshot = join(temporary, 'output-hashes.json')
   const result = spawnSync(
     process.execPath,
     [wrangler, 'deploy', '--dry-run', '--outdir', outdir, '--metafile', metafile, '--outfile', outfile],
     {
       cwd: root,
-      env: { ...process.env, WRANGLER_SEND_METRICS: 'false' },
+      env: {
+        ...process.env,
+        // Wrangler's launcher spawns the real CLI in a separate Node process.
+        NODE_OPTIONS: `${process.env.NODE_OPTIONS ?? ''} --import=${capture.href}`,
+        WRANGLER_SEND_METRICS: 'false',
+        FORGE_SCOPE_METAFILE: metafile,
+        FORGE_SCOPE_SNAPSHOT: snapshot,
+      },
       encoding: 'utf8',
     },
   )
@@ -62,7 +91,27 @@ try {
   }
   const bundled = new Set(Object.keys(inputs).map((path) => relative(root, resolve(root, path))))
   const generated = new Set(Object.keys(outputs).map((path) => relative(outdir, resolve(root, path))))
-  const parts = await uploadParts(outfile, outdir)
+  const hashes = JSON.parse(readFileSync(snapshot, 'utf8'))
+  const { main, parts } = await uploadParts(outfile, outdir)
+  const outputPath = (path) => relative(outdir, resolve(root, path))
+  const isEntry = Object.entries(outputs).some(
+    ([path, output]) => output.entryPoint && outputPath(path) === main,
+  )
+  if (!isEntry || !parts.has(main)) {
+    throw new Error(`Wrangler upload main module is not an esbuild output: ${main}`)
+  }
+  for (const output of Object.keys(outputs)) {
+    const path = outputPath(output)
+    const uploaded = parts.get(path)
+    // Wrangler remaps sourcemaps for upload; compare their on-disk copy only.
+    const compareUpload = uploaded && (path === main || uploaded.type !== 'application/source-map')
+    if (
+      digest(readFileSync(join(outdir, path))) !== hashes[output] ||
+      (compareUpload && digest(new Uint8Array(await uploaded.arrayBuffer())) !== hashes[output])
+    ) {
+      throw new Error(`Wrangler emitted bytes different from the esbuild output: ${path}`)
+    }
+  }
   const emitted = new Set([
     ...readdirSync(outdir, { recursive: true, withFileTypes: true })
       .filter((entry) => !entry.isDirectory())

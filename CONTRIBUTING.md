@@ -26,6 +26,10 @@ only. Split an overlong file instead of adding an entry or raising its cap.
 
 The Worker scope check runs Wrangler's default-discovery dry run and inspects
 its build metadata and attached modules. Keep exactly one root Wrangler config.
+The check rejects output-name collisions and requires the upload entry bytes
+to match esbuild's original output. Declaring `rules`, `find_additional_modules`,
+`base_dir`, `alias`, or `no_bundle` is not supported until reviewed and explicitly
+enabled in the scope check.
 Bundled first-party code must be in the length, coverage, and Knip scopes, even
 outside `src/`. JSON imports and Wrangler attachments typed as data (for example,
 text files) are exempt from source checks.
