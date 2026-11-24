@@ -1,6 +1,7 @@
 import type { Child } from 'hono/jsx'
 import { base64url } from 'jose'
-import { brandMark, forgePageSources } from '../brand'
+import { forgePageSources } from '../brand'
+import { BrandBlock } from '../brand-block'
 import type { Config, Runtime } from '../config'
 import { canonicalRead, publicArtefacts, shareRead } from '../core/artefacts'
 import { handoffChallenge, readBoundSession, redeemHandoff, validHandoffState } from '../core/handoffs'
@@ -46,6 +47,9 @@ function page(
       <DocumentHead config={config} title={title} />
       <body>
         <main class={`forge-panel forge-panel--${panel}`}>
+          <header class="forge-panel__header">
+            <BrandBlock config={config} variant={panel === 'landing' ? 'heading' : undefined} />
+          </header>
           <div class="forge-panel__body">{children}</div>
         </main>
       </body>
@@ -177,12 +181,6 @@ export async function read(
         name,
         'landing',
         <>
-          <header class="forge-panel__header">
-            <h1 class="forge-brand forge-title">
-              <img class="forge-brand__logo" src={brandMark(config, 'logo')} alt="" />
-              {name}
-            </h1>
-          </header>
           {!publicIndex && brand.landingText && <p>{brand.landingText}</p>}
           {entries && (
             <ul class="forge-link-list" aria-label={text.artefacts}>

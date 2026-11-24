@@ -2,7 +2,7 @@
 
 ## Unreleased
 
-- Restyle Forge-authored pages with built-in light and dark defaults and an optional same-origin instance theme; Forge-authored read pages now have a restrictive CSP, and the sign-in handoff permits same-origin styles and fonts without changing artefact delivery.
+- Restyle Forge-authored pages with light and dark defaults, a responsive manage menu and tables, a configurable short brand label, and optional same-origin theme assets; read pages gain a restrictive CSP and the sign-in handoff permits same-origin styles and fonts without changing artefact delivery.
 
 ## v2.0.1 — 2026-11-23
 

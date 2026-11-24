@@ -115,6 +115,7 @@ it.each(['/login', `${read}/`])(
     expect(fallback).not.toContain('/_theme/')
     expect(fallback).toContain('href="/favicon.svg"')
     expect(fallback).toContain('src="/logo.svg"')
+    expect(fallback).toContain(`Gate 0 Test Forge</${path === '/login' ? 'a' : 'h1'}>`)
     const missing = await unthemed(`${new URL(path, manage).origin}/_theme/theme.css`)
     expect(missing.status).toBe(404)
     expect(Object.fromEntries(missing.headers)).toEqual(themeHeaders)
@@ -143,6 +144,16 @@ it.each(['logo', 'favicon'])('fails closed for invalid or unbound BRAND.%s', asy
   for (const filename of ['../brand.svg', 'https://elsewhere.example/brand.png', 'mark.js', 'mark.svg?x']) {
     const invalid = runtime({ THEME: theme, BRAND: JSON.stringify({ [mark]: filename }) })
     expect((await invalid(`${read}/`)).status, filename).toBe(503)
+  }
+})
+
+it('allows a trimmed short plain-text brand label without a theme', async () => {
+  const label = 'x'.repeat(40)
+  const send = runtime({ BRAND: JSON.stringify({ label: ` ${label} ` }) })
+  expect(await (await send('/login')).text()).toContain(`${label}</a>`)
+  for (const invalid of ['', '   ', 'x'.repeat(41), 42]) {
+    const misconfigured = runtime({ BRAND: JSON.stringify({ label: invalid }) })
+    expect((await misconfigured('/login')).status).toBe(503)
   }
 })
 

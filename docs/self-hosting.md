@@ -115,13 +115,13 @@ By default the read origin shows a landing page without a public catalogue. Set 
 
 ## Branding and locale
 
-Set `LOCALE` to `en` (default) or `fr` for Forge-authored UI copy on both hosts. It does not translate published artefacts, provider labels or member names. `FORGE_NAME` sets the display name. `BRAND` is a JSON-encoded string; keep `"{}"` for the bundled defaults, or override the six-digit hex accent and the non-index read landing's plain text (up to 500 characters):
+Set `LOCALE` to `en` (default) or `fr` for Forge-authored UI copy on both hosts. It does not translate published artefacts, provider labels or member names. `FORGE_NAME` supplies the instance name in document titles, MCP and OAuth resource metadata. `BRAND` is a JSON-encoded string; keep `"{}"` for the bundled defaults, or override the six-digit hex accent, the brand block label (trimmed plain text, 1–40 characters; defaults to `FORGE_NAME`), and the non-index read landing's plain text (up to 500 characters). A label does not require a theme binding:
 
 ```json
 {
   "FORGE_NAME": "Forge",
   "LOCALE": "fr",
-  "BRAND": "{\"accent\":\"#a7481c\",\"landingText\":\"Our published work\"}"
+  "BRAND": "{\"label\":\"Studio\",\"accent\":\"#a7481c\",\"landingText\":\"Our published work\"}"
 }
 ```
 
@@ -191,20 +191,24 @@ For example, `theme.css` can register a font and set the UI stack:
 
 These classes and the custom properties above are the supported theme contract. Built-in selectors have low specificity so themes can use plain rules. The rest of the HTML and the built-in layout are not extension APIs; dress the pages without changing their content, order or behaviour.
 
-| Class                                                                                             | Purpose                                                                                                     |
-| ------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------- |
-| `.forge-shell`, `.forge-tray`, `.forge-content`                                                   | Signed-in manage grid, navigation/brand tray, and main content; the tray moves to the top on narrow screens |
-| `.forge-brand`, `.forge-brand__logo`                                                              | Instance mark/name group and height-sized image                                                             |
-| `.forge-nav`, `.forge-nav__link`                                                                  | Section navigation and links; use `[aria-current="page"]` for the active section                            |
-| `.forge-title`                                                                                    | Page heading                                                                                                |
-| `.forge-panel`, `.forge-panel__header`, `.forge-panel__body`                                      | Single-panel layout, header when present, and body                                                          |
-| `.forge-panel--sign-in`, `.forge-panel--invite`, `.forge-panel--consent`, `.forge-panel--handoff` | Manage sign-in, invitation, consent, and read-session relay panels                                          |
-| `.forge-panel--landing`, `.forge-panel--pending`, `.forge-panel--error`                           | Read landing, approval-pending, and error panels                                                            |
-| `.forge-table-scroll`, `.forge-table`                                                             | Horizontal scroll container and dense data table                                                            |
-| `.forge-action`, `.forge-button`                                                                  | Form actions and styled action controls                                                                     |
-| `.forge-button--primary`, `.forge-button--danger`                                                 | Primary and destructive control variants                                                                    |
-| `.forge-notice`, `.forge-secret`, `.forge-empty`                                                  | Flash notice, one-use secret and copy action group, and empty-state text                                    |
-| `.forge-link-list`                                                                                | Sign-in provider links or public artefact list                                                              |
+| Class                                                                                             | Purpose                                                                                                    |
+| ------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------- |
+| `.forge-shell`, `.forge-tray`, `.forge-content`                                                   | Signed-in manage grid, navigation/brand tray, and main content                                             |
+| `.forge-tray__sections`, `.forge-bar`                                                             | Always-visible section links/sign-out on desktop (and without CSS); top bar on narrow screens              |
+| `.forge-drawer`, `.forge-menu`, `.forge-drawer__panel`                                            | Native narrow-screen disclosure, summary control and panel; use `[open]` on `.forge-drawer` for its state  |
+| `.forge-brand`, `.forge-brand__logo`                                                              | Shared instance mark/label group and height-sized image                                                    |
+| `.forge-nav`, `.forge-nav__link`                                                                  | Section navigation and links; use `[aria-current="page"]` for the active section                           |
+| `.forge-title`                                                                                    | Page heading                                                                                               |
+| `.forge-panel`, `.forge-panel__header`, `.forge-panel__body`                                      | Single-panel layout, shared brand header, and body                                                         |
+| `.forge-panel--sign-in`, `.forge-panel--invite`, `.forge-panel--consent`, `.forge-panel--handoff` | Manage sign-in, invitation, consent, and read-session relay panels                                         |
+| `.forge-panel--landing`, `.forge-panel--pending`, `.forge-panel--error`                           | Read landing, approval-pending, and error panels (including missing files and handoff retry)               |
+| `.forge-table-scroll`, `.forge-table`                                                             | Horizontal scroll container and dense data table                                                           |
+| `.forge-col--secondary`                                                                           | Marks both the heading and its data cells as secondary metadata; hidden by default at widths up to `45rem` |
+| `.forge-member-email`                                                                             | Narrow-screen email next to the member name; on wider screens email has its own column                     |
+| `.forge-action`, `.forge-button`                                                                  | Form actions and styled action controls                                                                    |
+| `.forge-button--primary`, `.forge-button--danger`                                                 | Primary and destructive control variants                                                                   |
+| `.forge-notice`, `.forge-secret`, `.forge-empty`                                                  | Flash notice, one-use secret and copy action group, and empty-state text                                   |
+| `.forge-link-list`                                                                                | Sign-in provider links or public artefact list                                                             |
 
 ## Upgrades, maintenance and backups
 

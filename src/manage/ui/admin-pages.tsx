@@ -29,7 +29,7 @@ import { readForm } from '../../http'
 import { type AdminMessage, type AdminTranslate, adminMessages } from '../../i18n'
 import { requireBrowserSession } from '../login'
 import { localClientPath } from '../oauth'
-import { Action, flash, page, pageLink, Table, time, type UiContext } from './page'
+import { Action, flash, page, pageLink, Table, type TableColumn, time, type UiContext } from './page'
 
 export const adminPages = new Hono<{ Bindings: Runtime }>({
   getPath: (request) => new URL(request.url).pathname,
@@ -157,20 +157,9 @@ function VisibilityOptions({
   )
 }
 
-function table(headers: string[], rows: Child[], t: AdminTranslate, empty: AdminMessage = 'noResults') {
+function table(columns: TableColumn[], rows: Child[], t: AdminTranslate, empty: AdminMessage = 'noResults') {
   if (rows.length === 0) return <p class="forge-empty">{t(empty)}</p>
-  return (
-    <Table>
-      <thead>
-        <tr>
-          {headers.map((label) => (
-            <th scope="col">{label}</th>
-          ))}
-        </tr>
-      </thead>
-      <tbody>{rows}</tbody>
-    </Table>
-  )
+  return <Table columns={columns}>{rows}</Table>
 }
 
 function nextPage(
@@ -219,18 +208,24 @@ adminPages.get(
           </button>
         </form>
         {table(
-          [t('title'), t('slug'), t('visibility'), t('revision'), t('updated')],
+          [
+            t('title'),
+            { secondary: t('slug') },
+            t('visibility'),
+            { secondary: t('revision') },
+            { secondary: t('updated') },
+          ],
           artefacts.map((entry) => (
             <tr>
-              <td>
+              <td title={entry.title}>
                 <a href={detailPath(entry.slug)}>{entry.title}</a>
               </td>
-              <td>
+              <td class="forge-col--secondary" title={entry.slug}>
                 <code>{entry.slug}</code>
               </td>
               <td>{t(entry.visibility)}</td>
-              <td>{entry.revision}</td>
-              <td>{time(c.env.config.locale, entry.updatedAt)}</td>
+              <td class="forge-col--secondary">{entry.revision}</td>
+              <td class="forge-col--secondary">{time(c.env.config.locale, entry.updatedAt)}</td>
             </tr>
           )),
           t,
@@ -291,16 +286,18 @@ adminPages.get(
         )}
         <h2>{t('files')}</h2>
         {table(
-          [t('file'), t('size'), t('type')],
+          [t('file'), { secondary: t('size') }, { secondary: t('type') }],
           artefact.files.map((file) => (
             <tr>
-              <td>
+              <td title={file.path}>
                 <a href={readBase + encodeFilePath(file.path)}>
                   <code>{file.path}</code>
                 </a>
               </td>
-              <td>{file.size}</td>
-              <td>{file.type}</td>
+              <td class="forge-col--secondary">{file.size}</td>
+              <td class="forge-col--secondary" title={file.type}>
+                {file.type}
+              </td>
             </tr>
           )),
           t,
@@ -308,13 +305,21 @@ adminPages.get(
         {nextPage(path, artefact.nextCursor, t('nextFiles'), params, 'files')}
         <h2>{t('revisions')}</h2>
         {table(
-          [t('revision'), t('author'), t('created'), t('message'), ...(canWrite ? [t('actions')] : [])],
+          [
+            t('revision'),
+            { secondary: t('author') },
+            { secondary: t('created') },
+            t('message'),
+            ...(canWrite ? [t('actions')] : []),
+          ],
           history.revisions.map((entry) => (
             <tr>
               <td>{entry.number}</td>
-              <td>{entry.author}</td>
-              <td>{time(c.env.config.locale, entry.createdAt)}</td>
-              <td>{entry.message}</td>
+              <td class="forge-col--secondary" title={entry.author}>
+                {entry.author}
+              </td>
+              <td class="forge-col--secondary">{time(c.env.config.locale, entry.createdAt)}</td>
+              <td title={entry.message ?? undefined}>{entry.message}</td>
               {canWrite && (
                 <td>
                   {entry.number !== artefact.revision && (
@@ -353,12 +358,12 @@ adminPages.get(
               )}
             </Action>
             {table(
-              [t('shareLabel'), t('created'), t('lastUsed'), t('actions')],
+              [t('shareLabel'), { secondary: t('created') }, { secondary: t('lastUsed') }, t('actions')],
               artefact.shareLinks.map((share) => (
                 <tr>
-                  <td>{share.label || t('unlabeled')}</td>
-                  <td>{time(c.env.config.locale, share.createdAt)}</td>
-                  <td>{time(c.env.config.locale, share.lastUsedAt)}</td>
+                  <td title={share.label || t('unlabeled')}>{share.label || t('unlabeled')}</td>
+                  <td class="forge-col--secondary">{time(c.env.config.locale, share.createdAt)}</td>
+                  <td class="forge-col--secondary">{time(c.env.config.locale, share.lastUsedAt)}</td>
                   <td>
                     <Action action="reveal-share" label={t('showShare')} fields={{ id: share.id }} />
                     <Action action="revoke-share" label={t('revokeShare')} fields={{ id: share.id }} />
@@ -448,14 +453,14 @@ adminPages.get(
       <>
         <p>{t('purgeHelp')}</p>
         {table(
-          [t('title'), t('slug'), t('deletedAt'), t('status'), t('actions')],
+          [t('title'), { secondary: t('slug') }, { secondary: t('deletedAt') }, t('status'), t('actions')],
           artefacts.map((entry) => (
             <tr>
-              <td>{entry.title}</td>
-              <td>
+              <td title={entry.title ?? undefined}>{entry.title}</td>
+              <td class="forge-col--secondary" title={entry.slug}>
                 <code>{entry.slug}</code>
               </td>
-              <td>{time(c.env.config.locale, entry.deletedAt)}</td>
+              <td class="forge-col--secondary">{time(c.env.config.locale, entry.deletedAt)}</td>
               <td>{t(entry.purging ? 'purging' : entry.restorable ? 'restorable' : 'expired')}</td>
               <td>
                 {entry.restorable && (
@@ -514,14 +519,20 @@ adminPages.get(
           </label>
         </Action>
         {table(
-          [t('ownCredentialName'), t('ownCredentialPrefix'), t('lastUsed'), t('revokedAt'), t('actions')],
+          [
+            t('ownCredentialName'),
+            { secondary: t('ownCredentialPrefix') },
+            { secondary: t('lastUsed') },
+            t('revokedAt'),
+            t('actions'),
+          ],
           tokens.map((token) => (
             <tr>
-              <td>{token.name}</td>
-              <td>
+              <td title={token.name}>{token.name}</td>
+              <td class="forge-col--secondary" title={token.prefix}>
                 <code>{token.prefix}</code>
               </td>
-              <td>{time(c.env.config.locale, token.lastUsedAt)}</td>
+              <td class="forge-col--secondary">{time(c.env.config.locale, token.lastUsedAt)}</td>
               <td>{time(c.env.config.locale, token.revokedAt)}</td>
               <td>
                 {token.revokedAt === null && (
@@ -577,10 +588,10 @@ adminPages.get(
           [t('fromPrefix'), t('toPrefix'), t('actions')],
           redirects.map((entry) => (
             <tr>
-              <td>
+              <td title={entry.fromPrefix}>
                 <code>{entry.fromPrefix}</code>
               </td>
-              <td>
+              <td title={entry.toPrefix}>
                 <code>{entry.toPrefix}</code>
               </td>
               <td>

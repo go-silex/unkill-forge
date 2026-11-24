@@ -200,7 +200,10 @@ it('themes Forge-authored errors without altering served artefacts, redirects or
   const { send, call } = await fixture()
   const share = await call('create_share_link', { slug: 'private' })
   if (!share?.url || !share.id) throw new Error('Expected a share URL and ID')
-  const themed = runtime({ THEME: { fetch: () => new Response(':root {}') } })
+  const themed = runtime({
+    THEME: { fetch: () => new Response(':root {}') },
+    BRAND: '{"label":"Published Work"}',
+  })
   for (const [url, status, body] of [
     [publicUrl, 200, '<h1>Public</h1>'],
     [share.url, 200, '<h1>Private</h1>'],
@@ -232,6 +235,7 @@ it('themes Forge-authored errors without altering served artefacts, redirects or
   expect([...revoked.headers]).toEqual([...neverExisted.headers])
   const body = await revoked.text()
   expect(body).toContain('href="/_theme/theme.css"')
+  expect(body).toContain('Published Work</div>')
   expect(body).toBe(await neverExisted.text())
 })
 

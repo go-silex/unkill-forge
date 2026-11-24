@@ -12,6 +12,7 @@ const brand = z.strictObject({
     .regex(/^#[0-9a-fA-F]{6}$/)
     .default(accent),
   landingText: z.string().trim().min(1).max(500).optional(),
+  label: z.string().trim().min(1).max(40).optional(),
   logo: mark,
   favicon: mark,
 })

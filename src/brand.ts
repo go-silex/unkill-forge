@@ -47,6 +47,9 @@ const style = `
   :where(dd) { margin: 0 0 var(--forge-space) }
   .forge-shell { min-height: 100vh; display: grid; grid-template-columns: minmax(0, 15rem) minmax(0, 1fr) }
   .forge-tray { background: var(--forge-surface); border-inline-end: 1px solid var(--forge-hairline); padding: calc(3 * var(--forge-space)); display: flex; flex-direction: column; gap: calc(3 * var(--forge-space)) }
+  .forge-tray__sections { display: flex; flex-direction: column; align-items: flex-start; gap: calc(3 * var(--forge-space)) }
+  :where(.forge-tray__sections .forge-nav) { width: 100% }
+  .forge-drawer { display: none }
   .forge-brand { display: flex; align-items: center; gap: var(--forge-space); min-height: var(--forge-control-height); color: var(--forge-ink); font-weight: 700; text-decoration: none; overflow-wrap: anywhere }
   .forge-brand__logo { display: block; height: calc(4 * var(--forge-space)); width: auto; max-width: 50%; object-fit: contain }
   .forge-nav { display: flex; flex-direction: column; gap: calc(.5 * var(--forge-space)) }
@@ -80,8 +83,16 @@ const style = `
   @media (max-width: 45rem) {
     .forge-shell { display: block }
     .forge-tray { border-inline-end: 0; border-bottom: 1px solid var(--forge-hairline); padding: calc(2 * var(--forge-space)); gap: var(--forge-space) }
-    .forge-nav { flex-direction: row; flex-wrap: wrap }
+    .forge-bar { position: relative; display: flex; align-items: center; justify-content: space-between; gap: var(--forge-space) }
+    .forge-tray__sections { display: none }
+    .forge-drawer { display: block }
+    .forge-menu { display: list-item; white-space: nowrap }
+    .forge-drawer__panel { position: absolute; z-index: 1; inset-inline: 0; inset-block-start: calc(100% + var(--forge-space)); max-height: 70vh; overflow-y: auto; padding: var(--forge-space); background: var(--forge-surface); border: 1px solid var(--forge-hairline); border-radius: var(--forge-radius) }
     .forge-content { padding-block: calc(3 * var(--forge-space)) }
+    .forge-col--secondary { display: none }
+    .forge-member-email { display: block; color: var(--forge-muted) }
+    :where(.forge-table td[title]) { overflow-wrap: anywhere }
+    :where(.forge-table td:has(.forge-action)) { white-space: normal }
   }
 `
 

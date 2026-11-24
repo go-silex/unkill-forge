@@ -1,5 +1,6 @@
 import { html, raw } from 'hono/html'
 import { forgePageSources } from '../brand'
+import { BrandBlock } from '../brand-block'
 import type { Runtime } from '../config'
 import { issueHandoff, validHandoffState } from '../core/handoffs'
 import { decodeReadReturnPath } from '../core/read-path'
@@ -36,14 +37,16 @@ export async function manageHandoff(request: Request, url: URL, runtime: Runtime
   const code = await issueHandoff(runtime.env.DB, session, state, path)
   return new Response(
     html`<!doctype html><html lang="${locale}">${DocumentHead({ config, title })}<body>
-<main class="forge-panel forge-panel--handoff"><div class="forge-panel__body">
+<div class="forge-panel forge-panel--handoff">
+<header class="forge-panel__header">${BrandBlock({ config })}</header>
+<main class="forge-panel__body">
 <form class="forge-action" id="handoff" method="post" action="${readOrigin}/_forge/session">
 <input type="hidden" name="code" value="${code}">
 <input type="hidden" name="state" value="${state}">
 <input type="hidden" name="nonce" value="${nonce}">
 <input type="hidden" name="return" value="${path}">
 <button class="forge-button forge-button--primary" type="submit">${title}</button>
-</form></div></main><script>${raw(submitForm)}</script></body></html>`.toString(),
+</form></main></div><script>${raw(submitForm)}</script></body></html>`.toString(),
     {
       headers: {
         'Content-Type': 'text/html; charset=utf-8',

@@ -1,7 +1,7 @@
 import type { Context } from 'hono'
 import { raw } from 'hono/html'
 import type { Child } from 'hono/jsx'
-import { brandMark } from '../../brand'
+import { BrandBlock } from '../../brand-block'
 import type { Config, Runtime } from '../../config'
 import type { BrowserSession, Member } from '../../core'
 import { putUiFlash, takeUiFlash } from '../../core/ui-flash'
@@ -64,10 +64,27 @@ const nav = [
   ['/admin/redirects', 'redirects'],
 ] as const
 
-export function Table({ children }: { children: Child }) {
+export type TableColumn = string | { secondary: string }
+
+export function Table({ columns, children }: { columns: TableColumn[]; children: Child }) {
   return (
     <div class="forge-table-scroll" tabindex={0}>
-      <table class="forge-table">{children}</table>
+      <table class="forge-table">
+        <thead>
+          <tr>
+            {columns.map((column) =>
+              typeof column === 'string' ? (
+                <th scope="col">{column}</th>
+              ) : (
+                <th scope="col" class="forge-col--secondary">
+                  {column.secondary}
+                </th>
+              ),
+            )}
+          </tr>
+        </thead>
+        <tbody>{children}</tbody>
+      </table>
     </div>
   )
 }
@@ -88,15 +105,29 @@ export function Page({
   children: Child
 }) {
   const t = messages(config)
-  const links =
-    member?.status !== 'active'
-      ? []
-      : nav.slice(0, member.role === 'admin' ? nav.length : member.role === 'publisher' ? 3 : 2)
-  const brand = (
-    <a class="forge-brand" href="/">
-      <img class="forge-brand__logo" src={brandMark(config, 'logo')} alt="" />
-      {config.name}
-    </a>
+  const navigation = member && (
+    <>
+      {member.status === 'active' && (
+        <nav class="forge-nav" aria-label={t.navigation}>
+          {nav
+            .slice(0, member.role === 'admin' ? nav.length : member.role === 'publisher' ? 3 : 2)
+            .map(([href, label]) => (
+              <a
+                class="forge-nav__link"
+                href={href}
+                aria-current={path === href || path?.startsWith(`${href}/`) ? 'page' : undefined}
+              >
+                {t[label]}
+              </a>
+            ))}
+        </nav>
+      )}
+      <form class="forge-action" action="/logout" method="post">
+        <button class="forge-button" type="submit">
+          {t.signOut}
+        </button>
+      </form>
+    </>
   )
   const heading = <h1 class="forge-title">{title}</h1>
   return (
@@ -106,25 +137,14 @@ export function Page({
         {member ? (
           <div class="forge-shell">
             <header class="forge-tray">
-              {brand}
-              {links.length > 0 && (
-                <nav class="forge-nav" aria-label={t.navigation}>
-                  {links.map(([href, label]) => (
-                    <a
-                      class="forge-nav__link"
-                      href={href}
-                      aria-current={path === href || path?.startsWith(`${href}/`) ? 'page' : undefined}
-                    >
-                      {t[label]}
-                    </a>
-                  ))}
-                </nav>
-              )}
-              <form class="forge-action" action="/logout" method="post">
-                <button class="forge-button" type="submit">
-                  {t.signOut}
-                </button>
-              </form>
+              <div class="forge-bar">
+                <BrandBlock config={config} variant="home-link" />
+                <details class="forge-drawer">
+                  <summary class="forge-menu forge-button">{t.menu}</summary>
+                  <div class="forge-drawer__panel">{navigation}</div>
+                </details>
+              </div>
+              <div class="forge-tray__sections">{navigation}</div>
             </header>
             <main class="forge-content">
               {heading}
@@ -133,7 +153,9 @@ export function Page({
           </div>
         ) : (
           <div class={`forge-panel${panel ? ` forge-panel--${panel}` : ''}`}>
-            <header class="forge-panel__header">{brand}</header>
+            <header class="forge-panel__header">
+              <BrandBlock config={config} variant="home-link" />
+            </header>
             <main class="forge-panel__body">
               {heading}
               {children}

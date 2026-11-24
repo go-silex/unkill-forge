@@ -28,18 +28,6 @@ function withQuery(path: string, params: Record<string, string | undefined>) {
   return query.size === 0 ? path : `${path}?${query}`
 }
 
-function tableHead(labels: string[]) {
-  return (
-    <thead>
-      <tr>
-        {labels.map((label) => (
-          <th>{label}</th>
-        ))}
-      </tr>
-    </thead>
-  )
-}
-
 // Keep routing and the outer Origin guard on the same, un-decoded path.
 const app = new Hono<{ Bindings: Runtime }>({ getPath: (request) => new URL(request.url).pathname })
 app.onError((error, c) => {
@@ -190,37 +178,54 @@ app.get('/admin/members', async (c) => {
     session,
     common.members,
     <>
-      <Table>
-        {tableHead([text.member, text.provider, text.email, text.status, text.role, common.admin.actions])}
-        <tbody>
-          {members.map((member) => (
-            <tr key={member.id}>
-              <td>{member.name}</td>
-              <td>{member.provider ?? text.bot}</td>
-              <td>{member.email ?? '—'}</td>
-              <td>{text[member.status]}</td>
-              <td>{common.roles[member.role]}</td>
-              <td>
-                {member.status !== 'removed' && (
-                  <Action
-                    path="/admin/members"
-                    action={member.status === 'pending' ? 'admit' : 'role'}
-                    label={member.status === 'pending' ? text.admit : text.changeRole}
-                    fields={{ id: member.id }}
-                  >
-                    <RoleSelect config={config} human={member.kind === 'human'} value={member.role} />
-                  </Action>
-                )}
+      <Table
+        columns={[
+          text.member,
+          { secondary: text.provider },
+          { secondary: text.email },
+          text.status,
+          text.role,
+          common.admin.actions,
+        ]}
+      >
+        {members.map((member) => (
+          <tr key={member.id}>
+            <td title={member.name}>
+              {member.name}
+              {member.email && (
+                <span class="forge-member-email" title={member.email} hidden>
+                  {member.email}
+                </span>
+              )}
+            </td>
+            <td class="forge-col--secondary" title={member.provider ?? text.bot}>
+              {member.provider ?? text.bot}
+            </td>
+            <td class="forge-col--secondary" title={member.email ?? undefined}>
+              {member.email ?? '—'}
+            </td>
+            <td>{text[member.status]}</td>
+            <td>{common.roles[member.role]}</td>
+            <td>
+              {member.status !== 'removed' && (
                 <Action
                   path="/admin/members"
-                  action={member.status === 'removed' ? 'reinstate' : 'remove'}
-                  label={member.status === 'removed' ? text.reinstate : text.remove}
+                  action={member.status === 'pending' ? 'admit' : 'role'}
+                  label={member.status === 'pending' ? text.admit : text.changeRole}
                   fields={{ id: member.id }}
-                />
-              </td>
-            </tr>
-          ))}
-        </tbody>
+                >
+                  <RoleSelect config={config} human={member.kind === 'human'} value={member.role} />
+                </Action>
+              )}
+              <Action
+                path="/admin/members"
+                action={member.status === 'removed' ? 'reinstate' : 'remove'}
+                label={member.status === 'removed' ? text.reinstate : text.remove}
+                fields={{ id: member.id }}
+              />
+            </td>
+          </tr>
+        ))}
       </Table>
       {members.length === pageSize &&
         pageLink(withQuery('/admin/members', { after: members.at(-1)?.id, inviteAfter }), text.nextMembers)}
@@ -228,24 +233,21 @@ app.get('/admin/members', async (c) => {
       <Action path="/admin/members" action="create-invite" variant="primary" label={text.createInvite}>
         <RoleSelect config={config} human />
       </Action>
-      <Table>
-        {tableHead([text.role, text.expires, common.admin.actions])}
-        <tbody>
-          {invites.map((invite) => (
-            <tr key={invite.id}>
-              <td>{common.roles[invite.role]}</td>
-              <td>{time(config.locale, invite.expiresAt)}</td>
-              <td>
-                <Action
-                  path="/admin/members"
-                  action="revoke-invite"
-                  label={text.revoke}
-                  fields={{ id: invite.id }}
-                />
-              </td>
-            </tr>
-          ))}
-        </tbody>
+      <Table columns={[text.role, { secondary: text.expires }, common.admin.actions]}>
+        {invites.map((invite) => (
+          <tr key={invite.id}>
+            <td>{common.roles[invite.role]}</td>
+            <td class="forge-col--secondary">{time(config.locale, invite.expiresAt)}</td>
+            <td>
+              <Action
+                path="/admin/members"
+                action="revoke-invite"
+                label={text.revoke}
+                fields={{ id: invite.id }}
+              />
+            </td>
+          </tr>
+        ))}
       </Table>
       {invites.length === pageSize &&
         pageLink(withQuery('/admin/members', { after, inviteAfter: invites.at(-1)?.id }), text.nextInvites)}
