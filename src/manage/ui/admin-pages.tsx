@@ -20,7 +20,7 @@ import {
   setRedirects,
   setVisibility,
 } from '../../core/artefacts'
-import { searchArtefacts } from '../../core/catalogue'
+import { type CatalogueAccess, searchArtefacts } from '../../core/catalogue'
 import { galleryPreviewSlugs, previewPrefix } from '../../core/gallery-previews'
 import type { BrowserSession, Member, Role } from '../../core/index'
 import { purgeArtefact } from '../../core/purge'
@@ -49,6 +49,7 @@ const slug = z
   .max(64)
   .refine((value) => artefactPath(`/a/${value}`)?.slug === value)
 const visibility = z.enum(['private', 'public'])
+const access = z.enum(['private', 'shared', 'public'])
 const revision = z
   .string()
   .regex(/^[1-9][0-9]*$/)
@@ -135,18 +136,19 @@ async function runAction<S extends z.ZodType>(
   return flash(c, session, result.path ?? path, t(result.message), result.secret)
 }
 
+/** Visibility choices; the catalogue filter adds "all" and the derived shared state. */
 function VisibilityOptions({
   t,
   value,
-  includeAll = false,
+  filter = false,
 }: {
   t: AdminTranslate
-  value?: z.output<typeof visibility>
-  includeAll?: boolean
+  value?: CatalogueAccess
+  filter?: boolean
 }) {
   return (
     <>
-      {includeAll && (
+      {filter && (
         <option value="" selected={value === undefined}>
           {t('all')}
         </option>
@@ -154,6 +156,11 @@ function VisibilityOptions({
       <option value="private" selected={value === 'private'}>
         {t('private')}
       </option>
+      {filter && (
+        <option value="shared" selected={value === 'shared'}>
+          {t('shared')}
+        </option>
+      )}
       <option value="public" selected={value === 'public'}>
         {t('public')}
       </option>
@@ -184,7 +191,7 @@ adminPages.get(
   browser('viewer', async (c, session, actor, t) => {
     const q = c.req.query('q') ?? ''
     const rawVisibility = c.req.query('visibility')
-    const filter = visibility.safeParse(rawVisibility)
+    const filter = access.safeParse(rawVisibility)
     if (rawVisibility && !filter.success) return c.text(t('malformed'), 400)
     const selected = filter.data
     const cursor = c.req.query('cursor')
@@ -213,7 +220,7 @@ adminPages.get(
             <label>
               {t('visibility')}{' '}
               <select name="visibility">
-                <VisibilityOptions t={t} value={selected} includeAll />
+                <VisibilityOptions t={t} value={selected} filter />
               </select>
             </label>
             {view === 'list' && <input type="hidden" name="view" value={view} />}
@@ -259,14 +266,14 @@ adminPages.get(
                     <Fold>
                       <code>{entry.slug}</code>
                     </Fold>
-                    <Fold label={t('visibility')}>{t(entry.visibility)}</Fold>
+                    <Fold label={t('visibility')}>{t(entry.access)}</Fold>
                     <Fold label={t('revision')}>{entry.revision}</Fold>
                     <Fold label={t('updated')}>{updated}</Fold>
                   </td>
                   <td class="forge-col--folded" title={entry.slug}>
                     <code>{entry.slug}</code>
                   </td>
-                  <td class="forge-col--folded">{t(entry.visibility)}</td>
+                  <td class="forge-col--folded">{t(entry.access)}</td>
                   <td class="forge-col--folded">{entry.revision}</td>
                   <td class="forge-col--folded">{updated}</td>
                 </tr>
@@ -287,7 +294,7 @@ adminPages.get(
                     <code>{entry.slug}</code>
                   </dd>
                   <dt>{t('visibility')}</dt>
-                  <dd>{t(entry.visibility)}</dd>
+                  <dd>{t(entry.access)}</dd>
                   <dt>{t('revision')}</dt>
                   <dd>{entry.revision}</dd>
                   <dt>{t('updated')}</dt>
