@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- Load more artefacts automatically as you scroll the Manage catalogue, in grid and list views. The next-page link still works without JavaScript.
+
 ## v2.8.1 — 2026-11-25
 
 - Fill Manage search pages with up to 50 matches instead of stopping after scanning the first 50 artefacts. Large catalogues can still offer a next page once the scan reaches 1,000 candidates.

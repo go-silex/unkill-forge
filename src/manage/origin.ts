@@ -1,5 +1,6 @@
 import type { Config } from '../config'
 import { messages } from '../i18n'
+import { catalogueScrollScriptSource } from './ui/catalogue-scroll'
 import { copyScriptSource } from './ui/page'
 
 export function checkManageOrigin(request: Request, path: string, config: Config): Response | null {
@@ -23,7 +24,7 @@ export function checkManageOrigin(request: Request, path: string, config: Config
 export function manageCsp(fonts: boolean, formTarget?: string): string {
   const formAction = formTarget ? `; form-action 'self' ${formTarget}` : "; form-action 'self'"
   const fontSource = fonts ? "; font-src 'self'" : ''
-  return `default-src 'none'; style-src 'self'; img-src 'self'${fontSource}; script-src ${copyScriptSource}; base-uri 'none'; frame-ancestors 'none'${formAction}`
+  return `default-src 'none'; style-src 'self'; img-src 'self'${fontSource}; script-src ${copyScriptSource} ${catalogueScrollScriptSource}; connect-src 'self'; base-uri 'none'; frame-ancestors 'none'${formAction}`
 }
 
 export function manageHeaders(response: Response, formTarget?: string): Response {

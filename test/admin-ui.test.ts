@@ -784,6 +784,65 @@ it('returns a match republished between pages exactly once', async () => {
   expect(second).not.toContain('Next page')
 })
 
+it('serves paginated catalogue hooks and allows only the emitted scripts in Manage CSP', async () => {
+  const send = runtime({ PUBLIC_INDEX: 'true' })
+  const owner = await mockProvider().signedIn(send, admin)
+  await publish(send, await issueToken(owner, 'Catalogue fixture'), 'item-051', 'Weekly score')
+  await db
+    .prepare(`WITH RECURSIVE numbers(n) AS (SELECT 1 UNION ALL SELECT n + 1 FROM numbers WHERE n < 50)
+    INSERT INTO artefacts (id, slug, title, visibility, current_revision, created_by, created_at, updated_at)
+    SELECT printf('10000000-0000-4000-8000-%012d', n), printf('item-%03d', n), title, visibility,
+    current_revision, created_by, created_at, updated_at + n
+    FROM artefacts, numbers WHERE slug = 'item-051'`)
+    .run()
+  const start = Date.now()
+  let nextPath: string | undefined
+  for (const q of ['', 'score']) {
+    for (const view of ['grid', 'list']) {
+      const path = `/artefacts?${new URLSearchParams({ q, view })}`
+      const first = await owner.request(path)
+      expect(first.status).toBe(200)
+      const body = await first.text()
+      expect(body).toContain(`data-catalogue-feed="${view}"`)
+      expect(body).toContain('data-catalogue-results=""')
+      const policy = first.headers.get('Content-Security-Policy')?.split('; ')
+      const hashes = Array.from(body.matchAll(/<script>([\s\S]*?)<\/script>/g), ([, script]) => {
+        return `'sha256-${createHash('sha256').update(script).digest('base64')}'`
+      })
+      expect(hashes).toHaveLength(2)
+      const scriptPolicy = policy?.find((rule) => rule.startsWith('script-src '))
+      expect(scriptPolicy?.slice(11).split(' ').sort()).toEqual(hashes.sort())
+      expect(policy?.filter((rule) => rule.startsWith('connect-src '))).toEqual(["connect-src 'self'"])
+      const href = /<a class="forge-page-link" href="([^"]+)"/.exec(body)?.[1]
+      if (!href) throw new Error('Expected a server-rendered continuation')
+      nextPath = href.replaceAll('&amp;', '&')
+      const second = await owner.request(nextPath, { headers: navigation })
+      expect(second.status).toBe(200)
+      const last = await second.text()
+      expect(last).toContain('href="/artefacts/item-051"')
+      expect(last).not.toContain('class="forge-page-link"')
+      expect(last.match(/<script>/g)).toHaveLength(1)
+    }
+  }
+  expect((await html(owner, '/connect')).match(/<script>/g)).toHaveLength(1)
+  const readPolicy = (await send(read)).headers.get('Content-Security-Policy')
+  expect(readPolicy).not.toContain('connect-src')
+  expect(readPolicy).not.toContain('script-src')
+  if (!nextPath) throw new Error('Expected a catalogue continuation')
+  vi.useFakeTimers({ toFake: ['Date'] })
+  try {
+    vi.setSystemTime(start + 11 * 60_000)
+    const refused = await owner.request(nextPath, { headers: { 'Sec-Fetch-Mode': 'same-origin' } })
+    expect(refused.status).toBe(401)
+    expect(refused.headers.get('Content-Type')).not.toMatch(/^text\/html/i)
+    const retry = await owner.request(nextPath, { headers: navigation })
+    expect(retry.status).toBe(302)
+    expect(location(retry).searchParams.get('prompt')).toBe('none')
+  } finally {
+    vi.useRealTimers()
+  }
+})
+
 it('searches only within the selected access state', async () => {
   const send = runtime()
   const owner = await mockProvider().signedIn(send, admin)
@@ -2082,7 +2141,7 @@ it.each(['en', 'fr'] as const)(
     if (!script) throw new Error('Expected the copy script on the connection page')
     const hash = createHash('sha256').update(script).digest('base64')
     const policy = connection.headers.get('Content-Security-Policy')?.split('; ')
-    expect(policy?.find((rule) => rule.startsWith('script-src '))).toBe(`script-src 'sha256-${hash}'`)
+    expect(policy?.find((rule) => rule.startsWith('script-src '))?.split(' ')).toContain(`'sha256-${hash}'`)
     const panels = Array.from(
       connect.matchAll(
         /<details class="forge-connect-client" name="forge-client"( open="")?><summary>([^<]+) <small>([^<]+)<\/small><\/summary><ol class="forge-steps">([\s\S]*?)<\/ol><\/details>/g,
