@@ -1,9 +1,10 @@
 # Changelog
 
-## Unreleased
+## v2.8.0 — 2026-11-25
 
 - Find artefacts in Manage by matching anywhere in the title or slug, with the same accent-preserving search as on the public home. Search returns results in slug order; browsing still shows newest activity first.
 - Restore browser tab and Apple touch icons on both hosts for pages without their own icon. Forge serves the configured PNG favicon or its bundled default without modifying published pages.
+- Upgrade: no D1 migration, binding or required config change. Instances with an SVG `BRAND.favicon` serve the bundled Forge PNG at `/favicon.ico` and `/apple-touch-icon.png`; add a PNG favicon to show their own. Manage search “next page” links created before the upgrade restart at the first page.
 
 ## v2.7.0 — 2026-11-25
 
