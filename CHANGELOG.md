@@ -1,9 +1,11 @@
 # Changelog
 
-## Unreleased
+## v2.7.0 — 2026-11-25
 
 - Use branded, localized cards for sign-in, invitations, access approval, OAuth consent and browser error pages. Search the public home by title or slug and see result counts and update dates; find agent setup in client-specific accordions on Connect. API protocols and security checks are unchanged.
 - Expose `forge-page-link` on pagination links and `forge-member-email-cell` on the Members email cell so themes can target them without structural selectors.
+- Instance themes: sign-in, invitation, access, consent and error pages are now cards (`forge-panel--*` variants, `forge-card-*` parts) and the public home has new header, search and result hooks; review a custom theme against the theme contract in `docs/self-hosting.md` before upgrading.
+- Upgrade: no D1 migration, binding or required config change.
 
 ## v2.6.0 — 2026-11-25
 
