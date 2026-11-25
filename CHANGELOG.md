@@ -2,7 +2,7 @@
 
 ## Unreleased
 
-- Find artefacts in Manage by matching anywhere in the title or slug, with the same accent-preserving search as on the public home and newest activity first.
+- Find artefacts in Manage by matching anywhere in the title or slug, with the same accent-preserving search as on the public home. Search returns results in slug order; browsing still shows newest activity first.
 
 ## v2.7.0 — 2026-11-25
 

@@ -738,6 +738,52 @@ it('finds substrings in titles and slugs with the same Unicode matching as the p
   expect(await find('i\u0307stanbul')).toContain('href="/artefacts/tram"')
 })
 
+it('decodes malformed UTF-8 in search queries the same way on both hosts', async () => {
+  const send = runtime({ PUBLIC_INDEX: 'true' })
+  const owner = await mockProvider().signedIn(send, admin)
+  const token = await issueToken(owner, 'Search publisher')
+  await publish(send, token, 'decoded', 'Decoded �')
+  await publish(send, token, 'literal', 'Literal %FF')
+  for (const slug of ['decoded', 'literal']) {
+    const path = `/artefacts/${slug}`
+    await post(owner, path, {
+      action: 'visibility',
+      visibility: 'public',
+      artefactId: await artefactId(owner, path),
+    })
+  }
+  const managePage = await html(owner, '/artefacts?q=%FF&view=list')
+  expect(managePage).toContain('href="/artefacts/decoded"')
+  expect(managePage).not.toContain('href="/artefacts/literal"')
+  const publicPage = await (await send(`${read}/?q=%FF`)).text()
+  expect(publicPage).toContain(`href="${read}/a/decoded/"`)
+  expect(publicPage).not.toContain(`href="${read}/a/literal/"`)
+})
+
+it('returns a match republished between pages exactly once', async () => {
+  const send = runtime()
+  const owner = await mockProvider().signedIn(send, admin)
+  const token = await issueToken(owner, 'Search publisher')
+  await publish(send, token, 'item-051-score', 'Weekly score')
+  await db
+    .prepare(`WITH RECURSIVE numbers(n) AS (SELECT 1 UNION ALL SELECT n + 1 FROM numbers WHERE n < 50)
+    INSERT INTO artefacts (id, slug, title, visibility, current_revision, created_by, created_at, updated_at)
+    SELECT printf('10000000-0000-4000-8000-%012d', n), printf('item-%03d-score', n), title, visibility,
+    current_revision, created_by, created_at, updated_at - 1
+    FROM artefacts, numbers WHERE slug = 'item-051-score'`)
+    .run()
+  await db.prepare("UPDATE artefacts SET updated_at = updated_at - 2 WHERE slug = 'item-051-score'").run()
+  const first = await html(owner, '/artefacts?q=score&view=list')
+  expect(first.match(/href="\/artefacts\/item-\d+-score"/g)).toHaveLength(50)
+  expect(first).not.toContain('href="/artefacts/item-051-score"')
+  const next = /href="([^"]+)"[^>]*>Next page<\/a>/.exec(first)?.[1]?.replaceAll('&amp;', '&')
+  if (!next) throw new Error('Expected catalogue continuation')
+  await publish(send, token, 'item-051-score', 'Weekly score', 1, '<h1>Updated score</h1>')
+  const second = await html(owner, next)
+  expect(second.match(/href="\/artefacts\/item-\d+-score"/g)).toEqual(['href="/artefacts/item-051-score"'])
+  expect(second).not.toContain('Next page')
+})
+
 it('searches only within the selected access state', async () => {
   const send = runtime()
   const owner = await mockProvider().signedIn(send, admin)
@@ -878,7 +924,7 @@ it('shows private artefacts with an active share link as shared and filters on t
   expect(second).not.toContain('Private notes')
 })
 
-it('paginates substring matches once in activity order across both visibility scopes', async () => {
+it('paginates substring matches once in slug order across both visibility scopes', async () => {
   const send = runtime()
   const owner = await mockProvider().signedIn(send, admin)
   await publish(send, await issueToken(owner, 'Catalogue search fixture'), 'seed', 'Seed')
@@ -886,7 +932,7 @@ it('paginates substring matches once in activity order across both visibility sc
     .prepare(`WITH RECURSIVE numbers(n) AS (SELECT 1 UNION ALL SELECT n + 1 FROM numbers WHERE n < 130)
     INSERT INTO artefacts (id, slug, title, visibility, current_revision, created_by, created_at, updated_at)
     SELECT printf('10000000-0000-4000-8000-%012d', n),
-    printf(CASE WHEN n % 2 = 0 THEN 'weekly-score-%03d' ELSE 'weekly-note-%03d' END, n),
+    printf(CASE WHEN n % 2 = 0 THEN 'weekly-%03d-score' ELSE 'weekly-%03d-note' END, n),
     CASE WHEN n % 2 = 0 THEN 'Weekly score' ELSE 'Weekly note' END,
     CASE WHEN n % 4 < 2 THEN 'public' ELSE 'private' END,
     current_revision, created_by, created_at, updated_at + n / 4 FROM artefacts, numbers WHERE slug = 'seed'`)
@@ -918,14 +964,15 @@ it('paginates substring matches once in activity order across both visibility sc
   }
   expect(pages).toBe(3)
   expect(seen).toEqual(
-    Array.from({ length: 65 }, (_, i) => `weekly-score-${String(130 - 2 * i).padStart(3, '0')}`),
+    Array.from({ length: 65 }, (_, i) => `weekly-${String(2 * (i + 1)).padStart(3, '0')}-score`),
   )
-  for (const phase of ['slug', 'title']) {
+  for (const oldCursor of [
+    ['score', null, 'slug', '73636F7265!old', ''],
+    ['score', null, 'title', '73636F7265!old', ''],
+    ['score', null, 'recent', 1, 'old'],
+  ]) {
     const stale = new URL(path, manage)
-    stale.searchParams.set(
-      'cursor',
-      base64url.encode(JSON.stringify(['score', null, phase, '73636F7265!old', ''])),
-    )
+    stale.searchParams.set('cursor', base64url.encode(JSON.stringify(oldCursor)))
     expect(await html(owner, stale)).toBe(first)
   }
 })
@@ -937,8 +984,9 @@ it('continues a sparse catalogue search through an empty page and explains exhau
   await db
     .prepare(`WITH RECURSIVE numbers(n) AS (SELECT 1 UNION ALL SELECT n + 1 FROM numbers WHERE n < 100)
     INSERT INTO artefacts (id, slug, title, visibility, current_revision, created_by, created_at, updated_at)
-    SELECT printf('10000000-0000-4000-8000-%012d', n), printf('memo-%03d', n), 'Memo', 'private',
-    current_revision, created_by, created_at, updated_at + n - 41 FROM artefacts, numbers WHERE slug = 'weekly-report'`)
+    SELECT printf('10000000-0000-4000-8000-%012d', n),
+    printf(CASE WHEN n <= 60 THEN 'early-memo-%03d' ELSE 'z-last-memo-%03d' END, n), 'Memo', 'private',
+    current_revision, created_by, created_at, updated_at FROM artefacts, numbers WHERE slug = 'weekly-report'`)
     .run()
   const next = (page: string) => {
     const href = /href="([^"]+)"[^>]*>Next page<\/a>/.exec(page)?.[1]?.replaceAll('&amp;', '&')
@@ -987,7 +1035,7 @@ it('uses bounded index seeks for missing and sparse matches in a large catalogue
   const seed =
     db.prepare(`WITH RECURSIVE numbers(n) AS (SELECT ?1 UNION ALL SELECT n + 1 FROM numbers WHERE n < ?2)
     INSERT INTO artefacts (id, slug, title, visibility, current_revision, created_by, created_at, updated_at)
-    SELECT printf('10000000-0000-4000-8000-%012d', n), printf('common-%04d', n), 'Exact other title', 'public',
+    SELECT printf('10000000-0000-4000-8000-%012d', n), printf('z-common-%04d', n), 'Exact other title', 'public',
     current_revision, created_by, created_at, updated_at - 1 FROM artefacts, numbers WHERE slug = ?3`)
   await seed.bind(1, catalogueCountLimit - 1, slug).run()
   expect(await html(owner, '/artefacts?q=missing')).toContain(
@@ -1099,9 +1147,9 @@ it('uses bounded index seeks for missing and sparse matches in a large catalogue
   const plans = (await db.batch<{ detail: string }>(planStatements)).flatMap((result) =>
     result.results.map((row) => row.detail),
   )
-  expect(plans.some((plan) => plan.includes('SEARCH artefacts USING INDEX artefacts_catalogue_recent'))).toBe(
-    true,
-  )
+  for (const index of ['artefacts_catalogue_recent', 'artefacts_catalogue_slug']) {
+    expect(plans.some((plan) => plan.includes(`SEARCH artefacts USING INDEX ${index}`))).toBe(true)
+  }
   const probes = plans.filter((plan) => plan.includes('share_links'))
   expect(probes.length).toBeGreaterThan(0)
   for (const probe of probes) expect(probe).toContain('share_links_active_artefact')

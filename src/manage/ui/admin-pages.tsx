@@ -194,12 +194,12 @@ adminPages.get(
   cataloguePath,
   browser('viewer', async (c, session, actor, t) => {
     const rawVisibility = c.req.query('visibility')
-    const filter = access.safeParse(rawVisibility)
-    if (rawVisibility && !filter.success)
+    const { data: selected, success } = access.safeParse(rawVisibility)
+    if (rawVisibility && !success)
       return manageError(c.env.config, 400, t('malformed'), { home: '/artefacts' })
-    const selected = filter.data
+    const { searchParams } = new URL(c.req.url)
     const [{ artefacts, query: q, continued, nextCursor }, counts] = await Promise.all([
-      searchArtefacts(c.env, actor, c.req.query('q') ?? '', selected, c.req.query('cursor')),
+      searchArtefacts(c.env, actor, searchParams, selected, c.req.query('cursor')),
       catalogueCounts(c.env, actor),
     ])
     const previews = await galleryPreviewSlugs(

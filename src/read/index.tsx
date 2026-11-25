@@ -115,7 +115,7 @@ async function home(runtime: Runtime, params: URLSearchParams, head: boolean, ct
     )
   }
 
-  const { query: q, matches: matchesQuery } = gallerySearch(params.get('q') ?? '')
+  const { query: q, matches: matchesQuery } = gallerySearch(params)
   const view = galleryView(params.get('view'))
   const entries = await publicArtefacts(runtime, ctx)
   // Keep preview discovery on the same bounded set (and SQL path) for both indexed views and search.

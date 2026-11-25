@@ -4,8 +4,8 @@ export const galleryQueryLimit = 100
 const fold = (value: string) =>
   value.normalize('NFC').toLowerCase().replaceAll('ς', 'σ').replaceAll('ß', 'ss').normalize('NFC')
 
-export function gallerySearch(rawQuery: string) {
-  const query = rawQuery
+export function gallerySearch(params: URLSearchParams) {
+  const query = (params.get('q') ?? '')
     .trim()
     .slice(0, galleryQueryLimit)
     .replace(/[\uD800-\uDBFF]$/, '')

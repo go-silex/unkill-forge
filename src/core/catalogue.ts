@@ -8,8 +8,11 @@ import { trimLookahead } from './pagination'
 
 const cursorAccess = z.enum(['private', 'shared', 'public']).nullable()
 const recentCursor = z.tuple([z.string(), cursorAccess, z.literal('recent'), z.int(), z.string()])
+const searchCursor = z.tuple([z.string(), cursorAccess, z.literal('slug-scan'), z.string()])
 const prefixCursor = z.tuple([z.string(), cursorAccess, z.enum(['slug', 'title']), z.string(), z.string()])
-const cursorSchema = z.union([recentCursor, prefixCursor])
+const cursorSchema = z.union([recentCursor, searchCursor, prefixCursor])
+// Match the expression in the catalogue slug index. Unlike updated_at, it does not move on publish.
+const slugTerm = "hex(lower(slug)) || '!' || id"
 /** Catalogue state: stored visibility, with private artefacts that have an active share link shown as shared. */
 export type CatalogueAccess = 'private' | 'shared' | 'public'
 type Row = {
@@ -56,20 +59,20 @@ export async function catalogueCounts({ env: { DB: db } }: Runtime, member: Memb
 export async function searchArtefacts(
   { env: { DB: db } }: Runtime,
   member: Member,
-  rawQuery: string,
+  params: URLSearchParams,
   access?: CatalogueAccess,
   cursor?: string,
 ) {
   checkMember(member)
-  const { query, matches } = gallerySearch(rawQuery)
+  const { query, matches } = gallerySearch(params)
   const selected = access ?? null
-  let after: z.infer<typeof recentCursor> | undefined
+  let after: z.infer<typeof recentCursor> | z.infer<typeof searchCursor> | undefined
   try {
     if (cursor !== undefined) {
       if (cursor.length > 4096) throw new Error()
       const decoded = cursorSchema.parse(JSON.parse(new TextDecoder().decode(base64url.decode(cursor))))
-      // Prefix cursors cannot seek in activity order. Restart instead of skipping candidates.
-      if (decoded[2] === 'recent') {
+      // Old prefix and activity-order search cursors cannot resume this scan.
+      if (decoded[2] === 'slug-scan' || (decoded[2] === 'recent' && !decoded[0])) {
         if (decoded[0] !== query || decoded[1] !== selected) throw new Error()
         after = decoded
       }
@@ -82,15 +85,24 @@ export async function searchArtefacts(
   const statement = db.prepare(`SELECT id, slug, title, visibility,
     EXISTS (SELECT 1 FROM share_links INDEXED BY share_links_active_artefact
       WHERE artefact_id = artefacts.id AND revoked_at IS NULL) AS shared,
-    current_revision AS revision, updated_at AS updatedAt
-    FROM artefacts WHERE deleted_at IS NULL AND visibility = ? AND (updated_at, id) < (?, ?)
-    ORDER BY updated_at DESC, id DESC LIMIT 51`)
-  const pages = await db.batch<Row>(
-    scopes.map((scope) => statement.bind(scope, after?.[3] ?? Number.MAX_SAFE_INTEGER, after?.[4] ?? '')),
+    current_revision AS revision, updated_at AS updatedAt, ${query ? slugTerm : "''"} AS term
+    FROM artefacts WHERE deleted_at IS NULL AND visibility = ? AND ${
+      query ? 'term > ? ORDER BY term' : '(updated_at, id) < (?, ?) ORDER BY updated_at DESC, id DESC'
+    } LIMIT 51`)
+  const pages = await db.batch<Row & { term: string }>(
+    scopes.map((scope) =>
+      query
+        ? statement.bind(scope, after?.[2] === 'slug-scan' ? after[3] : '')
+        : statement.bind(
+            scope,
+            after?.[2] === 'recent' ? after[3] : Number.MAX_SAFE_INTEGER,
+            after?.[2] === 'recent' ? after[4] : '',
+          ),
+    ),
   )
   const rows = pages
     .flatMap((page) => page.results)
-    .sort((a, b) => b.updatedAt - a.updatedAt || compare(b.id, a.id))
+    .sort((a, b) => (query ? compare(a.term, b.term) : b.updatedAt - a.updatedAt || compare(b.id, a.id)))
     .slice(0, 51)
   // Continue from the last scanned candidate, even if none of this page's candidates match.
   const last = trimLookahead(rows, 50)
@@ -107,7 +119,13 @@ export async function searchArtefacts(
     })
   }
   const nextCursor = last
-    ? base64url.encode(JSON.stringify([query, selected, 'recent', last.updatedAt, last.id]))
+    ? base64url.encode(
+        JSON.stringify(
+          query
+            ? [query, selected, 'slug-scan', last.term]
+            : [query, selected, 'recent', last.updatedAt, last.id],
+        ),
+      )
     : undefined
   return {
     artefacts,
