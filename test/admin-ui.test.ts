@@ -760,6 +760,81 @@ it('decodes malformed UTF-8 in search queries the same way on both hosts', async
   expect(publicPage).not.toContain(`href="${read}/a/literal/"`)
 })
 
+it.each(['Manage catalogue', 'public gallery'])(
+  'ignores emoji variation selectors in the %s',
+  async (surface) => {
+    const send = runtime({ PUBLIC_INDEX: 'true' })
+    const owner = await mockProvider().signedIn(send, admin)
+    const token = await issueToken(owner, 'Search publisher')
+    for (const [slug, title] of [
+      ['plain', '✈'],
+      ['text', '✈\uFE0E'],
+      ['emoji', '✈\uFE0F'],
+    ]) {
+      await publish(send, token, slug, `Trip ${title}`)
+      const path = `/artefacts/${slug}`
+      await post(owner, path, {
+        action: 'visibility',
+        visibility: 'public',
+        artefactId: await artefactId(owner, path),
+      })
+    }
+    const inManage = surface === 'Manage catalogue'
+    for (const q of ['✈', '✈\uFE0E', '✈\uFE0F', '\uFE0F', '\uFE0F ✈ \uFE0E']) {
+      const params = new URLSearchParams({ q, view: 'list' })
+      const body = inManage
+        ? await html(owner, `/artefacts?${params}`)
+        : await (await send(`${read}/?${params}`)).text()
+      for (const slug of ['plain', 'text', 'emoji']) {
+        expect(body, `query ${JSON.stringify(q)}, result ${slug}`).toContain(
+          inManage ? `href="/artefacts/${slug}"` : `href="${read}/a/${slug}/"`,
+        )
+      }
+    }
+  },
+)
+
+it.each([
+  ['Manage catalogue', '\uFE0F ✈ \uFE0E', '✈'],
+  ['public gallery', '\uFE0F ✈ \uFE0E', '✈'],
+  ['Manage catalogue', '\uFE0F \uFE0E', ''],
+  ['public gallery', '\uFE0F \uFE0E', ''],
+  ['Manage catalogue', `${'\uFE0F'.repeat(100)} ✈`, '✈'],
+  ['public gallery', `${'\uFE0F'.repeat(100)} ✈`, '✈'],
+])('cleans %s query %j to %j before searching', async (surface, query, cleaned) => {
+  const send = runtime({ PUBLIC_INDEX: 'true' })
+  const owner = await mockProvider().signedIn(send, admin)
+  const token = await issueToken(owner, 'Search publisher')
+  for (const [slug, title] of [
+    ['flight', '✈'],
+    ['map', 'Map'],
+  ]) {
+    const path = `/artefacts/${slug}`
+    await publish(send, token, slug, title)
+    await post(owner, path, {
+      action: 'visibility',
+      visibility: 'public',
+      artefactId: await artefactId(owner, path),
+    })
+  }
+  await db.prepare("UPDATE artefacts SET updated_at = updated_at + 1000 WHERE slug = 'map'").run()
+  const inManage = surface === 'Manage catalogue'
+  const params = new URLSearchParams({ q: query, view: 'list' })
+  const body = inManage
+    ? await html(owner, `/artefacts?${params}`)
+    : await (await send(`${read}/?${params}`)).text()
+  const flight = inManage ? 'href="/artefacts/flight"' : `href="${read}/a/flight/"`
+  const map = inManage ? 'href="/artefacts/map"' : `href="${read}/a/map/"`
+  expect(body).toContain(flight)
+  if (cleaned) {
+    expect(body).not.toContain(map)
+  } else {
+    expect(body).toContain(map)
+    if (inManage) expect(body.indexOf(map)).toBeLessThan(body.indexOf(flight))
+  }
+  expect(body).toContain(`value="${cleaned}" maxlength="100"`)
+})
+
 it('returns a match republished between pages exactly once', async () => {
   const send = runtime()
   const owner = await mockProvider().signedIn(send, admin)
@@ -1550,6 +1625,9 @@ it('confirms deletion and purge with separate forms for each deleted artefact', 
     expect((await owner.request(path)).status).toBe(404)
   }
   const document = await html(owner, deleted)
+  expect(document).toContain(
+    '<div class="forge-notice forge-notice--warn" role="alert"><span class="forge-sr-only">Avertissement: </span><p>La purge est irréversible.',
+  )
   expect(sheets(document)).toHaveLength(3)
   for (const name of ['confirm-blank', 'confirm-first', 'confirm-second']) {
     const row = bodyRows(document).find((entry) =>

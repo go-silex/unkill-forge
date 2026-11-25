@@ -821,6 +821,55 @@ it('pages 50 artefacts and 200 files without gaps, with literal search and revis
   })
 })
 
+it.each(['', 'Long title with more than 50 bytes of printable text: '])(
+  'ignores emoji variation selectors in MCP title and query with prefix %j',
+  async (prefix) => {
+    const { call } = await bot(runtime())
+    for (const [slug, title] of [
+      ['plain', '✈'],
+      ['text', '✈\uFE0E'],
+      ['emoji', '✈\uFE0F'],
+    ]) {
+      await call('publish', {
+        slug,
+        title: `${prefix}${title} gate`,
+        mode: 'replace',
+        files: [file('index.html')],
+      })
+    }
+    for (const emoji of ['\uFE0F', '', '\uFE0E']) {
+      const query = `${prefix}✈${emoji} gate`
+      for (const input of [query, `\uFE0F ${query} \uFE0E`]) {
+        const { artefacts } = await call('list_artefacts', { query: input })
+        expect(artefacts.map((row: { slug: string }) => row.slug).sort()).toEqual(['emoji', 'plain', 'text'])
+      }
+    }
+  },
+)
+
+it.each([
+  ['\uFE0F ✈ \uFE0E', ['flight']],
+  ['\uFE0F \uFE0E', ['flight', 'map']],
+])('cleans MCP query %j before searching', async (query, slugs) => {
+  const { call } = await bot(runtime())
+  for (const [slug, title] of [
+    ['flight', '✈'],
+    ['map', 'Map'],
+  ]) {
+    await call('publish', { slug, title, mode: 'replace', files: [file('index.html')] })
+  }
+  const { artefacts } = await call('list_artefacts', { query })
+  expect(artefacts.map((row: { slug: string }) => row.slug).sort()).toEqual(slugs)
+})
+
+it('does not truncate MCP search at NUL when selectors shorten the query', async () => {
+  const { call } = await bot(runtime())
+  const title = `${'A'.repeat(44)}✈`
+  await call('publish', { slug: 'flight', title, mode: 'replace', files: [file('index.html')] })
+  expect((await call('list_artefacts', { query: title })).artefacts).toMatchObject([{ slug: 'flight' }])
+  expect((await call('list_artefacts', { query: `${title}\uFE0F\u0000` })).artefacts).toEqual([])
+})
+
 const uploadHash = '2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824'
 const textUpload = { path: 'body.txt', size: 5, sha256: uploadHash }
 

@@ -640,6 +640,9 @@ adminPages.get(
       session,
       t('deleted'),
       <>
+        <Notice config={c.env.config} tone="warn">
+          <p>{t('purgeHelp')}</p>
+        </Notice>
         {table(
           [t('title'), { folded: t('deletedAt') }, { folded: t('status') }, t('actions')],
           artefacts.map((entry) => {
@@ -707,7 +710,6 @@ adminPages.get(
         )}
         {nextPage(deletedPath, nextCursor, t('next'))}
       </>,
-      { lead: t('purgeHelp') },
     )
   }),
 )
