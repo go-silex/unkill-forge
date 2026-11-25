@@ -1,4 +1,6 @@
 import { favicon, logo } from '../brand/defaults'
+import { faviconPng } from '../brand/favicon-png'
+import { assetHeaders, fetchThemeAsset } from './brand-response'
 import type { Config } from './config'
 
 const style = `
@@ -308,20 +310,6 @@ export function brandMark(config: Config, mark: 'logo' | 'favicon') {
   return filename ? `${themePrefix}${filename}` : `/${mark}.svg`
 }
 
-function assetHeaders(type?: string) {
-  const headers = new Headers({
-    'Cache-Control': 'no-cache',
-    'X-Content-Type-Options': 'nosniff',
-    'Referrer-Policy': 'same-origin',
-    'X-Robots-Tag': 'noindex',
-  })
-  if (type) headers.set('Content-Type', type)
-  if (type?.startsWith('image/svg+xml')) {
-    headers.set('Content-Security-Policy', "default-src 'none'; frame-ancestors 'none'; sandbox")
-  }
-  return headers
-}
-
 export async function themeAsset(request: Request, url: URL, theme?: Fetcher): Promise<Response> {
   const { method } = request
   const notFound = () => new Response(null, { status: 404, headers: assetHeaders() })
@@ -344,28 +332,24 @@ export async function themeAsset(request: Request, url: URL, theme?: Fetcher): P
             : null
   if (!type) return notFound()
 
-  const validators = ['If-None-Match', 'If-Modified-Since'] as const
-  const headers = new Headers()
-  for (const key of validators) {
-    const value = request.headers.get(key)
-    if (value !== null) headers.set(key, value)
+  return (await fetchThemeAsset(request, url, theme, file, type)) ?? notFound()
+}
+
+export function rootIcon(request: Request, url: URL, config: Config) {
+  if (request.method !== 'GET' && request.method !== 'HEAD') return null
+  if (url.pathname !== '/favicon.ico' && url.pathname !== '/apple-touch-icon.png') return null
+  return serveRootIcon(request, url, config)
+}
+
+async function serveRootIcon(request: Request, url: URL, config: Config) {
+  const type = 'image/png'
+  const file = config.brand.favicon
+  if (config.theme && file?.endsWith('.png')) {
+    // Config validation already restricts this filename to a literal root asset.
+    const themed = await fetchThemeAsset(request, url, config.theme, file, type)
+    if (themed) return themed
   }
-  const asset = await theme.fetch(
-    new Request(new URL(`/${file}`, url.origin), { method, headers, redirect: 'manual' }),
-  )
-  if (asset.status !== 200 && asset.status !== 304) {
-    await asset.body?.cancel()
-    return notFound()
-  }
-  const responseHeaders = assetHeaders(type)
-  for (const key of ['ETag', 'Last-Modified']) {
-    const value = asset.headers.get(key)
-    if (value !== null) responseHeaders.set(key, value)
-  }
-  return new Response(method === 'HEAD' || asset.status === 304 ? null : asset.body, {
-    status: asset.status,
-    headers: responseHeaders,
-  })
+  return new Response(request.method === 'HEAD' ? null : faviconPng, { headers: assetHeaders(type) })
 }
 
 export function brandAsset(method: string, path: string, config: Config) {

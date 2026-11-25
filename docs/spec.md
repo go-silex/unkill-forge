@@ -171,7 +171,9 @@ Rules:
 
 ## 7. Read host
 
-Resolution order for a request:
+The Worker answers anonymous `GET` and `HEAD` requests to `/favicon.ico` and `/apple-touch-icon.png` on both configured hosts before resolving access or artefact routes (see §12).
+
+Resolution order for other read requests:
 
 1. `/a/<slug>` → 301 to `/a/<slug>/`.
 2. `/a/<slug>/<path>` where `slug` is a live artefact → apply canonical access, then resolve `path`, `path/index.html`, `path.html` in the current revision. A denied reader gets the access response whether or not the file exists. If the directory index wins and the path has no trailing slash, return 301 to the slash form with the query string preserved.
@@ -378,6 +380,7 @@ The publish limits are positive integers: `MAX_FILES_PER_ARTEFACT` (default `100
 - **Locale:** `LOCALE` accepts `en` (default) or `fr`.
 - **Time zone:** `TIMEZONE` accepts an IANA zone name (default `UTC`) for absolute dates on Manage.
 - **Branding:** `FORGE_NAME` supplies the instance name in document titles, MCP and OAuth resource metadata. Optional `BRAND` is a JSON-encoded object with `label` (trimmed plain text, 1–40 characters, used in the shared brand block; defaults to `FORGE_NAME`), `accent` (six hexadecimal digits prefixed with `#`), `landingText` (plain text, up to 500 characters, for the non-index read landing), and `logo` and `favicon` (root filenames matching `^[a-z0-9-]+\.(svg|png)$`; require `THEME`). The accent and marks fall back independently to the bundled defaults. Optional Workers Static Assets binding `THEME` with `run_worker_first: true` serves allowlisted CSS, images and WOFF2 fonts under `/_theme/` on both hosts. Forge-authored pages load the theme after the built-in light/dark stylesheet and expose the supported CSS properties and classes in the [theme contract](self-hosting.md#theme). The built-in narrow-screen manage layout uses a native menu disclosure and hides secondary table metadata. Page structure, content and behaviour belong to Forge; artefact files and redirects are unaffected.
+  Both root browser icon URLs serve PNG with `Cache-Control: no-cache`. A configured PNG `BRAND.favicon` uses the `THEME` binding and its validators; if the file is missing or the configured favicon is SVG, the root URLs serve the bundled PNG instead. This does not modify the favicon links on Forge-authored pages or the bytes of published artefacts.
 
 See the [self-hosting guide](self-hosting.md) for the Deploy to Cloudflare button, manual creation of bindings, provider callbacks, secrets, Custom Domains, lifecycle configuration, bootstrap and backups. `npm run deploy -- --config <path>` applies migrations and deploys; it does not provision resources. A relative `assets.directory` resolves from the external config file, not from the checkout. Keep the operator configuration outside this repository.
 

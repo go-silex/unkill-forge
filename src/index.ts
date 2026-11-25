@@ -1,4 +1,4 @@
-import { brandAsset, themeAsset, themePrefix } from './brand'
+import { brandAsset, rootIcon, themeAsset, themePrefix } from './brand'
 import { configuration, type Env, type Runtime } from './config'
 import { previewPrefix } from './core/gallery-previews'
 import { coverCron, generateCovers, generatePublishedCover } from './core/generated-covers'
@@ -22,14 +22,17 @@ export default {
     const url = new URL(request.url)
     const host = request.headers.get('Host')
     if (host !== null && host.toLowerCase() !== url.host) return new Response('Not found', { status: 404 })
-    // Theme assets are public, read-only, and available only on the two configured origins.
-    if (
-      (url.origin === config.readOrigin || url.origin === config.manageOrigin) &&
-      (url.pathname.startsWith(themePrefix) ||
+    // Theme assets and browser icon fallbacks are public on both configured origins.
+    if (url.origin === config.readOrigin || url.origin === config.manageOrigin) {
+      if (
+        url.pathname.startsWith(themePrefix) ||
         url.pathname === '/_theme' ||
-        request.url.startsWith(themePrefix, url.origin.length))
-    ) {
-      return themeAsset(request, url, config.theme)
+        request.url.startsWith(themePrefix, url.origin.length)
+      ) {
+        return themeAsset(request, url, config.theme)
+      }
+      const icon = rootIcon(request, url, config)
+      if (icon) return icon
     }
     const runtime: Runtime = { config, env }
     if (url.origin === config.readOrigin) {
