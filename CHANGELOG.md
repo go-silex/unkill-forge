@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- Fill Manage search pages with up to 50 matches instead of stopping after scanning the first 50 artefacts. Large catalogues can still offer a next page once the scan reaches 1,000 candidates.
+
 ## v2.8.0 — 2026-11-25
 
 - Find artefacts in Manage by matching anywhere in the title or slug, with the same accent-preserving search as on the public home. Search returns results in slug order; browsing still shows newest activity first.

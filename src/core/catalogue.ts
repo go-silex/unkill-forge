@@ -4,15 +4,29 @@ import type { Runtime } from '../config'
 import { ArtefactError, checkMember } from './artefacts'
 import { gallerySearch } from './gallery-search'
 import type { Member } from './index'
-import { trimLookahead } from './pagination'
+import { adminPageSize, trimLookahead } from './pagination'
 
 const cursorAccess = z.enum(['private', 'shared', 'public']).nullable()
 const recentCursor = z.tuple([z.string(), cursorAccess, z.literal('recent'), z.int(), z.string()])
 const searchCursor = z.tuple([z.string(), cursorAccess, z.literal('slug-scan'), z.string()])
 const prefixCursor = z.tuple([z.string(), cursorAccess, z.enum(['slug', 'title']), z.string(), z.string()])
 const cursorSchema = z.union([recentCursor, searchCursor, prefixCursor])
-// Match the expression in the catalogue slug index. Unlike updated_at, it does not move on publish.
-const slugTerm = "hex(lower(slug)) || '!' || id"
+const searchBatchSize = 100
+// Merge ordered slug index seeks before LIMIT; publishing does not move the seek key.
+const searchCandidates = `SELECT id, slug, title, visibility, hex(lower(slug)) || '!' || id AS term,
+  EXISTS (SELECT 1 FROM share_links INDEXED BY share_links_active_artefact
+    WHERE artefact_id = artefacts.id AND revoked_at IS NULL) AS shared,
+  current_revision AS revision, updated_at AS updatedAt
+  FROM artefacts INDEXED BY artefacts_catalogue_slug
+  WHERE deleted_at IS NULL AND visibility = ? AND term > ?
+  UNION ALL
+  SELECT id, slug, title, visibility, hex(lower(slug)) || '!' || id AS term,
+  EXISTS (SELECT 1 FROM share_links INDEXED BY share_links_active_artefact
+    WHERE artefact_id = artefacts.id AND revoked_at IS NULL) AS shared,
+  current_revision AS revision, updated_at AS updatedAt
+  FROM artefacts INDEXED BY artefacts_catalogue_slug
+  WHERE deleted_at IS NULL AND visibility = ? AND term > ?
+  ORDER BY term LIMIT ?`
 /** Catalogue state: stored visibility, with private artefacts that have an active share link shown as shared. */
 export type CatalogueAccess = 'private' | 'shared' | 'public'
 type Row = {
@@ -82,34 +96,11 @@ export async function searchArtefacts(
   }
   // Shared and private use the same visibility index; check the derived state after scanning.
   const scopes = access === 'public' ? ['public'] : access ? ['private'] : ['private', 'public']
-  const statement = db.prepare(`SELECT id, slug, title, visibility,
-    EXISTS (SELECT 1 FROM share_links INDEXED BY share_links_active_artefact
-      WHERE artefact_id = artefacts.id AND revoked_at IS NULL) AS shared,
-    current_revision AS revision, updated_at AS updatedAt, ${query ? slugTerm : "''"} AS term
-    FROM artefacts WHERE deleted_at IS NULL AND visibility = ? AND ${
-      query ? 'term > ? ORDER BY term' : '(updated_at, id) < (?, ?) ORDER BY updated_at DESC, id DESC'
-    } LIMIT 51`)
-  const pages = await db.batch<Row & { term: string }>(
-    scopes.map((scope) =>
-      query
-        ? statement.bind(scope, after?.[2] === 'slug-scan' ? after[3] : '')
-        : statement.bind(
-            scope,
-            after?.[2] === 'recent' ? after[3] : Number.MAX_SAFE_INTEGER,
-            after?.[2] === 'recent' ? after[4] : '',
-          ),
-    ),
-  )
-  const rows = pages
-    .flatMap((page) => page.results)
-    .sort((a, b) => (query ? compare(a.term, b.term) : b.updatedAt - a.updatedAt || compare(b.id, a.id)))
-    .slice(0, 51)
-  // Continue from the last scanned candidate, even if none of this page's candidates match.
-  const last = trimLookahead(rows, 50)
-  const artefacts = []
-  for (const row of rows) {
+  const artefacts: (Pick<Row, 'slug' | 'title' | 'revision' | 'updatedAt'> & { access: CatalogueAccess })[] =
+    []
+  const collect = (row: Row) => {
     const state = accessOf(row)
-    if ((access && state !== access) || !matches(row)) continue
+    if ((access && state !== access) || !matches(row)) return
     artefacts.push({
       slug: row.slug,
       title: row.title,
@@ -118,15 +109,57 @@ export async function searchArtefacts(
       updatedAt: row.updatedAt,
     })
   }
-  const nextCursor = last
-    ? base64url.encode(
-        JSON.stringify(
-          query
-            ? [query, selected, 'slug-scan', last.term]
-            : [query, selected, 'recent', last.updatedAt, last.id],
+  let nextCursor: string | undefined
+  if (query) {
+    const statement = db.prepare(searchCandidates)
+    let term = after?.[2] === 'slug-scan' ? after[3] : ''
+    let remaining = catalogueCountLimit
+    while (remaining > 0) {
+      const size = Math.min(searchBatchSize, remaining)
+      const { results } = await statement
+        .bind(scopes[0], term, scopes[1] ?? null, term, size + 1)
+        .all<Row & { term: string }>()
+      const candidates = Math.min(size, results.length)
+      let consumed = 0
+      while (consumed < candidates && artefacts.length < adminPageSize) {
+        const row = results[consumed++]
+        term = row.term
+        collect(row)
+      }
+      remaining -= consumed
+      if (consumed === results.length) break
+      if (artefacts.length === adminPageSize || remaining === 0) {
+        // Resume after the last candidate actually checked, not the end of the fetched batch.
+        nextCursor = base64url.encode(JSON.stringify([query, selected, 'slug-scan', term]))
+        break
+      }
+    }
+  } else {
+    const statement = db.prepare(`SELECT id, slug, title, visibility,
+      EXISTS (SELECT 1 FROM share_links INDEXED BY share_links_active_artefact
+        WHERE artefact_id = artefacts.id AND revoked_at IS NULL) AS shared,
+      current_revision AS revision, updated_at AS updatedAt
+      FROM artefacts WHERE deleted_at IS NULL AND visibility = ? AND (updated_at, id) < (?, ?)
+      ORDER BY updated_at DESC, id DESC LIMIT ?`)
+    const pages = await db.batch<Row>(
+      scopes.map((scope) =>
+        statement.bind(
+          scope,
+          after?.[2] === 'recent' ? after[3] : Number.MAX_SAFE_INTEGER,
+          after?.[2] === 'recent' ? after[4] : '',
+          adminPageSize + 1,
         ),
-      )
-    : undefined
+      ),
+    )
+    const rows = pages
+      .flatMap((page) => page.results)
+      .sort((a, b) => b.updatedAt - a.updatedAt || compare(b.id, a.id))
+      .slice(0, adminPageSize + 1)
+    const last = trimLookahead(rows, adminPageSize)
+    for (const row of rows) collect(row)
+    if (last)
+      nextCursor = base64url.encode(JSON.stringify([query, selected, 'recent', last.updatedAt, last.id]))
+  }
   return {
     artefacts,
     query,
