@@ -722,43 +722,94 @@ it('refuses direct token revocation by its owner after a publisher is downgraded
   })
 })
 
-it('searches by slug or title prefix with visibility and keeps a stable pagination cursor', async () => {
+it('finds substrings in titles and slugs with the same Unicode matching as the public gallery', async () => {
   const send = runtime()
   const owner = await mockProvider().signedIn(send, admin)
   const token = await issueToken(owner, 'Search publisher')
-  await publish(send, token, slug, 'Reports quarterly')
-  await publish(send, token, 'recent', 'Quarterly briefs')
-  await publish(send, token, 'other', 'Midyear quarterly summaries')
-  const recentPath = '/artefacts/recent'
-  await post(owner, recentPath, {
+  await publish(send, token, 'weekly-scorecard', 'Weekly summary')
+  await publish(send, token, 'review', 'Annual audit summary')
+  await publish(send, token, 'season', 'Rapport d’été')
+  await publish(send, token, 'tram', 'İstanbul')
+  const find = (q: string) => html(owner, `/artefacts?${new URLSearchParams({ q, view: 'list' })}`)
+  expect(await find('score')).toContain('href="/artefacts/weekly-scorecard"')
+  expect(await find('AUDIT')).toContain('href="/artefacts/review"')
+  expect(await find('  E\u0301TE\u0301  ')).toContain('href="/artefacts/season"')
+  expect(await find('i')).not.toContain('href="/artefacts/tram"')
+  expect(await find('i\u0307stanbul')).toContain('href="/artefacts/tram"')
+})
+
+it('decodes malformed UTF-8 in search queries the same way on both hosts', async () => {
+  const send = runtime({ PUBLIC_INDEX: 'true' })
+  const owner = await mockProvider().signedIn(send, admin)
+  const token = await issueToken(owner, 'Search publisher')
+  await publish(send, token, 'decoded', 'Decoded �')
+  await publish(send, token, 'literal', 'Literal %FF')
+  for (const slug of ['decoded', 'literal']) {
+    const path = `/artefacts/${slug}`
+    await post(owner, path, {
+      action: 'visibility',
+      visibility: 'public',
+      artefactId: await artefactId(owner, path),
+    })
+  }
+  const managePage = await html(owner, '/artefacts?q=%FF&view=list')
+  expect(managePage).toContain('href="/artefacts/decoded"')
+  expect(managePage).not.toContain('href="/artefacts/literal"')
+  const publicPage = await (await send(`${read}/?q=%FF`)).text()
+  expect(publicPage).toContain(`href="${read}/a/decoded/"`)
+  expect(publicPage).not.toContain(`href="${read}/a/literal/"`)
+})
+
+it('returns a match republished between pages exactly once', async () => {
+  const send = runtime()
+  const owner = await mockProvider().signedIn(send, admin)
+  const token = await issueToken(owner, 'Search publisher')
+  await publish(send, token, 'item-051-score', 'Weekly score')
+  await db
+    .prepare(`WITH RECURSIVE numbers(n) AS (SELECT 1 UNION ALL SELECT n + 1 FROM numbers WHERE n < 50)
+    INSERT INTO artefacts (id, slug, title, visibility, current_revision, created_by, created_at, updated_at)
+    SELECT printf('10000000-0000-4000-8000-%012d', n), printf('item-%03d-score', n), title, visibility,
+    current_revision, created_by, created_at, updated_at - 1
+    FROM artefacts, numbers WHERE slug = 'item-051-score'`)
+    .run()
+  await db.prepare("UPDATE artefacts SET updated_at = updated_at - 2 WHERE slug = 'item-051-score'").run()
+  const first = await html(owner, '/artefacts?q=score&view=list')
+  expect(first.match(/href="\/artefacts\/item-\d+-score"/g)).toHaveLength(50)
+  expect(first).not.toContain('href="/artefacts/item-051-score"')
+  const next = /href="([^"]+)"[^>]*>Next page<\/a>/.exec(first)?.[1]?.replaceAll('&amp;', '&')
+  if (!next) throw new Error('Expected catalogue continuation')
+  await publish(send, token, 'item-051-score', 'Weekly score', 1, '<h1>Updated score</h1>')
+  const second = await html(owner, next)
+  expect(second.match(/href="\/artefacts\/item-\d+-score"/g)).toEqual(['href="/artefacts/item-051-score"'])
+  expect(second).not.toContain('Next page')
+})
+
+it('searches only within the selected access state', async () => {
+  const send = runtime()
+  const owner = await mockProvider().signedIn(send, admin)
+  const token = await issueToken(owner, 'Search publisher')
+  await publish(send, token, 'internal', 'Weekly score summary')
+  await publish(send, token, 'shared-score', 'Weekly figures')
+  await publish(send, token, 'open-score', 'Public score summary')
+  await post(owner, '/artefacts/shared-score', {
+    action: 'create-share',
+    label: 'Readers',
+    artefactId: await artefactId(owner, '/artefacts/shared-score'),
+  })
+  await post(owner, '/artefacts/open-score', {
     action: 'visibility',
     visibility: 'public',
-    artefactId: await artefactId(owner, recentPath),
+    artefactId: await artefactId(owner, '/artefacts/open-score'),
   })
-  const list = await html(owner, '/artefacts?q=quarterly')
-  expect(list).toContain('Reports quarterly')
-  expect(list).toContain('Quarterly briefs')
-  expect(list).not.toContain('Midyear quarterly summaries')
-  const publicOnly = await html(owner, '/artefacts?q=quarterly&visibility=public')
-  expect(publicOnly).toContain('Quarterly briefs')
-  expect(publicOnly).not.toContain('Reports quarterly')
-  await db
-    .prepare(`INSERT INTO artefacts (id, slug, title, visibility, current_revision, created_by, created_at, updated_at)
-    SELECT printf('12345678-1234-4123-8123-%012d', value), printf('quarterly-fixture-%02d', value), 'Bulk row', 'private',
-    current_revision, created_by, created_at, updated_at - 1 FROM artefacts, json_each(?) WHERE slug = ?`)
-    .bind(JSON.stringify(Array.from({ length: 50 }, (_, i) => i)), slug)
-    .run()
-  const first = await html(owner, '/artefacts?q=quarterly&visibility=private')
-  const next = /href="([^"]+)"[^>]*>Next page<\/a>/.exec(first)?.[1]?.replaceAll('&amp;', '&')
-  if (!next) throw new Error('Expected a next page link')
-  const second = await html(owner, new URL(next, manage))
-  expect(first).toContain('quarterly-fixture-48')
-  expect(first).not.toContain('quarterly-fixture-49')
-  expect(second).toContain('quarterly-fixture-49')
-  expect(second).not.toContain('quarterly-fixture-48')
-  const listFirst = await html(owner, '/artefacts?q=quarterly&visibility=private&view=list')
-  const listNext = /href="([^"]+)"[^>]*>Next page<\/a>/.exec(listFirst)?.[1]?.replaceAll('&amp;', '&')
-  expect(listNext && new URL(listNext, manage).searchParams.get('view')).toBe('list')
+  const viewer = await mockProvider().signedIn(send, 'catalogue-search-reader')
+  for (const [visibility, slug] of [
+    ['private', 'internal'],
+    ['shared', 'shared-score'],
+    ['public', 'open-score'],
+  ]) {
+    const page = await html(viewer, `/artefacts?q=score&visibility=${visibility}&view=list`)
+    expect([...page.matchAll(/href="\/artefacts\/([^"]+)"/g)].map((match) => match[1])).toEqual([slug])
+  }
 })
 
 it('shows private artefacts with an active share link as shared and filters on that derived state', async () => {
@@ -873,60 +924,83 @@ it('shows private artefacts with an active share link as shared and filters on t
   expect(second).not.toContain('Private notes')
 })
 
-it('keeps modified seek cursors inside the prefix and explains duplicate-only pages with more matches', async () => {
+it('paginates substring matches once in slug order across both visibility scopes', async () => {
   const send = runtime()
   const owner = await mockProvider().signedIn(send, admin)
-  const token = await issueToken(owner, 'Catalogue duplicate fixture')
-  await publish(send, token, 'aardvark', 'Aardvark')
-  await publish(send, token, 'late-title', 'Report ZZ Late title')
+  await publish(send, await issueToken(owner, 'Catalogue search fixture'), 'seed', 'Seed')
   await db
-    .prepare(`WITH RECURSIVE numbers(n) AS (SELECT 1 UNION ALL SELECT n + 1 FROM numbers WHERE n < 120)
+    .prepare(`WITH RECURSIVE numbers(n) AS (SELECT 1 UNION ALL SELECT n + 1 FROM numbers WHERE n < 130)
     INSERT INTO artefacts (id, slug, title, visibility, current_revision, created_by, created_at, updated_at)
-    SELECT printf('10000000-0000-4000-8000-%012d', n), printf('report-%03d', n), 'Report duplicate', 'private',
-    current_revision, created_by, created_at, updated_at FROM artefacts, numbers WHERE slug = 'aardvark'`)
+    SELECT printf('10000000-0000-4000-8000-%012d', n),
+    printf(CASE WHEN n % 2 = 0 THEN 'weekly-%03d-score' ELSE 'weekly-%03d-note' END, n),
+    CASE WHEN n % 2 = 0 THEN 'Weekly score' ELSE 'Weekly note' END,
+    CASE WHEN n % 4 < 2 THEN 'public' ELSE 'private' END,
+    current_revision, created_by, created_at, updated_at + n / 4 FROM artefacts, numbers WHERE slug = 'seed'`)
     .run()
-  const catalogue = '/artefacts?q=report'
-  let page = await html(owner, catalogue)
-  const first = page
-  let duplicatePages = 0
-  for (let i = 0; i < 5; i++) {
+  const path = '/artefacts?q=score&view=list'
+  const first = await html(owner, path)
+  let page = first
+  const seen: string[] = []
+  let pages = 0
+  while (true) {
+    seen.push(...Array.from(page.matchAll(/href="\/artefacts\/(weekly-[^"]+)"/g), ([, slug]) => slug))
+    pages++
     const next = /href="([^"]+)"[^>]*>Next page<\/a>/.exec(page)?.[1]?.replaceAll('&amp;', '&')
     if (!next) break
-    page = await html(owner, next)
-    expect(page).not.toContain('No results.')
-    if (page.includes('No new matches on this page.')) duplicatePages++
+    expect(pages).toBeLessThan(3)
+    const url = new URL(next, manage)
+    expect(url.searchParams.get('view')).toBe('list')
+    if (pages === 1) {
+      for (const [key, value] of [
+        ['q', 'note'],
+        ['visibility', 'public'],
+      ]) {
+        const modified = new URL(url)
+        modified.searchParams.set(key, value)
+        await html(owner, modified, 400)
+      }
+    }
+    page = await html(owner, url)
   }
-  expect(duplicatePages).toBeGreaterThan(0)
-  expect(page).toContain('Report ZZ Late title')
-  expect(page).not.toContain('Next page')
-  const tampered = new URL(catalogue, manage)
-  tampered.searchParams.set('cursor', base64url.encode(JSON.stringify(['report', null, 'slug', '', ''])))
-  expect(await html(owner, tampered)).toBe(first)
+  expect(pages).toBe(3)
+  expect(seen).toEqual(
+    Array.from({ length: 65 }, (_, i) => `weekly-${String(2 * (i + 1)).padStart(3, '0')}-score`),
+  )
+  for (const oldCursor of [
+    ['score', null, 'slug', '73636F7265!old', ''],
+    ['score', null, 'title', '73636F7265!old', ''],
+    ['score', null, 'recent', 1, 'old'],
+  ]) {
+    const stale = new URL(path, manage)
+    stale.searchParams.set('cursor', base64url.encode(JSON.stringify(oldCursor)))
+    expect(await html(owner, stale)).toBe(first)
+  }
 })
 
-it('shows a localized end-of-results message when a catalogue continuation exhausts duplicate matches', async () => {
+it('continues a sparse catalogue search through an empty page and explains exhaustion', async () => {
   const send = runtime()
   const owner = await mockProvider().signedIn(send, admin)
-  await publish(send, await issueToken(owner, 'Catalogue duplicate fixture'), 'report', 'Report duplicate')
+  await publish(send, await issueToken(owner, 'Sparse catalogue fixture'), 'weekly-report', 'Weekly report')
   await db
-    .prepare(`WITH RECURSIVE numbers(n) AS (SELECT 1 UNION ALL SELECT n + 1 FROM numbers WHERE n < 64)
+    .prepare(`WITH RECURSIVE numbers(n) AS (SELECT 1 UNION ALL SELECT n + 1 FROM numbers WHERE n < 100)
     INSERT INTO artefacts (id, slug, title, visibility, current_revision, created_by, created_at, updated_at)
-    SELECT printf('10000000-0000-4000-8000-%012d', n), printf('report-%03d', n), title, 'private',
-    current_revision, created_by, created_at, updated_at FROM artefacts, numbers WHERE slug = 'report'`)
+    SELECT printf('10000000-0000-4000-8000-%012d', n),
+    printf(CASE WHEN n <= 60 THEN 'early-memo-%03d' ELSE 'z-last-memo-%03d' END, n), 'Memo', 'private',
+    current_revision, created_by, created_at, updated_at FROM artefacts, numbers WHERE slug = 'weekly-report'`)
     .run()
   const next = (page: string) => {
     const href = /href="([^"]+)"[^>]*>Next page<\/a>/.exec(page)?.[1]?.replaceAll('&amp;', '&')
     if (!href) throw new Error('Expected catalogue continuation')
     return href
   }
-  const first = await html(owner, '/artefacts?q=report')
+  const first = await html(owner, '/artefacts?q=report&view=list')
+  expect(first).toContain('No new matches on this page.')
+  expect(first).not.toContain('href="/artefacts/weekly-report"')
   const second = await html(owner, next(first))
-  expect(first.match(/href="\/artefacts\/report[^"]*"/g)).toHaveLength(50)
-  expect(second.match(/href="\/artefacts\/report[^"]*"/g)).toHaveLength(15)
+  expect(second).toContain('href="/artefacts/weekly-report"')
   const lastPath = next(second)
   const exhausted = await html(owner, lastPath)
   expect(exhausted).toContain('No more results.')
-  expect(exhausted).not.toContain('No results.')
   expect(exhausted).not.toContain('Next page')
   const french = await runtime({ LOCALE: 'fr' })(lastPath, { headers: { Cookie: owner.cookieHeader() } })
   expect(french.status).toBe(200)
@@ -961,8 +1035,8 @@ it('uses bounded index seeks for missing and sparse matches in a large catalogue
   const seed =
     db.prepare(`WITH RECURSIVE numbers(n) AS (SELECT ?1 UNION ALL SELECT n + 1 FROM numbers WHERE n < ?2)
     INSERT INTO artefacts (id, slug, title, visibility, current_revision, created_by, created_at, updated_at)
-    SELECT printf('10000000-0000-4000-8000-%012d', n), printf('common-%04d', n), 'Exact other title', 'public',
-    current_revision, created_by, created_at, updated_at FROM artefacts, numbers WHERE slug = ?3`)
+    SELECT printf('10000000-0000-4000-8000-%012d', n), printf('z-common-%04d', n), 'Exact other title', 'public',
+    current_revision, created_by, created_at, updated_at - 1 FROM artefacts, numbers WHERE slug = ?3`)
   await seed.bind(1, catalogueCountLimit - 1, slug).run()
   expect(await html(owner, '/artefacts?q=missing')).toContain(
     `All <span class="forge-filters__count">${catalogueCountLimit}</span>`,
@@ -1040,20 +1114,27 @@ it('uses bounded index seeks for missing and sparse matches in a large catalogue
   const empty = await fetch('missing')
   expect(empty.status).toBe(200)
   const oversized = await empty.text()
-  expect(oversized).toContain('No results.')
+  expect(oversized).toContain('No new matches on this page.')
+  expect(oversized).toContain('Next page')
   expect(oversized).not.toContain('forge-filters__count')
   expect(
     [...oversized.matchAll(/<a class="forge-filters__link"[^>]*>([^<]+)<\/a>/g)].map(([, label]) => label),
   ).toEqual(['All', 'Private', 'Shared', 'Public'])
   const emptyReads = totalReads
-  expect(emptyReads).toBeGreaterThanOrEqual(catalogueCountLimit + 1)
+  const emptySearchReads = searchReads
+  expect(emptySearchReads).toBeGreaterThan(0)
+  // Two visibility seeks return at most a page and its lookahead each.
+  expect(emptySearchReads).toBeLessThanOrEqual(2 * 2 * 51 + 2)
   // D1 can meter both an index step and a table lookup for each sampled live artefact.
-  expect(emptyReads).toBeLessThan(2 * (catalogueCountLimit + 1) + 30)
+  expect(emptyReads - emptySearchReads).toBeGreaterThanOrEqual(catalogueCountLimit + 1)
+  expect(emptyReads - emptySearchReads).toBeLessThan(2 * (catalogueCountLimit + 1) + 30)
   await seed.bind(catalogueCountLimit + 1, catalogueCountLimit + 500, slug).run()
   totalReads = 0
+  searchReads = 0
   expect((await fetch('missing')).status).toBe(200)
   expect(totalReads).toBe(emptyReads)
-  const sparse = await fetch('eXaCt Élément %_')
+  expect(searchReads).toBe(emptySearchReads)
+  const sparse = await fetch('éLÉMent %_')
   expect(sparse.status).toBe(200)
   expect(await sparse.text()).toContain('Exact Élément %_')
   const filtered = await fetch('', 'private')
@@ -1062,15 +1143,12 @@ it('uses bounded index seeks for missing and sparse matches in a large catalogue
   const shared = await fetch('exact', 'shared')
   expect(shared.status).toBe(200)
   expect(await shared.text()).toContain('No results.')
-  expect(searchReads).toBeGreaterThan(0)
-  expect(searchReads).toBeLessThan(20)
+  expect(searchReads - emptySearchReads).toBeLessThanOrEqual(2 * 2 * 51 + 10)
   const plans = (await db.batch<{ detail: string }>(planStatements)).flatMap((result) =>
     result.results.map((row) => row.detail),
   )
-  for (const suffix of ['slug', 'title', 'recent']) {
-    expect(
-      plans.some((plan) => plan.includes(`SEARCH artefacts USING INDEX artefacts_catalogue_${suffix}`)),
-    ).toBe(true)
+  for (const index of ['artefacts_catalogue_recent', 'artefacts_catalogue_slug']) {
+    expect(plans.some((plan) => plan.includes(`SEARCH artefacts USING INDEX ${index}`))).toBe(true)
   }
   const probes = plans.filter((plan) => plan.includes('share_links'))
   expect(probes.length).toBeGreaterThan(0)
@@ -1908,7 +1986,7 @@ it.each(['en', 'fr'] as const)(
     const pages = [
       [anonymous, '/login', 'Sign in', 'Se connecter'],
       [pending, '/', 'Pending access', 'Accès en attente'],
-      [owner, '/artefacts', 'Start of title or slug', 'Début du titre ou de l’identifiant'],
+      [owner, '/artefacts', 'Title or slug', 'Titre ou identifiant'],
       [owner, detail, 'Open artefact', 'Ouvrir l’artefact'],
       [owner, deleted, 'Deleted artefacts', 'Artefacts supprimés'],
       [owner, tokens, 'Create a token', 'Créer un jeton'],

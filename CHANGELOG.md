@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Find artefacts in Manage by matching anywhere in the title or slug, with the same accent-preserving search as on the public home. Search returns results in slug order; browsing still shows newest activity first.
 - Restore browser tab and Apple touch icons on both hosts for pages without their own icon. Forge serves the configured PNG favicon or its bundled default without modifying published pages.
 
 ## v2.7.0 — 2026-11-25
