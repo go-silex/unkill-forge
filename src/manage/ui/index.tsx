@@ -283,7 +283,7 @@ app.get(membersPath, async (c) => {
                 {current && <Fold>{badge}</Fold>}
                 <Fold label={dateLabel}>{date}</Fold>
               </td>
-              <td class="forge-col--folded">{member.email ?? '—'}</td>
+              <td class="forge-col--folded forge-member-email-cell">{member.email ?? '—'}</td>
               <td class="forge-col--folded">{member.provider ?? '—'}</td>
               {!awaiting && <td class="forge-col--folded">{roles[member.role]}</td>}
               {current && <td class="forge-col--folded">{badge}</td>}

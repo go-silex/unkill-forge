@@ -227,6 +227,7 @@ These classes and the custom properties above are the supported theme contract. 
 | `.forge-catalogue-slug`                                                                           | Visible artefact identifier on grid cards                                                                  |
 | `.forge-title`                                                                                    | Page heading                                                                                               |
 | `.forge-page-head`, `.forge-lead`, `.forge-page-actions`                                          | Optional page header, short description and primary actions that wrap below the title on narrow screens    |
+| `.forge-page-link`                                                                                | Pagination link below a list                                                                               |
 | `.forge-panel`, `.forge-panel__header`, `.forge-panel__body`                                      | Single-panel layout, shared brand header, and body                                                         |
 | `.forge-panel--sign-in`, `.forge-panel--invite`, `.forge-panel--consent`, `.forge-panel--handoff` | Manage sign-in, invitation, consent, and read-session relay panels                                         |
 | `.forge-panel--landing`, `.forge-panel--pending`, `.forge-panel--error`                           | Read landing, approval pending and error panels (the last two are shared across both hosts)                |
@@ -248,6 +249,7 @@ These classes and the custom properties above are the supported theme contract. 
 | `.forge-col--secondary`                                                                           | Marks both the heading and its data cells as secondary metadata; hidden by default at widths up to `45rem` |
 | `.forge-col--folded`, `.forge-fold`                                                               | Paired original column (heading and cells) and folded copies inside the primary cell                       |
 | `.forge-member-email`                                                                             | Member email's additional styling hook; the copy also uses `.forge-fold`                                   |
+| `.forge-member-email-cell`                                                                        | Email cell in the Members tables, which may need to wrap long addresses                                    |
 | `.forge-member-section`, `.forge-member-identity`, `.forge-member-legend`                         | Members section, avatar and name group, and role legend                                                    |
 | `.forge-action`, `.forge-button`                                                                  | Form actions and styled action controls                                                                    |
 | `.forge-row-actions`                                                                              | Wraps and end-aligns related row controls with a consistent gap                                            |
