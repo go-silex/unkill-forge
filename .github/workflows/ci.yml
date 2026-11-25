@@ -17,6 +17,7 @@ jobs:
         with:
           fetch-depth: 0
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - run: node scripts/check-install-config.mjs
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: "24"
@@ -37,19 +38,19 @@ jobs:
           fi
           node scripts/check-lockfile-cooldown.mjs --base "$base" --head HEAD
       - run: npm ci
-      - run: npm run lint
+      - run: ./node_modules/.bin/biome ci .
       - name: File length ratchet
         env:
           # Feature pushes use their merge base, not the old tip before an upstream merge.
           BASE_SHA: ${{ github.event.pull_request.base.sha || (github.ref_type == 'branch' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch) && github.event.before) || '' }}
         run: |
           if [[ -n "$BASE_SHA" && ! "$BASE_SHA" =~ ^0+$ ]]; then
-            npm run check:file-length -- --base "$BASE_SHA"
+            node scripts/check-file-length.mjs --base "$BASE_SHA"
           else
-            npm run check:file-length
+            node scripts/check-file-length.mjs
           fi
-      - run: npm run check:worker-scope
-      - run: npm run knip
-      - run: npm run typecheck
-      - run: npm run test:node
-      - run: npm run test:coverage
+      - run: node scripts/check-worker-scope.mjs
+      - run: ./node_modules/.bin/knip --no-progress
+      - run: ./node_modules/.bin/tsc --noEmit
+      - run: node --test scripts/*.node-test.mjs
+      - run: ./node_modules/.bin/vitest run --coverage && node scripts/check-coverage-floors.mjs

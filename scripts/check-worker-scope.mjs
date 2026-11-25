@@ -4,6 +4,7 @@ import { lstatSync, mkdtempSync, readdirSync, readFileSync, rmSync } from 'node:
 import { tmpdir } from 'node:os'
 import { dirname, join, matchesGlob, relative, resolve } from 'node:path'
 import { experimental_readRawConfig, unstable_readConfig } from 'wrangler'
+import { checkInstallConfig } from './check-install-config.mjs'
 import { inCoverageScope, inLengthScope, worktreePaths } from './source-scope.mjs'
 
 const root = join(import.meta.dirname, '..')
@@ -58,6 +59,7 @@ async function uploadParts(path, outdir) {
 let temporary
 
 try {
+  checkInstallConfig()
   const configs = configNames.filter((name) => lstatSync(join(root, name), { throwIfNoEntry: false }))
   if (configs.length !== 1) {
     throw new Error(`expected exactly one root Wrangler config; found ${configs.join(', ') || 'none'}`)
@@ -69,6 +71,9 @@ try {
     throw new Error(`Wrangler must use the root config directly; resolved to ${configPath}`)
   }
   for (const [location, section] of [['root', rawConfig], ...Object.entries(rawConfig.env ?? {})]) {
+    if (section !== rawConfig && Object.hasOwn(section, 'main') && section.main !== rawConfig.main) {
+      throw new Error(`Wrangler config ${location} must use the root Worker entry`)
+    }
     const declared = blockedOptions.filter((key) => Object.hasOwn(section, key))
     if (declared.length) {
       throw new Error(
@@ -91,7 +96,7 @@ try {
       env: {
         ...process.env,
         // Wrangler's launcher spawns the real CLI in a separate Node process.
-        NODE_OPTIONS: `${process.env.NODE_OPTIONS ?? ''} --import=${capture.href}`,
+        NODE_OPTIONS: `--import=${capture.href}`,
         WRANGLER_SEND_METRICS: 'false',
         FORGE_SCOPE_METAFILE: metafile,
         FORGE_SCOPE_SNAPSHOT: snapshot,
