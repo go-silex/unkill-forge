@@ -3,6 +3,7 @@ import { z } from 'zod'
 import { MAX_ARTEFACT_FILES, type Runtime } from '../config'
 import { blobText, contentType, MAX_TEXT_BYTES, storeBlobs, textSlice } from './blobs'
 import type { CatalogueAccess } from './catalogue'
+import { literalSearch } from './gallery-search'
 import { auditChange, hashSecret, type Member } from './index'
 import { trimLookahead } from './pagination'
 import { redirectPrefix } from './read-path'
@@ -227,17 +228,16 @@ export async function listArtefacts(
   const after = cursor === undefined ? null : decodeCursor(cursor, listCursor)
   if (after && after[2] !== query)
     throw new ArtefactError('invalid_input', 'Cursor belongs to a different query')
-  const like = `%${query.replace(/[!%_]/g, '!$&')}%`
-  // D1 caps LIKE patterns at 50 bytes; use the equivalent literal search for longer patterns.
-  const pattern = new TextEncoder().encode(like).length <= 50 ? like : null
+  const { literal, pattern } = literalSearch(query)
+  const searchTitle = "replace(replace(title, char(65038), ''), char(65039), '')" // Slugs are ASCII.
   const { results } = await db
     .prepare(`SELECT id, slug, title, visibility, current_revision AS revision, updated_at AS updatedAt
     FROM artefacts WHERE deleted_at IS NULL AND CASE WHEN ?1 IS NOT NULL
-      THEN slug LIKE ?1 ESCAPE '!' OR title LIKE ?1 ESCAPE '!'
-      ELSE instr(lower(slug), lower(?4)) > 0 OR instr(lower(title), lower(?4)) > 0 END
+      THEN slug LIKE ?1 ESCAPE '!' OR ${searchTitle} LIKE ?1 ESCAPE '!'
+      ELSE instr(lower(slug), lower(?4)) > 0 OR instr(lower(${searchTitle}), lower(?4)) > 0 END
     AND (?2 IS NULL OR updated_at < ?2 OR (updated_at = ?2 AND id > ?3))
     ORDER BY updated_at DESC, id LIMIT 51`)
-    .bind(pattern, after?.[0] ?? null, after?.[1] ?? null, query)
+    .bind(pattern, after?.[0] ?? null, after?.[1] ?? null, literal)
     .all<Pick<Artefact, 'id' | 'slug' | 'title' | 'visibility' | 'revision' | 'updatedAt'>>()
   const last = trimLookahead(results, 50)
   return {

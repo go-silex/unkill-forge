@@ -760,6 +760,40 @@ it('decodes malformed UTF-8 in search queries the same way on both hosts', async
   expect(publicPage).not.toContain(`href="${read}/a/literal/"`)
 })
 
+it.each(['Manage catalogue', 'public gallery'])(
+  'ignores emoji variation selectors in the %s',
+  async (surface) => {
+    const send = runtime({ PUBLIC_INDEX: 'true' })
+    const owner = await mockProvider().signedIn(send, admin)
+    const token = await issueToken(owner, 'Search publisher')
+    for (const [slug, title] of [
+      ['plain', '✈'],
+      ['text', '✈\uFE0E'],
+      ['emoji', '✈\uFE0F'],
+    ]) {
+      await publish(send, token, slug, `Trip ${title}`)
+      const path = `/artefacts/${slug}`
+      await post(owner, path, {
+        action: 'visibility',
+        visibility: 'public',
+        artefactId: await artefactId(owner, path),
+      })
+    }
+    const inManage = surface === 'Manage catalogue'
+    for (const q of ['✈', '✈\uFE0E', '✈\uFE0F', '\uFE0F', '\uFE0F ✈ \uFE0E']) {
+      const params = new URLSearchParams({ q, view: 'list' })
+      const body = inManage
+        ? await html(owner, `/artefacts?${params}`)
+        : await (await send(`${read}/?${params}`)).text()
+      for (const slug of ['plain', 'text', 'emoji']) {
+        expect(body, `query ${JSON.stringify(q)}, result ${slug}`).toContain(
+          inManage ? `href="/artefacts/${slug}"` : `href="${read}/a/${slug}/"`,
+        )
+      }
+    }
+  },
+)
+
 it('returns a match republished between pages exactly once', async () => {
   const send = runtime()
   const owner = await mockProvider().signedIn(send, admin)
@@ -1550,6 +1584,9 @@ it('confirms deletion and purge with separate forms for each deleted artefact', 
     expect((await owner.request(path)).status).toBe(404)
   }
   const document = await html(owner, deleted)
+  expect(document).toContain(
+    '<div class="forge-notice forge-notice--warn" role="alert"><span class="forge-sr-only">Avertissement: </span><p>La purge est irréversible.',
+  )
   expect(sheets(document)).toHaveLength(3)
   for (const name of ['confirm-blank', 'confirm-first', 'confirm-second']) {
     const row = bodyRows(document).find((entry) =>

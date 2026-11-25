@@ -821,6 +821,24 @@ it('pages 50 artefacts and 200 files without gaps, with literal search and revis
   })
 })
 
+it('ignores emoji variation selectors in both short and long MCP list searches', async () => {
+  const { call } = await bot(runtime())
+  const long = 'Long title with enough letters to exceed the LIKE limit: '
+  for (const [slug, title] of [
+    ['plain', '✈'],
+    ['text', '✈\uFE0E'],
+    ['emoji', '✈\uFE0F'],
+  ]) {
+    await call('publish', { slug, title: `${long}${title}`, mode: 'replace', files: [file('index.html')] })
+  }
+  for (const prefix of ['', long]) {
+    for (const emoji of ['✈', '✈\uFE0E', '✈\uFE0F']) {
+      const { artefacts } = await call('list_artefacts', { query: prefix + emoji })
+      expect(artefacts.map((row: { slug: string }) => row.slug).sort()).toEqual(['emoji', 'plain', 'text'])
+    }
+  }
+})
+
 const uploadHash = '2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824'
 const textUpload = { path: 'body.txt', size: 5, sha256: uploadHash }
 
