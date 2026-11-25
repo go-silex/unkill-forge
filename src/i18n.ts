@@ -244,7 +244,7 @@ const en = {
   },
   admin: {
     search: 'Search',
-    searchQuery: 'Start of title or slug',
+    searchQuery: 'Title or slug',
     visibility: 'Visibility',
     all: 'All',
     private: 'Private',
@@ -618,7 +618,7 @@ const fr: typeof en = {
   },
   admin: {
     search: 'Rechercher',
-    searchQuery: 'Début du titre ou de l’identifiant',
+    searchQuery: 'Titre ou identifiant',
     visibility: 'Visibilité',
     all: 'Toutes',
     private: 'Privé',

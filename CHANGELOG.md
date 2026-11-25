@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- Find artefacts in Manage by matching anywhere in the title or slug, with the same accent-preserving search as on the public home and newest activity first.
+
 ## v2.7.0 — 2026-11-25
 
 - Use branded, localized cards for sign-in, invitations, access approval, OAuth consent and browser error pages. Search the public home by title or slug and see result counts and update dates; find agent setup in client-specific accordions on Connect. API protocols and security checks are unchanged.

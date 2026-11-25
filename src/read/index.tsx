@@ -6,6 +6,7 @@ import { BrandBlock } from '../brand-block'
 import type { Config, Runtime } from '../config'
 import { canonicalRead, publicArtefacts, shareRead } from '../core/artefacts'
 import { galleryPreviewSlugs } from '../core/gallery-previews'
+import { galleryQueryLimit, gallerySearch } from '../core/gallery-search'
 import { handoffChallenge, readBoundSession, redeemHandoff, validHandoffState } from '../core/handoffs'
 import { randomSecret } from '../core/index'
 import { artefactPath, maxReadReturnLength, readReturnPath, sharePath } from '../core/read-path'
@@ -114,27 +115,7 @@ async function home(runtime: Runtime, params: URLSearchParams, head: boolean, ct
     )
   }
 
-  // Folds beyond final sigma and sharp S (such as ligatures) are out of scope.
-  const fold = (value: string) =>
-    value.normalize('NFC').toLowerCase().replaceAll('ς', 'σ').replaceAll('ß', 'ss').normalize('NFC')
-  const queryLimit = 100
-  const q = (params.get('q') ?? '')
-    .trim()
-    .slice(0, queryLimit)
-    .replace(/[\uD800-\uDBFF]$/, '')
-    .trimEnd()
-  const needle = fold(q)
-  const markAt = /\p{M}/uy
-  // A folded match must not consume only part of an accented character.
-  const startsWithMark = markAt.test(needle)
-  const matchesText = (value: string) => {
-    const text = fold(value)
-    for (let at = text.indexOf(needle); at !== -1; at = text.indexOf(needle, at + 1)) {
-      markAt.lastIndex = at + needle.length
-      if (!markAt.test(text)) return true
-    }
-    return false
-  }
+  const { query: q, matches: matchesQuery } = gallerySearch(params.get('q') ?? '')
   const view = galleryView(params.get('view'))
   const entries = await publicArtefacts(runtime, ctx)
   // Keep preview discovery on the same bounded set (and SQL path) for both indexed views and search.
@@ -143,11 +124,7 @@ async function home(runtime: Runtime, params: URLSearchParams, head: boolean, ct
     entries.map(({ slug }) => slug),
     'public',
   )
-  const matches = !q
-    ? entries
-    : startsWithMark
-      ? []
-      : entries.filter(({ title, slug }) => matchesText(slug) || matchesText(title))
+  const matches = q ? entries.filter(matchesQuery) : entries
   const viewParams = q ? new URLSearchParams({ q }) : undefined
   const clear = view === 'list' ? '/?view=list' : '/'
   return documentResponse(
@@ -177,7 +154,7 @@ async function home(runtime: Runtime, params: URLSearchParams, head: boolean, ct
                     name="q"
                     type="search"
                     value={q}
-                    maxlength={queryLimit}
+                    maxlength={galleryQueryLimit}
                     placeholder={t.read.searchLabel}
                   />
                   {view === 'list' && <input name="view" type="hidden" value={view} />}

@@ -2,16 +2,14 @@ import { base64url } from 'jose'
 import { z } from 'zod'
 import type { Runtime } from '../config'
 import { ArtefactError, checkMember } from './artefacts'
+import { gallerySearch } from './gallery-search'
 import type { Member } from './index'
 import { trimLookahead } from './pagination'
 
-const cursorSchema = z.tuple([
-  z.string(),
-  z.enum(['private', 'shared', 'public']).nullable(),
-  z.enum(['recent', 'slug', 'title']),
-  z.union([z.string(), z.int()]),
-  z.string(),
-])
+const cursorAccess = z.enum(['private', 'shared', 'public']).nullable()
+const recentCursor = z.tuple([z.string(), cursorAccess, z.literal('recent'), z.int(), z.string()])
+const prefixCursor = z.tuple([z.string(), cursorAccess, z.enum(['slug', 'title']), z.string(), z.string()])
+const cursorSchema = z.union([recentCursor, prefixCursor])
 /** Catalogue state: stored visibility, with private artefacts that have an active share link shown as shared. */
 export type CatalogueAccess = 'private' | 'shared' | 'public'
 type Row = {
@@ -30,7 +28,6 @@ type Row = {
 const accessOf = ({ visibility, shared }: Pick<Row, 'visibility' | 'shared'>): CatalogueAccess =>
   visibility === 'public' ? 'public' : shared ? 'shared' : 'private'
 const compare = (a: string, b: string) => (a < b ? -1 : a > b ? 1 : 0)
-const fold = (value: string) => value.replace(/[A-Z]/g, (ch) => ch.toLowerCase())
 
 export const catalogueCountLimit = 1_000
 
@@ -59,97 +56,63 @@ export async function catalogueCounts({ env: { DB: db } }: Runtime, member: Memb
 export async function searchArtefacts(
   { env: { DB: db } }: Runtime,
   member: Member,
-  query: string,
+  rawQuery: string,
   access?: CatalogueAccess,
   cursor?: string,
 ) {
   checkMember(member)
+  const { query, matches } = gallerySearch(rawQuery)
   const selected = access ?? null
-  let after: z.infer<typeof cursorSchema> | undefined
+  let after: z.infer<typeof recentCursor> | undefined
   try {
-    if (query.length > 200 || (cursor && cursor.length > 4096)) throw new Error()
-    if (cursor !== undefined)
-      after = cursorSchema.parse(JSON.parse(new TextDecoder().decode(base64url.decode(cursor))))
-    if (
-      after &&
-      (after[0] !== query ||
-        after[1] !== selected ||
-        (query === ''
-          ? after[2] !== 'recent' || typeof after[3] !== 'number'
-          : after[2] === 'recent' || typeof after[3] !== 'string'))
-    )
-      throw new Error()
+    if (cursor !== undefined) {
+      if (cursor.length > 4096) throw new Error()
+      const decoded = cursorSchema.parse(JSON.parse(new TextDecoder().decode(base64url.decode(cursor))))
+      // Prefix cursors cannot seek in activity order. Restart instead of skipping candidates.
+      if (decoded[2] === 'recent') {
+        if (decoded[0] !== query || decoded[1] !== selected) throw new Error()
+        after = decoded
+      }
+    }
   } catch {
     throw new ArtefactError('invalid_input', 'Invalid catalogue query or cursor')
   }
-  // Shared and private both read the private index; the derived state filters each scanned page.
+  // Shared and private use the same visibility index; check the derived state after scanning.
   const scopes = access === 'public' ? ['public'] : access ? ['private'] : ['private', 'public']
-  async function merge<T>(statements: D1PreparedStatement[], limit: number, order: (a: T, b: T) => number) {
-    const pages = await db.batch<T>(statements)
-    return pages
-      .flatMap((page) => page.results)
-      .sort(order)
-      .slice(0, limit)
-  }
-  function page<T extends Row>(rows: T[], continuation: (row: T) => unknown[], keep?: (row: T) => boolean) {
-    const last = trimLookahead(rows, 50)
-    return {
-      artefacts: rows
-        .filter((row) => (keep?.(row) ?? true) && (!access || accessOf(row) === access))
-        .map((row) => ({
-          slug: row.slug,
-          title: row.title,
-          access: accessOf(row),
-          revision: row.revision,
-          updatedAt: row.updatedAt,
-        })),
-      nextCursor: last ? base64url.encode(JSON.stringify(continuation(last))) : undefined,
-    }
-  }
-  if (!query) {
-    const statement = db.prepare(`SELECT id, slug, title, visibility,
-      EXISTS (SELECT 1 FROM share_links INDEXED BY share_links_active_artefact
-        WHERE artefact_id = artefacts.id AND revoked_at IS NULL) AS shared,
-      current_revision AS revision, updated_at AS updatedAt
-      FROM artefacts WHERE deleted_at IS NULL AND visibility = ? AND (updated_at, id) < (?, ?)
-      ORDER BY updated_at DESC, id DESC LIMIT 51`)
-    const rows = await merge<Row>(
-      scopes.map((scope) => statement.bind(scope, after?.[3] ?? Number.MAX_SAFE_INTEGER, after?.[4] ?? '')),
-      51,
-      (a, b) => b.updatedAt - a.updatedAt || compare(b.id, a.id),
-    )
-    return page(rows, (row) => [query, selected, 'recent', row.updatedAt, row.id])
-  }
-  // SQLite lower() folds only ASCII; hex() keeps a literal UTF-8 prefix sortable with its ID.
-  const key = fold(query)
-  const start = Array.from(new TextEncoder().encode(key), (byte) => byte.toString(16).padStart(2, '0'))
-    .join('')
-    .toUpperCase()
-  const end = `${start}G`
-  const phase = after?.[2] === 'title' ? 'title' : 'slug'
-  const seek = async (column: 'slug' | 'title', limit: number, resume: boolean) => {
-    // The identifier is the closed, internal union of the two indexed columns, never request data.
-    const statement =
-      db.prepare(`SELECT id, slug, title, visibility, current_revision AS revision, updated_at AS updatedAt,
-      EXISTS (SELECT 1 FROM share_links INDEXED BY share_links_active_artefact
-        WHERE artefact_id = artefacts.id AND revoked_at IS NULL) AS shared,
-      hex(lower(${column})) || '!' || id AS term FROM artefacts
-      WHERE deleted_at IS NULL AND visibility = ? AND term > ? AND term < ? ORDER BY term LIMIT ?`)
-    const cursorTerm = resume ? after?.[3] : null
-    const lower = typeof cursorTerm === 'string' && cursorTerm > start ? cursorTerm : start
-    const rows = await merge<Row & { term: string }>(
-      scopes.map((scope) => statement.bind(scope, lower, end, limit)),
-      limit,
-      (a, b) => compare(a.term, b.term),
-    )
-    return rows.map((row) => ({ ...row, column }))
-  }
-  const rows = phase === 'slug' ? await seek('slug', 51, after !== undefined) : []
-  if (rows.length <= 50) rows.push(...(await seek('title', 51 - rows.length, phase === 'title')))
-  // Advance past scanned candidates, even when their slugs already matched, to keep reads bounded.
-  return page(
-    rows,
-    (row) => [query, selected, row.column, row.term, ''],
-    (row) => row.column === 'slug' || !fold(row.slug).startsWith(key),
+  const statement = db.prepare(`SELECT id, slug, title, visibility,
+    EXISTS (SELECT 1 FROM share_links INDEXED BY share_links_active_artefact
+      WHERE artefact_id = artefacts.id AND revoked_at IS NULL) AS shared,
+    current_revision AS revision, updated_at AS updatedAt
+    FROM artefacts WHERE deleted_at IS NULL AND visibility = ? AND (updated_at, id) < (?, ?)
+    ORDER BY updated_at DESC, id DESC LIMIT 51`)
+  const pages = await db.batch<Row>(
+    scopes.map((scope) => statement.bind(scope, after?.[3] ?? Number.MAX_SAFE_INTEGER, after?.[4] ?? '')),
   )
+  const rows = pages
+    .flatMap((page) => page.results)
+    .sort((a, b) => b.updatedAt - a.updatedAt || compare(b.id, a.id))
+    .slice(0, 51)
+  // Continue from the last scanned candidate, even if none of this page's candidates match.
+  const last = trimLookahead(rows, 50)
+  const artefacts = []
+  for (const row of rows) {
+    const state = accessOf(row)
+    if ((access && state !== access) || !matches(row)) continue
+    artefacts.push({
+      slug: row.slug,
+      title: row.title,
+      access: state,
+      revision: row.revision,
+      updatedAt: row.updatedAt,
+    })
+  }
+  const nextCursor = last
+    ? base64url.encode(JSON.stringify([query, selected, 'recent', last.updatedAt, last.id]))
+    : undefined
+  return {
+    artefacts,
+    query,
+    continued: after !== undefined,
+    nextCursor,
+  }
 }

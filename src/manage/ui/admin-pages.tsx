@@ -25,6 +25,7 @@ import {
 } from '../../core/artefacts'
 import { catalogueCounts, searchArtefacts } from '../../core/catalogue'
 import { galleryPreviewSlugs, previewPrefix } from '../../core/gallery-previews'
+import { galleryQueryLimit } from '../../core/gallery-search'
 import type { BrowserSession, Member, Role } from '../../core/index'
 import { purgeArtefact } from '../../core/purge'
 import { artefactPath, maxRedirectPrefix } from '../../core/read-path'
@@ -192,15 +193,13 @@ function nextPage(
 adminPages.get(
   cataloguePath,
   browser('viewer', async (c, session, actor, t) => {
-    const q = c.req.query('q') ?? ''
     const rawVisibility = c.req.query('visibility')
     const filter = access.safeParse(rawVisibility)
     if (rawVisibility && !filter.success)
       return manageError(c.env.config, 400, t('malformed'), { home: '/artefacts' })
     const selected = filter.data
-    const cursor = c.req.query('cursor')
-    const [{ artefacts, nextCursor }, counts] = await Promise.all([
-      searchArtefacts(c.env, actor, q, selected, cursor),
+    const [{ artefacts, query: q, continued, nextCursor }, counts] = await Promise.all([
+      searchArtefacts(c.env, actor, c.req.query('q') ?? '', selected, c.req.query('cursor')),
       catalogueCounts(c.env, actor),
     ])
     const previews = await galleryPreviewSlugs(
@@ -215,6 +214,7 @@ adminPages.get(
     if (selected) params.set('visibility', selected)
     if (rawView === view) params.set('view', view)
     const { config } = c.env
+    const empty = nextCursor ? 'noNewMatches' : continued ? 'noMoreResults' : 'noResults'
     return page(
       c,
       session,
@@ -223,7 +223,7 @@ adminPages.get(
         <div class="forge-toolbar">
           <form class="forge-action" method="get">
             <label>
-              {t('searchQuery')} <input type="search" name="q" value={q} />
+              {t('searchQuery')} <input type="search" name="q" value={q} maxlength={galleryQueryLimit} />
             </label>
             {selected && <input type="hidden" name="visibility" value={selected} />}
             {rawView === view && <input type="hidden" name="view" value={view} />}
@@ -258,7 +258,7 @@ adminPages.get(
           <GalleryViews path={cataloguePath} params={params} view={view} labels={messages(config).views} />
         </div>
         {artefacts.length === 0 ? (
-          <p class="forge-empty">{t(nextCursor ? 'noNewMatches' : cursor ? 'noMoreResults' : 'noResults')}</p>
+          <p class="forge-empty">{t(empty)}</p>
         ) : view === 'list' ? (
           <Table
             columns={[
