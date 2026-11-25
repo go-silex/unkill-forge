@@ -6,6 +6,7 @@ import { maintain } from './core/maintenance'
 import { renderCover } from './cover-renderer'
 import { galleryPreview } from './gallery-preview'
 import { messages } from './i18n'
+import { manageError } from './manage/access'
 import { manageHandoff } from './manage/handoff'
 import { loginRoute } from './manage/login'
 import { localClientDocument, localClientPath, oauthFetch } from './manage/oauth'
@@ -72,7 +73,13 @@ export default {
       return manageHeaders(response)
     } catch (error) {
       console.error('Forge request failed', error instanceof Error ? error.name : 'unknown')
-      return manageHeaders(new Response(messages(config).unavailable, { status: 503 }))
+      const lead = messages(config).unavailable
+      const browserAccess =
+        (request.method === 'GET' && /^(?:\/login(?:\/[^/]+(?:\/callback)?)?|\/invite\/[^/]+)$/.test(path)) ||
+        (path === '/authorize' && (request.method === 'GET' || request.method === 'POST'))
+      return manageHeaders(
+        browserAccess ? manageError(config, 503, lead) : new Response(lead, { status: 503 }),
+      )
     } finally {
       // Leave receipt-dependent D1 writes ahead of cover work, including for browser restores.
       if (browser && coverJobs) {

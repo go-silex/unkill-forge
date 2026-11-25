@@ -249,12 +249,11 @@ export function Table({ columns, children }: { columns: TableColumn[]; children:
   )
 }
 
-export function Page({
+function Page({
   config,
   title,
   member,
   path,
-  panel,
   beforeTitle,
   lead,
   actions,
@@ -262,14 +261,13 @@ export function Page({
 }: {
   config: Config
   title: string
-  member?: Member
+  member: Member
   path?: string
-  panel?: 'sign-in' | 'invite' | 'consent'
   beforeTitle?: Child
   children: Child
 } & PageHead) {
   const t = messages(config)
-  const navigation = member && (
+  const navigation = (
     <>
       {member.status === 'active' && (
         <nav class="forge-nav" aria-label={t.navigation}>
@@ -322,99 +320,48 @@ export function Page({
     <html lang={config.locale}>
       <DocumentHead config={config} title={`${title} · ${config.name}`} />
       <body>
-        {member ? (
-          <div class="forge-shell">
-            <header class="forge-tray">
-              <div class="forge-bar">
-                <BrandBlock config={config} variant="home-link" />
-                <details class="forge-drawer">
-                  <summary class="forge-menu forge-button">{t.menu}</summary>
-                  <div class="forge-drawer__panel">{navigation}</div>
-                </details>
-              </div>
-              <div class="forge-tray__sections">{navigation}</div>
-            </header>
-            <main class="forge-content">
-              {beforeTitle}
-              {heading}
-              {children}
-            </main>
-          </div>
-        ) : (
-          <div class={`forge-panel${panel ? ` forge-panel--${panel}` : ''}`}>
-            <header class="forge-panel__header">
+        <div class="forge-shell">
+          <header class="forge-tray">
+            <div class="forge-bar">
               <BrandBlock config={config} variant="home-link" />
-            </header>
-            <main class="forge-panel__body">
-              {heading}
-              {children}
-            </main>
-          </div>
-        )}
+              <details class="forge-drawer">
+                <summary class="forge-menu forge-button">{t.menu}</summary>
+                <div class="forge-drawer__panel">{navigation}</div>
+              </details>
+            </div>
+            <div class="forge-tray__sections">{navigation}</div>
+          </header>
+          <main class="forge-content">
+            {beforeTitle}
+            {heading}
+            {children}
+          </main>
+        </div>
       </body>
     </html>
   )
 }
 
-type DateConfig = Pick<Config, 'locale' | 'timeZone'>
-type DateFormats = {
-  absolute: Intl.DateTimeFormat
-  short: Intl.DateTimeFormat
-  relative: Intl.RelativeTimeFormat
-  now: string
-}
-
-const dateFormats = new WeakMap<DateConfig, DateFormats>()
-
-function dateFormat(config: DateConfig) {
-  const cached = dateFormats.get(config)
-  if (cached) return cached
-  const { locale, timeZone } = config
-  const language = locale === 'fr' ? 'fr-FR' : 'en-GB'
-  const format = {
-    absolute: new Intl.DateTimeFormat(language, {
-      timeZone,
-      year: 'numeric',
-      month: 'short',
-      day: 'numeric',
-      hour: '2-digit',
-      minute: '2-digit',
-      hourCycle: 'h23',
-      timeZoneName: 'short',
-    }),
-    short: new Intl.DateTimeFormat(language, { timeZone, dateStyle: 'short' }),
-    relative: new Intl.RelativeTimeFormat(language, { style: 'short' }),
-    now: new Intl.RelativeTimeFormat(language, { numeric: 'auto', style: 'short' }).format(0, 'second'),
-  }
-  dateFormats.set(config, format)
-  return format
-}
-
-export function absoluteTime(config: DateConfig, timestamp: number | null) {
-  return timestamp === null ? '—' : dateFormat(config).absolute.format(timestamp)
-}
-
-const minute = 60_000
-const hour = 60 * minute
-const day = 24 * hour
-const week = 7 * day
-
-export function time(config: DateConfig, timestamp: number | null) {
-  if (timestamp === null) return '—'
-  const format = dateFormat(config)
-  const delta = timestamp - Date.now()
-  const distance = Math.abs(delta)
-  let relative: string
-  if (distance < minute) relative = format.now
-  else if (distance < hour) relative = format.relative.format(Math.trunc(delta / minute), 'minute')
-  else if (distance < day) relative = format.relative.format(Math.trunc(delta / hour), 'hour')
-  else if (distance < week) relative = format.relative.format(Math.trunc(delta / day), 'day')
-  else if (distance <= 8 * week) relative = format.relative.format(Math.trunc(delta / week), 'week')
-  else relative = format.short.format(timestamp)
+export function Notice({
+  config,
+  tone,
+  title,
+  children,
+}: {
+  config: Config
+  tone: 'info' | 'success' | 'warn' | 'error'
+  title?: string
+  children: Child
+}) {
   return (
-    <time datetime={new Date(timestamp).toISOString()} title={absoluteTime(config, timestamp)}>
-      {relative}
-    </time>
+    <div
+      class={`forge-notice forge-notice--${tone}`}
+      role={tone === 'warn' || tone === 'error' ? 'alert' : 'status'}
+    >
+      <span class="forge-sr-only">{messages(config).noticeTone[tone]}: </span>
+      {title && <strong>{title}</strong>}
+      {children}
+    </div>
   )
 }
 
