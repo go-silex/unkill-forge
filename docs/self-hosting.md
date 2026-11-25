@@ -230,6 +230,7 @@ These classes and the custom properties above are the supported theme contract. 
 | `.forge-title`                                                                                    | Page heading                                                                                               |
 | `.forge-page-head`, `.forge-lead`, `.forge-page-actions`                                          | Optional page header, short description and primary actions that wrap below the title on narrow screens    |
 | `.forge-page-link`                                                                                | Pagination link below a list                                                                               |
+| `[data-catalogue-feed]`, `[data-catalogue-results]`                                               | Manage catalogue view and append target; the results report `[aria-busy="true"]` while loading             |
 | `.forge-panel`, `.forge-panel__header`, `.forge-panel__body`                                      | Single-panel layout, shared brand header, and body                                                         |
 | `.forge-panel--sign-in`, `.forge-panel--invite`, `.forge-panel--consent`, `.forge-panel--handoff` | Manage sign-in, invitation, consent, and read-session relay panels                                         |
 | `.forge-panel--landing`, `.forge-panel--pending`, `.forge-panel--error`                           | Read landing, approval pending and error panels (the last two are shared across both hosts)                |

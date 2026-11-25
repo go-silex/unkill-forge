@@ -29,7 +29,7 @@ async function errorCard(response: Response, status: number, referrer = 'same-or
   expect(response.headers.get('Cache-Control')).toBe('no-store')
   expect(response.headers.get('Referrer-Policy')).toBe(referrer)
   expect(response.headers.get('Content-Security-Policy')).toMatch(
-    /^default-src 'none'; style-src 'self'; img-src 'self'; script-src 'sha256-[^']+'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'$/,
+    /^default-src 'none'; style-src 'self'; img-src 'self'; script-src 'sha256-[^']+' 'sha256-[^']+'; connect-src 'self'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'$/,
   )
   const body = await response.text()
   expect(body).toContain('forge-panel--error')

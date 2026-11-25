@@ -42,6 +42,9 @@ type Row = {
   revision: number
   updatedAt: number
 }
+export type CatalogueEntry = Pick<Row, 'id' | 'slug' | 'title' | 'revision' | 'updatedAt'> & {
+  access: CatalogueAccess
+}
 const accessOf = ({ visibility, shared }: Pick<Row, 'visibility' | 'shared'>): CatalogueAccess =>
   visibility === 'public' ? 'public' : shared ? 'shared' : 'private'
 const compare = (a: string, b: string) => (a < b ? -1 : a > b ? 1 : 0)
@@ -96,12 +99,12 @@ export async function searchArtefacts(
   }
   // Shared and private use the same visibility index; check the derived state after scanning.
   const scopes = access === 'public' ? ['public'] : access ? ['private'] : ['private', 'public']
-  const artefacts: (Pick<Row, 'slug' | 'title' | 'revision' | 'updatedAt'> & { access: CatalogueAccess })[] =
-    []
+  const artefacts: CatalogueEntry[] = []
   const collect = (row: Row) => {
     const state = accessOf(row)
     if ((access && state !== access) || !matches(row)) return
     artefacts.push({
+      id: row.id,
       slug: row.slug,
       title: row.title,
       access: state,

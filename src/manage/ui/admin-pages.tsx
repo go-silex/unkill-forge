@@ -31,12 +31,13 @@ import { purgeArtefact } from '../../core/purge'
 import { artefactPath, maxRedirectPrefix } from '../../core/read-path'
 import { shareKeyMax } from '../../core/share-keys'
 import { absoluteTime, time } from '../../dates'
-import { Gallery, GalleryViews, galleryView } from '../../gallery'
+import { GalleryViews, galleryView } from '../../gallery'
 import { readForm } from '../../http'
 import { type AdminMessage, type AdminTranslate, adminMessages, type CopyLabels, messages } from '../../i18n'
 import { manageError } from '../access'
 import { requireBrowserSession } from '../login'
 import { localClientPath } from '../oauth'
+import { CatalogueResults } from './catalogue-results'
 import {
   AccessBadge,
   Action,
@@ -257,80 +258,15 @@ adminPages.get(
           </nav>
           <GalleryViews path={cataloguePath} params={params} view={view} labels={messages(config).views} />
         </div>
-        {artefacts.length === 0 ? (
-          <p class="forge-empty">{t(empty)}</p>
-        ) : view === 'list' ? (
-          <Table
-            columns={[
-              t('title'),
-              { folded: t('slug') },
-              { folded: t('visibility') },
-              { folded: t('revision') },
-              { folded: t('updated') },
-            ]}
-          >
-            {artefacts.map((entry) => {
-              const label = entry.title.trim() || entry.slug
-              const updated = time(config, entry.updatedAt)
-              const badge = <AccessBadge access={entry.access} label={t(entry.access)} />
-              return (
-                <tr>
-                  <td title={label}>
-                    <a class="forge-catalogue-link" href={detailPath(entry.slug)}>
-                      {previews.has(entry.slug) && (
-                        <img
-                          class="forge-thumb"
-                          src={`${previewPrefix}${entry.slug}`}
-                          alt=""
-                          loading="lazy"
-                        />
-                      )}
-                      <span>{label}</span>
-                    </a>
-                    <Fold>
-                      <code>{entry.slug}</code>
-                    </Fold>
-                    <Fold>
-                      <span class="forge-catalogue-meta">
-                        <span>
-                          {updated} · v{entry.revision}
-                        </span>
-                        {badge}
-                      </span>
-                    </Fold>
-                  </td>
-                  <td class="forge-col--folded" title={entry.slug}>
-                    <code>{entry.slug}</code>
-                  </td>
-                  <td class="forge-col--folded">{badge}</td>
-                  <td class="forge-col--folded">v{entry.revision}</td>
-                  <td class="forge-col--folded">{updated}</td>
-                </tr>
-              )
-            })}
-          </Table>
-        ) : (
-          <Gallery
-            label={t('artefacts')}
-            items={artefacts.map((entry) => ({
-              href: detailPath(entry.slug),
-              title: entry.title.trim() || entry.slug,
-              preview: previews.has(entry.slug) ? entry.slug : undefined,
-              detail: (
-                <>
-                  <code class="forge-catalogue-slug">{entry.slug}</code>
-                  <span class="forge-catalogue-meta">
-                    <span>
-                      {time(config, entry.updatedAt)} · v{entry.revision}
-                    </span>
-                    <AccessBadge access={entry.access} label={t(entry.access)} />
-                  </span>
-                </>
-              ),
-            }))}
-          />
-        )}
-        {nextPage(cataloguePath, nextCursor, t('next'), params)}
+        <CatalogueResults
+          artefacts={artefacts}
+          previews={previews}
+          config={config}
+          t={t}
+          view={view}
+          next={nextPage(cataloguePath, nextCursor, t('next'), params)}
+          empty={t(empty)}
+        />
       </>,
     )
   }),
