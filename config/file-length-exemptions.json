@@ -1,13 +1,14 @@
 {
-  "src/brand.ts": 341,
+  "src/brand.ts": 387,
   "src/core/artefacts.ts": 1351,
   "src/core/index.ts": 440,
-  "src/i18n.ts": 663,
-  "src/manage/login/index.ts": 395,
+  "src/i18n.ts": 767,
+  "src/manage/login/index.ts": 417,
   "src/manage/login/providers.ts": 372,
   "src/manage/mcp/index.ts": 400,
   "src/manage/oauth/index.ts": 305,
-  "src/manage/ui/admin-pages.tsx": 1087,
-  "src/manage/ui/index.tsx": 749,
-  "src/manage/ui/page.tsx": 482
+  "src/manage/ui/admin-pages.tsx": 1158,
+  "src/manage/ui/index.tsx": 772,
+  "src/manage/ui/page.tsx": 429,
+  "src/read/index.tsx": 350
 }
