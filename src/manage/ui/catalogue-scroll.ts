@@ -1,4 +1,4 @@
-export const catalogueScrollScriptSource = "'sha256-4Vk1pW5T+fiuvkwpT+HAuWgtAiuyFo7T/wg566D+4sU='"
+export const catalogueScrollScriptSource = "'sha256-dWrsf/FRx1v7Rmi1Aej9Q7WaZ1wsIVzjMQ6wYyJvM5I='"
 
 // The Manage CSP test hashes the exact script emitted in a catalogue response.
 export const catalogueScrollScript = `(() => {
@@ -7,9 +7,11 @@ export const catalogueScrollScript = `(() => {
   const link = feed.querySelector('.forge-page-link');
   if (!link || !('IntersectionObserver' in window)) return;
   const selector = feed.dataset.catalogueFeed === 'list' ? '.forge-table tbody' : '.forge-gallery';
+  const itemLink = (item) => item?.querySelector('a[href]');
+  const shown = new Map(Array.from(results.querySelectorAll('[data-artefact-id]'), (item) => [item.dataset.artefactId, item]));
   let busy = false;
-  const observer = new IntersectionObserver(async ([entry]) => {
-    if (!entry.isIntersecting || busy) return;
+  const observer = new IntersectionObserver(async (entries) => {
+    if (!entries.at(-1)?.isIntersecting || busy) return;
     busy = true;
     observer.unobserve(link);
     results.setAttribute('aria-busy', 'true');
@@ -25,24 +27,36 @@ export const catalogueScrollScript = `(() => {
       if (continuation && new URL(continuation, next).href === next) throw new Error();
       const source = content.querySelector(selector);
       const target = results.querySelector(selector);
-      if (source && target) {
-        const seen = new Set(Array.from(target.children, (item) => item.querySelector('a[href]')?.getAttribute('href')));
+      let firstAppended;
+      if (!target) results.replaceChildren(...content.childNodes);
+      if (source) {
         for (const item of Array.from(source.children)) {
-          const href = item.querySelector('a[href]')?.getAttribute('href');
-          if (!seen.has(href)) {
-            seen.add(href);
-            target.append(item);
+          const id = item.dataset.artefactId;
+          const previous = shown.get(id);
+          if (previous) {
+            const focused = previous.contains(document.activeElement);
+            previous.replaceWith(item);
+            if (focused) itemLink(item)?.focus({ preventScroll: true });
+          } else {
+            target?.append(item);
+            firstAppended ??= item;
           }
+          shown.set(id, item);
         }
-      } else if (!target) {
-        results.replaceChildren(...content.childNodes);
+      }
+      if (document.activeElement === link) {
+        if (firstAppended) {
+          itemLink(firstAppended)?.focus({ preventScroll: true });
+        } else if (!continuation) {
+          const lastItem = results.querySelector(selector)?.lastElementChild;
+          (itemLink(lastItem) ?? results).focus({ preventScroll: true });
+        }
       }
       if (continuation) {
         link.href = new URL(continuation, next).href;
         // A fresh observation also fires when an empty page leaves the link in range.
         observer.observe(link);
       } else {
-        if (document.activeElement === link) results.focus({ preventScroll: true });
         link.parentElement.remove();
       }
     } catch {

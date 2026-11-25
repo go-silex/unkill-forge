@@ -42,7 +42,7 @@ type Row = {
   revision: number
   updatedAt: number
 }
-export type CatalogueEntry = Pick<Row, 'slug' | 'title' | 'revision' | 'updatedAt'> & {
+export type CatalogueEntry = Pick<Row, 'id' | 'slug' | 'title' | 'revision' | 'updatedAt'> & {
   access: CatalogueAccess
 }
 const accessOf = ({ visibility, shared }: Pick<Row, 'visibility' | 'shared'>): CatalogueAccess =>
@@ -104,6 +104,7 @@ export async function searchArtefacts(
     const state = accessOf(row)
     if ((access && state !== access) || !matches(row)) return
     artefacts.push({
+      id: row.id,
       slug: row.slug,
       title: row.title,
       access: state,

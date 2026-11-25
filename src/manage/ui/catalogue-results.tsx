@@ -49,8 +49,8 @@ export function CatalogueResults({
               { folded: t('updated') },
             ]}
           >
-            {entries.map(({ href, slug, title, preview, updated, badge, revision }) => (
-              <tr>
+            {entries.map(({ id, href, slug, title, preview, updated, badge, revision }) => (
+              <tr data-artefact-id={id}>
                 <td title={title}>
                   <a class="forge-catalogue-link" href={href}>
                     {preview && <img class="forge-thumb" src={preview} alt="" loading="lazy" />}
@@ -80,7 +80,8 @@ export function CatalogueResults({
         ) : (
           <Gallery
             label={t('artefacts')}
-            items={entries.map(({ href, slug, title, preview, updated, badge, revision }) => ({
+            items={entries.map(({ id, href, slug, title, preview, updated, badge, revision }) => ({
+              artefactId: id,
               href,
               title,
               preview: preview ? slug : undefined,
