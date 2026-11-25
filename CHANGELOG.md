@@ -1,8 +1,9 @@
 # Changelog
 
-## Unreleased
+## v2.9.0 — 2026-11-25
 
 - Load more artefacts automatically as you scroll the Manage catalogue, in grid and list views. The next-page link still works without JavaScript.
+- Upgrade: no D1 migration, binding or config change. Manage pages now allow `connect-src 'self'` for this loader. Instance themes can style the catalogue with `[data-catalogue-feed]` and `[data-catalogue-results]` (busy state `[aria-busy="true"]`).
 
 ## v2.8.1 — 2026-11-25
 
