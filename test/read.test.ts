@@ -184,6 +184,20 @@ it('redirects slashless URLs and reads the current revision in exact, directory,
   expect(await (await send(publicUrl)).text()).toBe('<h1>Edited</h1>')
 })
 
+it('serves root icons without a session even when private artefacts require a handoff', async () => {
+  const { send } = await fixture()
+  await start(new Browser(send))
+  for (const origin of [read, manage]) {
+    for (const path of ['/favicon.ico', '/apple-touch-icon.png']) {
+      const response = await send(`${origin}${path}`)
+      expect(response.status).toBe(200)
+      expect(response.headers.has('Location')).toBe(false)
+      expect(response.headers.getSetCookie()).toEqual([])
+      await response.arrayBuffer()
+    }
+  }
+})
+
 it('gives the same 404 for unknown artefacts, unknown paths and non-read routes', async () => {
   const { send } = await fixture()
   const paths = [`${read}/a/unknown/`, `${publicUrl}missing`, `${publicUrl}%2Fhidden`, `${read}/auth/handoff`]

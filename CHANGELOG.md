@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- Restore browser tab and Apple touch icons on both hosts for pages without their own icon. Forge serves the configured PNG favicon or its bundled default without modifying published pages.
+
 ## v2.7.0 — 2026-11-25
 
 - Use branded, localized cards for sign-in, invitations, access approval, OAuth consent and browser error pages. Search the public home by title or slug and see result counts and update dates; find agent setup in client-specific accordions on Connect. API protocols and security checks are unchanged.
