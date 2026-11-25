@@ -943,7 +943,9 @@ it('paginates substring matches once in slug order across both visibility scopes
   const seen: string[] = []
   let pages = 0
   while (true) {
-    seen.push(...Array.from(page.matchAll(/href="\/artefacts\/(weekly-[^"]+)"/g), ([, slug]) => slug))
+    const matches = Array.from(page.matchAll(/href="\/artefacts\/(weekly-[^"]+)"/g), ([, slug]) => slug)
+    expect(matches).toHaveLength(pages === 0 ? 50 : 15)
+    seen.push(...matches)
     pages++
     const next = /href="([^"]+)"[^>]*>Next page<\/a>/.exec(page)?.[1]?.replaceAll('&amp;', '&')
     if (!next) break
@@ -962,7 +964,7 @@ it('paginates substring matches once in slug order across both visibility scopes
     }
     page = await html(owner, url)
   }
-  expect(pages).toBe(3)
+  expect(pages).toBe(2)
   expect(seen).toEqual(
     Array.from({ length: 65 }, (_, i) => `weekly-${String(2 * (i + 1)).padStart(3, '0')}-score`),
   )
@@ -977,34 +979,46 @@ it('paginates substring matches once in slug order across both visibility scopes
   }
 })
 
-it('continues a sparse catalogue search through an empty page and explains exhaustion', async () => {
+it('finds sparse matches beyond the first candidate window without a continuation', async () => {
+  const send = runtime()
+  const owner = await mockProvider().signedIn(send, admin)
+  await publish(send, await issueToken(owner, 'Sparse catalogue fixture'), 'seed', 'Seed')
+  await db
+    .prepare(`WITH RECURSIVE numbers(n) AS (SELECT 1 UNION ALL SELECT n + 1 FROM numbers WHERE n < 180)
+    INSERT INTO artefacts (id, slug, title, visibility, current_revision, created_by, created_at, updated_at)
+    SELECT printf('10000000-0000-4000-8000-%012d', n), printf('memo-%03d', n),
+    CASE WHEN n IN (101, 151, 180) THEN 'Weekly report' ELSE 'Memo' END,
+    CASE WHEN n % 2 = 0 THEN 'private' ELSE 'public' END,
+    current_revision, created_by, created_at, updated_at FROM artefacts, numbers WHERE slug = 'seed'`)
+    .run()
+  const page = await html(owner, '/artefacts?q=report&view=list')
+  expect(Array.from(page.matchAll(/href="\/artefacts\/(memo-\d+)"/g), ([, slug]) => slug)).toEqual([
+    'memo-101',
+    'memo-151',
+    'memo-180',
+  ])
+  expect(page).not.toContain('cursor=')
+})
+
+it('offers a continuation after a full scan budget without matches', async () => {
   const send = runtime()
   const owner = await mockProvider().signedIn(send, admin)
   await publish(send, await issueToken(owner, 'Sparse catalogue fixture'), 'weekly-report', 'Weekly report')
   await db
-    .prepare(`WITH RECURSIVE numbers(n) AS (SELECT 1 UNION ALL SELECT n + 1 FROM numbers WHERE n < 100)
+    .prepare(`WITH RECURSIVE numbers(n) AS (SELECT 1 UNION ALL SELECT n + 1 FROM numbers WHERE n < ?)
     INSERT INTO artefacts (id, slug, title, visibility, current_revision, created_by, created_at, updated_at)
-    SELECT printf('10000000-0000-4000-8000-%012d', n),
-    printf(CASE WHEN n <= 60 THEN 'early-memo-%03d' ELSE 'z-last-memo-%03d' END, n), 'Memo', 'private',
+    SELECT printf('10000000-0000-4000-8000-%012d', n), printf('memo-%04d', n), 'Memo',
+    CASE WHEN n % 2 = 0 THEN 'private' ELSE 'public' END,
     current_revision, created_by, created_at, updated_at FROM artefacts, numbers WHERE slug = 'weekly-report'`)
+    .bind(catalogueCountLimit)
     .run()
-  const next = (page: string) => {
-    const href = /href="([^"]+)"[^>]*>Next page<\/a>/.exec(page)?.[1]?.replaceAll('&amp;', '&')
-    if (!href) throw new Error('Expected catalogue continuation')
-    return href
-  }
   const first = await html(owner, '/artefacts?q=report&view=list')
-  expect(first).toContain('No new matches on this page.')
   expect(first).not.toContain('href="/artefacts/weekly-report"')
-  const second = await html(owner, next(first))
+  const next = /href="([^"]*cursor=[^"]+)"/.exec(first)?.[1]?.replaceAll('&amp;', '&')
+  if (!next) throw new Error('Expected catalogue continuation')
+  const second = await html(owner, next)
   expect(second).toContain('href="/artefacts/weekly-report"')
-  const lastPath = next(second)
-  const exhausted = await html(owner, lastPath)
-  expect(exhausted).toContain('No more results.')
-  expect(exhausted).not.toContain('Next page')
-  const french = await runtime({ LOCALE: 'fr' })(lastPath, { headers: { Cookie: owner.cookieHeader() } })
-  expect(french.status).toBe(200)
-  expect(await french.text()).toContain('Il n’y a plus de résultats.')
+  expect(second).not.toContain('cursor=')
 })
 
 it('identifies same-title and blank-title artefacts without covers in both catalogue views', async () => {
@@ -1038,9 +1052,9 @@ it('uses bounded index seeks for missing and sparse matches in a large catalogue
     SELECT printf('10000000-0000-4000-8000-%012d', n), printf('z-common-%04d', n), 'Exact other title', 'public',
     current_revision, created_by, created_at, updated_at - 1 FROM artefacts, numbers WHERE slug = ?3`)
   await seed.bind(1, catalogueCountLimit - 1, slug).run()
-  expect(await html(owner, '/artefacts?q=missing')).toContain(
-    `All <span class="forge-filters__count">${catalogueCountLimit}</span>`,
-  )
+  const withinBudget = await html(owner, '/artefacts?q=missing')
+  expect(withinBudget).toContain(`All <span class="forge-filters__count">${catalogueCountLimit}</span>`)
+  expect(withinBudget).not.toContain('cursor=')
   await seed.bind(catalogueCountLimit, catalogueCountLimit, slug).run()
   // A long revocation history must not be walked by the active-link probe, even after ANALYZE.
   await db
@@ -1068,7 +1082,12 @@ it('uses bounded index seeks for missing and sparse matches in a large catalogue
             if (search) planStatements.push(db.prepare(`EXPLAIN QUERY PLAN ${sql}`).bind(...args))
             return wrap(prepared.bind(...args), sql)
           }
-        if (key === 'all') return async () => measure(await prepared.all())
+        if (key === 'all')
+          return async () => {
+            const result = measure(await prepared.all())
+            if (search) searchReads += result.meta.rows_read
+            return result
+          }
         if (key === 'run') return async () => measure(await prepared.run())
         if (key === 'first')
           return async (column?: string) => {
@@ -1114,8 +1133,7 @@ it('uses bounded index seeks for missing and sparse matches in a large catalogue
   const empty = await fetch('missing')
   expect(empty.status).toBe(200)
   const oversized = await empty.text()
-  expect(oversized).toContain('No new matches on this page.')
-  expect(oversized).toContain('Next page')
+  expect(oversized).toContain('cursor=')
   expect(oversized).not.toContain('forge-filters__count')
   expect(
     [...oversized.matchAll(/<a class="forge-filters__link"[^>]*>([^<]+)<\/a>/g)].map(([, label]) => label),
@@ -1123,8 +1141,8 @@ it('uses bounded index seeks for missing and sparse matches in a large catalogue
   const emptyReads = totalReads
   const emptySearchReads = searchReads
   expect(emptySearchReads).toBeGreaterThan(0)
-  // Two visibility seeks return at most a page and its lookahead each.
-  expect(emptySearchReads).toBeLessThanOrEqual(2 * 2 * 51 + 2)
+  // At most one lookahead window row and a merge head per index seek, plus index and table steps.
+  expect(emptySearchReads).toBeLessThan(2 * catalogueCountLimit + 100)
   // D1 can meter both an index step and a table lookup for each sampled live artefact.
   expect(emptyReads - emptySearchReads).toBeGreaterThanOrEqual(catalogueCountLimit + 1)
   expect(emptyReads - emptySearchReads).toBeLessThan(2 * (catalogueCountLimit + 1) + 30)
@@ -1143,7 +1161,7 @@ it('uses bounded index seeks for missing and sparse matches in a large catalogue
   const shared = await fetch('exact', 'shared')
   expect(shared.status).toBe(200)
   expect(await shared.text()).toContain('No results.')
-  expect(searchReads - emptySearchReads).toBeLessThanOrEqual(2 * 2 * 51 + 10)
+  expect(searchReads - emptySearchReads).toBeLessThan(2 * catalogueCountLimit + 110)
   const plans = (await db.batch<{ detail: string }>(planStatements)).flatMap((result) =>
     result.results.map((row) => row.detail),
   )
