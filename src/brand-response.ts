@@ -12,6 +12,12 @@ export function assetHeaders(type?: string) {
   return headers
 }
 
+function matchesMediaType(asset: Response, type: string) {
+  const contentType = asset.headers.get('Content-Type')
+  if (contentType === null) return asset.status === 304
+  return contentType.split(';', 1)[0].trim().toLowerCase() === type
+}
+
 // Callers supply an allowlisted literal path and content type, never a decoded path.
 export async function fetchThemeAsset(
   request: Request,
@@ -19,6 +25,7 @@ export async function fetchThemeAsset(
   theme: Fetcher,
   file: string,
   type: string,
+  verifyType = false,
 ) {
   const { method } = request
   const headers = new Headers()
@@ -29,7 +36,7 @@ export async function fetchThemeAsset(
   const asset = await theme.fetch(
     new Request(new URL(`/${file}`, url.origin), { method, headers, redirect: 'manual' }),
   )
-  if (asset.status !== 200 && asset.status !== 304) {
+  if ((asset.status !== 200 && asset.status !== 304) || (verifyType && !matchesMediaType(asset, type))) {
     await asset.body?.cancel()
     return null
   }

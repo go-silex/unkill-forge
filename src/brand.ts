@@ -310,13 +310,17 @@ export function brandMark(config: Config, mark: 'logo' | 'favicon') {
   return filename ? `${themePrefix}${filename}` : `/${mark}.svg`
 }
 
+// Reject noncanonical paths if the incoming Request still exposes them.
+function rawRequestPath(request: Request, url: URL) {
+  return request.url.slice(url.origin.length).split(/[?#]/, 1)[0]
+}
+
 export async function themeAsset(request: Request, url: URL, theme?: Fetcher): Promise<Response> {
   const { method } = request
   const notFound = () => new Response(null, { status: 404, headers: assetHeaders() })
   if (!theme || (method !== 'GET' && method !== 'HEAD')) return notFound()
 
-  // Reject noncanonical paths if the incoming Request still exposes them.
-  const pathname = request.url.slice(url.origin.length).split(/[?#]/, 1)[0]
+  const pathname = rawRequestPath(request, url)
   if (pathname !== url.pathname || !pathname.startsWith(themePrefix)) return notFound()
   // Only pass literal, allowlisted paths to the binding; never decode or follow redirects.
   const file = pathname.slice(themePrefix.length)
@@ -338,6 +342,7 @@ export async function themeAsset(request: Request, url: URL, theme?: Fetcher): P
 export function rootIcon(request: Request, url: URL, config: Config) {
   if (request.method !== 'GET' && request.method !== 'HEAD') return null
   if (url.pathname !== '/favicon.ico' && url.pathname !== '/apple-touch-icon.png') return null
+  if (rawRequestPath(request, url) !== url.pathname) return null
   return serveRootIcon(request, url, config)
 }
 
@@ -346,7 +351,7 @@ async function serveRootIcon(request: Request, url: URL, config: Config) {
   const file = config.brand.favicon
   if (config.theme && file?.endsWith('.png')) {
     // Config validation already restricts this filename to a literal root asset.
-    const themed = await fetchThemeAsset(request, url, config.theme, file, type)
+    const themed = await fetchThemeAsset(request, url, config.theme, file, type, true)
     if (themed) return themed
   }
   return new Response(request.method === 'HEAD' ? null : faviconPng, { headers: assetHeaders(type) })

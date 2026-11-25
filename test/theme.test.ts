@@ -1,5 +1,7 @@
+import { createExecutionContext } from 'cloudflare:test'
 import { expect, it } from 'vitest'
-import { manage, read, runtime } from './http'
+import worker from '../src/index'
+import { configuredEnv, manage, read, runtime } from './http'
 
 const assets = {
   '/theme.css': ['text/css; charset=utf-8', ':root { --forge-page: #eee }'],
@@ -52,6 +54,16 @@ it.each([read, manage])('serves the bundled PNG at both root icon URLs on %s', a
   }
 })
 
+it.each([read, manage])('rejects non-literal root icon paths on %s', async (origin) => {
+  for (const path of iconPaths) {
+    const request = new Request(`${origin}${path}`)
+    // Model an ingress that exposes the original path; the test Request constructor normalizes it.
+    Object.defineProperty(request, 'url', { value: `${origin}/nested/..${path}?v=1` })
+    const response = await worker.fetch(request, configuredEnv(), createExecutionContext())
+    expect(response.status).toBe(404)
+  }
+})
+
 it.each([read, manage])('serves the configured PNG and honors its validators on %s', async (origin) => {
   const etag = '"icon-v1"'
   const lastModified = 'Wed, 25 Nov 2026 10:00:00 GMT'
@@ -65,7 +77,11 @@ it.each([read, manage])('serves the configured PNG and honors its validators on 
         if (validated) expect(request.headers.get('If-Modified-Since')).toBe(lastModified)
         return new Response(validated || request.method === 'HEAD' ? null : themedIcon, {
           status: validated ? 304 : 200,
-          headers: { ETag: etag, 'Last-Modified': lastModified },
+          headers: {
+            ETag: etag,
+            'Last-Modified': lastModified,
+            ...(validated ? {} : { 'Content-Type': 'image/png' }),
+          },
         })
       },
     },
@@ -97,6 +113,7 @@ it.each([read, manage])('serves the configured PNG and honors its validators on 
 it.each([
   ['missing.png', 404],
   ['redirect.png', 302],
+  ['flattened.png', 200],
   ['vector.svg', null],
 ] as const)('falls back to the bundled PNG for %s', async (filename, status) => {
   const send = runtime({
@@ -105,7 +122,10 @@ it.each([
       fetch(request: Request) {
         expect(status).not.toBeNull()
         expect(request.url).toBe(`${read}/${filename}`)
-        return new Response('not a PNG', { status: status ?? 500, headers: { Location: '/other.png' } })
+        return new Response('<h1>Not an icon</h1>', {
+          status: status ?? 500,
+          headers: { 'Content-Type': 'text/html; charset=utf-8', Location: '/other.png' },
+        })
       },
     },
   })
@@ -115,7 +135,8 @@ it.each([
     expect(response.headers.get('Content-Type')).toBe('image/png')
     expect(response.headers.has('Location')).toBe(false)
     const baseline = await runtime()(`${read}${path}`)
-    expect(await response.arrayBuffer()).toEqual(await baseline.arrayBuffer())
+    const expected = new Uint8Array(await baseline.arrayBuffer())
+    expect(new Uint8Array(await response.arrayBuffer())).toEqual(expected)
   }
 })
 
