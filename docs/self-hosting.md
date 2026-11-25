@@ -162,6 +162,8 @@ Without a theme, both hosts use Forge's bundled light and dark styles, logo and 
 
 Place `theme.css`, `wordmark.svg` and `icon.png` in `theme/` for this example. `BRAND.logo` and `BRAND.favicon` are optional root filenames matching `^[a-z0-9-]+\.(svg|png)$`. Configuring either without the `THEME` binding makes Forge unavailable. Omit a key to keep its bundled SVG; Forge does not look up a custom mark before linking to it.
 
+Browsers can request `/favicon.ico` and `/apple-touch-icon.png` without signing in on either host. Both URLs serve your `BRAND.favicon` if it names an available PNG in `THEME`; otherwise they serve Forge's bundled PNG. An SVG favicon still works on Forge-authored pages, but use a PNG to brand the browser fallback for published pages that don't declare their own icon. Forge does not rewrite those pages.
+
 Forge-authored pages load `/_theme/theme.css` after `/style.css` whenever `THEME` is bound. Theme assets are public on both configured hosts. Use relative URLs in `theme.css` (for example, `url("fonts/ui.woff2")`); do not reference external origins. The `/_theme/` prefix is separate from canonical `/a/` and share `/s/` routes, whose slugs cannot contain `_`.
 
 Manage access and error cards that replace plain-text responses keep the original restrictive Content Security Policy (`default-src 'none'` with no `font-src` exception). The theme stylesheet still loads, but its `@font-face` downloads are blocked on those cards; include a system font fallback in your font stack.

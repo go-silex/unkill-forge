@@ -1,5 +1,7 @@
+import { createExecutionContext } from 'cloudflare:test'
 import { expect, it } from 'vitest'
-import { manage, read, runtime } from './http'
+import worker from '../src/index'
+import { configuredEnv, manage, read, runtime } from './http'
 
 const assets = {
   '/theme.css': ['text/css; charset=utf-8', ':root { --forge-page: #eee }'],
@@ -24,6 +26,119 @@ const theme = {
     return new Response(request.method === 'HEAD' ? null : asset[1], { headers })
   },
 }
+
+const iconPaths = ['/favicon.ico', '/apple-touch-icon.png']
+const bundledIconHash = 'f47ac05bd7171f211e3839a5adeb976b8baa7a1f7961299f76a55996ae11a4b2'
+const themedIcon = Uint8Array.from(
+  atob('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR4nGMwdIwEAAFyAMwuMAUNAAAAAElFTkSuQmCC'),
+  (byte) => byte.charCodeAt(0),
+)
+
+it.each([read, manage])('serves the bundled PNG at both root icon URLs on %s', async (origin) => {
+  const send = runtime()
+  for (const path of iconPaths) {
+    const response = await send(`${origin}${path}`)
+    expect(response.status).toBe(200)
+    expect(Object.fromEntries(response.headers)).toMatchObject({
+      ...themeHeaders,
+      'content-type': 'image/png',
+    })
+    const digest = await crypto.subtle.digest('SHA-256', await response.arrayBuffer())
+    expect(Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, '0')).join('')).toBe(
+      bundledIconHash,
+    )
+    const head = await send(`${origin}${path}`, { method: 'HEAD' })
+    expect(head.status).toBe(200)
+    expect([...head.headers]).toEqual([...response.headers])
+    expect(head.body).toBeNull()
+  }
+})
+
+it.each([read, manage])('rejects non-literal root icon paths on %s', async (origin) => {
+  for (const path of iconPaths) {
+    const request = new Request(`${origin}${path}`)
+    // Model an ingress that exposes the original path; the test Request constructor normalizes it.
+    Object.defineProperty(request, 'url', { value: `${origin}/nested/..${path}?v=1` })
+    const response = await worker.fetch(request, configuredEnv(), createExecutionContext())
+    expect(response.status).toBe(404)
+  }
+})
+
+it.each([read, manage])('serves the configured PNG and honors its validators on %s', async (origin) => {
+  const etag = '"icon-v1"'
+  const lastModified = 'Wed, 25 Nov 2026 10:00:00 GMT'
+  const send = runtime({
+    BRAND: '{"favicon":"custom.png"}',
+    THEME: {
+      fetch(request: Request) {
+        expect(request.url).toBe(`${origin}/custom.png`)
+        expect(request.redirect).toBe('manual')
+        const validated = request.headers.get('If-None-Match') === etag
+        if (validated) expect(request.headers.get('If-Modified-Since')).toBe(lastModified)
+        return new Response(validated || request.method === 'HEAD' ? null : themedIcon, {
+          status: validated ? 304 : 200,
+          headers: {
+            ETag: etag,
+            'Last-Modified': lastModified,
+            ...(validated ? {} : { 'Content-Type': 'image/png' }),
+          },
+        })
+      },
+    },
+  })
+  for (const path of iconPaths) {
+    for (const method of ['GET', 'HEAD']) {
+      const response = await send(`${origin}${path}`, { method })
+      expect(response.status).toBe(200)
+      expect(Object.fromEntries(response.headers)).toMatchObject({
+        ...themeHeaders,
+        'content-type': 'image/png',
+        etag,
+        'last-modified': lastModified,
+      })
+      if (method === 'HEAD') expect(response.body).toBeNull()
+      else expect(new Uint8Array(await response.arrayBuffer())).toEqual(themedIcon)
+
+      const unchanged = await send(`${origin}${path}`, {
+        method,
+        headers: { 'If-None-Match': etag, 'If-Modified-Since': lastModified },
+      })
+      expect(unchanged.status).toBe(304)
+      expect(unchanged.headers.get('ETag')).toBe(etag)
+      expect(unchanged.body).toBeNull()
+    }
+  }
+})
+
+it.each([
+  ['missing.png', 404],
+  ['redirect.png', 302],
+  ['flattened.png', 200],
+  ['vector.svg', null],
+] as const)('falls back to the bundled PNG for %s', async (filename, status) => {
+  const send = runtime({
+    BRAND: JSON.stringify({ favicon: filename }),
+    THEME: {
+      fetch(request: Request) {
+        expect(status).not.toBeNull()
+        expect(request.url).toBe(`${read}/${filename}`)
+        return new Response('<h1>Not an icon</h1>', {
+          status: status ?? 500,
+          headers: { 'Content-Type': 'text/html; charset=utf-8', Location: '/other.png' },
+        })
+      },
+    },
+  })
+  for (const path of iconPaths) {
+    const response = await send(`${read}${path}`)
+    expect(response.status).toBe(200)
+    expect(response.headers.get('Content-Type')).toBe('image/png')
+    expect(response.headers.has('Location')).toBe(false)
+    const baseline = await runtime()(`${read}${path}`)
+    const expected = new Uint8Array(await baseline.arrayBuffer())
+    expect(new Uint8Array(await response.arrayBuffer())).toEqual(expected)
+  }
+})
 
 it.each([manage, read])('serves only allowed theme assets and controlled headers on %s', async (origin) => {
   const upstream: string[] = []
