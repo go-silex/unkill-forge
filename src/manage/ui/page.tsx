@@ -230,19 +230,15 @@ export function Table({ columns, children }: { columns: TableColumn[]; children:
       <table class="forge-table">
         <thead>
           <tr>
-            {columns.map((column) =>
-              typeof column === 'string' ? (
-                <th scope="col">{column}</th>
-              ) : 'folded' in column ? (
-                <th scope="col" class="forge-col--folded">
-                  {column.folded}
+            {columns.map((column) => {
+              if (typeof column === 'string') return <th scope="col">{column}</th>
+              const folded = 'folded' in column
+              return (
+                <th scope="col" class={folded ? 'forge-col--folded' : 'forge-col--secondary'}>
+                  {folded ? column.folded : column.secondary}
                 </th>
-              ) : (
-                <th scope="col" class="forge-col--secondary">
-                  {column.secondary}
-                </th>
-              ),
-            )}
+              )
+            })}
           </tr>
         </thead>
         <tbody>{children}</tbody>
