@@ -103,7 +103,9 @@ export function Action({
 export function pageLink(href: string, label: string) {
   return (
     <p>
-      <a href={href}>{label}</a>
+      <a class="forge-page-link" href={href}>
+        {label}
+      </a>
     </p>
   )
 }

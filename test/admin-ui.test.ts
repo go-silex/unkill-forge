@@ -1516,6 +1516,15 @@ it('groups only humans and submits each row’s own role and confirmation sheets
   const document = await html(owner, members)
   const scopes = ['pending', 'active', 'removed'].map((id) => section(document, id))
   expect(scopes.map((scope) => bodyRows(scope).length)).toEqual([2, 3, 1])
+  expect(document).not.toMatch(/<th\b[^>]*\bforge-member-email-cell\b/)
+  for (const scope of scopes) {
+    for (const row of bodyRows(scope)) {
+      const cells = [...row.matchAll(/<td\b[^>]*>/g)].map(([cell]) => cell)
+      expect(cells.map((cell) => /\bforge-member-email-cell\b/.test(cell))).toEqual(
+        cells.map((_, index) => index === 1),
+      )
+    }
+  }
   expect(document).not.toContain('Synthetic bot')
   const self = namedRow(scopes[1], 'Alice Example')
   expect(self).toContain('>You</span>')
@@ -1526,6 +1535,7 @@ it('groups only humans and submits each row’s own role and confirmation sheets
   expect(inviteSheet.form).toMatch(/<select[^>]*name="role".*?<option value="admin">/s)
   expect(sheets(document)).toHaveLength(10)
   const inviteRow = namedRow(section(document, 'invites'), 'Alice Example')
+  expect(inviteRow).not.toContain('forge-member-email-cell')
   const revoke = openedSheet(inviteRow, 'Revoke', members)
   expect(revoke.action).toBe('revoke-invite')
   expect(formValue(revoke.form, 'id')).toBe(await listedId(owner, members, 'revoke-invite'))
@@ -1786,7 +1796,7 @@ it('paginates the four sections independently with capped counts and no per-row 
     expect(rows).toHaveLength(50)
     expect(formValue(rows[0], 'id')).toBe(first)
     expect(formValue(rows[49], 'id')).toBe(last)
-    const href = /<a href="([^"]+)"/.exec(scope)?.[1]
+    const href = /<a class="forge-page-link" href="([^"]+)"/.exec(scope)?.[1]
     if (!href) throw new Error(`No next link for ${name}`)
     const next = new URL(href.replaceAll('&amp;', '&'), manage)
     expect(next.hash).toBe(`#${name}`)
@@ -1855,15 +1865,14 @@ it('localizes share creation metadata and keeps one visible copy of folded table
   )
   const email = `${admin}@example.test`
   const member = namedRow(section(await html(owner, members), 'active'), email)
+  expect(member).toContain(`<td class="forge-col--folded forge-member-email-cell">${email}</td>`)
+  expect(member).toContain(`hidden="">${email}</span>`)
   for (const [label, value] of [
-    ['E-mail', email],
     ['Fournisseur', 'team'],
     ['Rôle', 'administrateur'],
   ]) {
     expect(member).toContain(column(value))
-    expect(member).toContain(
-      label === 'E-mail' ? `hidden="">${value}</span>` : `${fold(value, label)}</span>`,
-    )
+    expect(member).toContain(`${fold(value, label)}</span>`)
   }
 
   await post(owner, detail, { action: 'delete', artefactId: artefactIdValue })

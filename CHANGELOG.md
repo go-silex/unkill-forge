@@ -3,6 +3,7 @@
 ## Unreleased
 
 - Use branded, localized cards for sign-in, invitations, access approval, OAuth consent and browser error pages. Search the public home by title or slug and see result counts and update dates; find agent setup in client-specific accordions on Connect. API protocols and security checks are unchanged.
+- Expose `forge-page-link` on pagination links and `forge-member-email-cell` on the Members email cell so themes can target them without structural selectors.
 
 ## v2.6.0 — 2026-11-25
 
