@@ -12,6 +12,7 @@ const lifecycle = [
   'preprepare',
   'prepare',
   'postprepare',
+  'dependencies',
 ]
 const codeOptions = new Set(['node-options', 'script-shell', 'onload-script'])
 

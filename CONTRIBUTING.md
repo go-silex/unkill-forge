@@ -43,10 +43,12 @@ These gates catch accidental drift. Deliberate evasion by a contributor with
 write access—editing CI, gates, or policy, or crafting repo-controlled
 execution—is covered by independent review, not by the gates.
 
-The pre-install check refuses root npm install lifecycle scripts, `binding.gyp`
-(which can run an implicit install script), and `.npmrc` options that run code
-(`node-options`, `script-shell`, and `onload-script`). CI and Lefthook invoke
-checks directly, not through npm lifecycle wrappers.
+The pre-install check refuses the root scripts npm can run during `npm ci`:
+`preinstall`, `install`, `postinstall`, `prepublish`, `preprepare`, `prepare`,
+`postprepare`, and `dependencies`. It also refuses `binding.gyp` (which can
+trigger an implicit install script) and the `.npmrc` options `node-options`,
+`script-shell`, and `onload-script`. CI and Lefthook invoke checks directly,
+not through npm lifecycle wrappers.
 
 Bundled first-party code must be in the length, coverage, and Knip scopes, even
 outside `src/`. JSON imports and Wrangler attachments typed as data (for example,
