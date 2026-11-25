@@ -126,8 +126,13 @@ async function authorize(
     const html = await response.text()
     if (clientId === `${manage}/oauth/clients/local.json`) {
       expect(html).toContain('Unverified client (local application)')
-      expect(html).not.toContain('Verified client domain:')
+      expect(html).toContain('forge-badge--warn')
+      expect(html).toContain('Local MCP client')
+      expect(html).toContain('loopback address')
       expect(html).toContain(new URL(callback).host)
+    } else if (!clientId?.startsWith('https://')) {
+      expect(html).toContain('forge-badge--warn')
+      expect(html).toContain('Unverified client')
     }
     return formValue(html, 'consent')
   }

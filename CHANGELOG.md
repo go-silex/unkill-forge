@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- Use branded, localized cards for sign-in, invitations, access approval, OAuth consent and browser error pages. Search the public home by title or slug and see result counts and update dates; find agent setup in client-specific accordions on Connect. API protocols and security checks are unchanged.
+
 ## v2.6.0 — 2026-11-25
 
 - Return the publishing workflow as MCP server instructions on `initialize`. Clients that surface them (OMP, Claude Code) follow the same audience-approval and verification steps without a plugin skill; for clients that omit or truncate them, see the fallback in `docs/mcp.md`.

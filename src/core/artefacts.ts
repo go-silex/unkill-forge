@@ -199,11 +199,11 @@ export function encodeFilePath(path: string) {
 
 export async function publicArtefacts({ env: { DB: db }, config }: Runtime, ctx?: ExecutionContext) {
   const { results } = await db
-    .prepare(`SELECT a.id, a.slug, a.title, r.number AS revision, r.entry_path AS path
+    .prepare(`SELECT a.id, a.slug, a.title, a.updated_at AS updatedAt, r.number AS revision, r.entry_path AS path
       FROM artefacts a JOIN revisions r ON r.artefact_id = a.id AND r.number = a.current_revision
       WHERE a.deleted_at IS NULL AND a.visibility = 'public'
       ORDER BY a.created_at DESC, a.slug LIMIT 200`)
-    .all<RevisionEntry & { id: string; slug: string; title: string; revision: number }>()
+    .all<RevisionEntry & Pick<Artefact, 'id' | 'slug' | 'title' | 'updatedAt' | 'revision'>>()
   const legacy = results.filter(({ path }) => path === null)
   if (legacy.length > 0) {
     const entries = await db.batch<RevisionEntry>(
@@ -212,8 +212,8 @@ export async function publicArtefacts({ env: { DB: db }, config }: Runtime, ctx?
     for (const [index, row] of legacy.entries()) row.path = entries[index].results[0]?.path ?? null
     await cacheRevisionEntries(db, legacy, ctx)
   }
-  return results.flatMap(({ slug, title, path }) =>
-    path === null ? [] : [{ slug, title, url: entryUrl(config.readOrigin, slug, path) }],
+  return results.flatMap(({ slug, title, path, updatedAt }) =>
+    path === null ? [] : [{ slug, title, url: entryUrl(config.readOrigin, slug, path), updatedAt }],
   )
 }
 

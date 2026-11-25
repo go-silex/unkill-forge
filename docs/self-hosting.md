@@ -164,6 +164,8 @@ Place `theme.css`, `wordmark.svg` and `icon.png` in `theme/` for this example. `
 
 Forge-authored pages load `/_theme/theme.css` after `/style.css` whenever `THEME` is bound. Theme assets are public on both configured hosts. Use relative URLs in `theme.css` (for example, `url("fonts/ui.woff2")`); do not reference external origins. The `/_theme/` prefix is separate from canonical `/a/` and share `/s/` routes, whose slugs cannot contain `_`.
 
+Manage access and error cards that replace plain-text responses keep the original restrictive Content Security Policy (`default-src 'none'` with no `font-src` exception). The theme stylesheet still loads, but its `@font-face` downloads are blocked on those cards; include a system font fallback in your font stack.
+
 The allowlist applies to paths as received by Forge. A client or proxy may normalize `.` or `..` before sending the request; Forge does not decode path components or allow traversal within the theme binding.
 
 | Theme file under `/_theme/` | Response type                 |
@@ -227,7 +229,14 @@ These classes and the custom properties above are the supported theme contract. 
 | `.forge-page-head`, `.forge-lead`, `.forge-page-actions`                                          | Optional page header, short description and primary actions that wrap below the title on narrow screens    |
 | `.forge-panel`, `.forge-panel__header`, `.forge-panel__body`                                      | Single-panel layout, shared brand header, and body                                                         |
 | `.forge-panel--sign-in`, `.forge-panel--invite`, `.forge-panel--consent`, `.forge-panel--handoff` | Manage sign-in, invitation, consent, and read-session relay panels                                         |
-| `.forge-panel--landing`, `.forge-panel--pending`, `.forge-panel--error`                           | Read landing, approval-pending, and error panels (including missing files and handoff retry)               |
+| `.forge-panel--landing`, `.forge-panel--pending`, `.forge-panel--error`                           | Read landing, approval pending and error panels (the last two are shared across both hosts)                |
+| `.forge-panel__note`, `.forge-card-status`                                                        | Muted footnote below the access card and visible HTTP status inside the card                               |
+| `.forge-card-actions`, `.forge-card-actions--pair`                                                | Full-width stacked actions; the paired form uses two columns where space permits                           |
+| `.forge-facts`, `.forge-card-account`                                                             | Consent facts and signed-in account chip on the approval card                                              |
+| `.forge-public-intro`, `.forge-public-footer`                                                     | Public home title and lead, and the footer with instance name and sign-in link                             |
+| `.forge-panel--gallery`                                                                           | Public catalogue wrapper; brand header, main panel body and footer are sibling landmarks                   |
+| `.forge-public-search`, `.forge-public-count`                                                     | Public search form and localized result count                                                              |
+| `.forge-gallery__card`, `.forge-gallery__title`, `.forge-gallery__meta`                           | Whole-card link with focus ring, title underlined only on hover or keyboard focus, and muted metadata      |
 | `.forge-breadcrumb`                                                                               | Artefact detail breadcrumb                                                                                 |
 | `.forge-detail`, `.forge-detail__main`, `.forge-detail__aside`                                    | Detail grid, files and versions column, and role-gated settings column                                     |
 | `.forge-detail__meta`, `.forge-detail__actions`, `.forge-detail__preview`                         | Detail metadata, action groups, and catalogue cover                                                        |
@@ -253,10 +262,14 @@ These classes and the custom properties above are the supported theme contract. 
 | `.forge-sheet__fields`, `.forge-sheet__actions`                                                   | Editable fields in a sheet and form grouping the fields and buttons                                        |
 | `.forge-copy`                                                                                     | Copyable value and its progressively enhanced copy button                                                  |
 | `.forge-copy--block`                                                                              | Copy group for a preformatted command or configuration snippet                                             |
-| `.forge-notice`, `.forge-secret`, `.forge-empty`                                                  | Flash notice, one-use secret and copy action group, and empty-state text                                   |
+| `.forge-notice`, `.forge-secret`, `.forge-empty`                                                  | Notice or flash, one-use secret and copy action group, and empty-state text                                |
+| `.forge-notice--info`, `.forge-notice--success`, `.forge-notice--warn`, `.forge-notice--error`    | Notice tones with a localized accessible prefix; existing flash notices do not use these modifiers         |
+| `.forge-connect-endpoint`, `.forge-connect-client`, `.forge-steps`                                | Shared MCP endpoint block, native client accordions, and ordered instructions                              |
 | `.forge-link-list`                                                                                | Sign-in provider links or public artefact list                                                             |
 
 Form and confirmation sheets use the native `popover` attribute without JavaScript (Chrome 114+, Safari 17+, Firefox 125+). Older browsers show the heading, editable fields or explanation, and submit button inline, and hide the opener and cancel controls that cannot work there. Themes must not set `display` on `.forge-sheet` outside `:popover-open`, or closed sheets may become visible. `.forge-button--danger-solid` fills with `--forge-danger` and uses `--forge-surface` for its label, the reverse of the outlined danger button.
+
+The sign-in panel promotes the first configured identity provider and gives the other providers secondary buttons. Consent uses a paired form with Deny first and Allow second; the buttons stack on narrow screens.
 
 On narrow screens, opening the native drawer pushes the page down. Keep row identifiers and actions visible when hiding secondary table metadata. Dense table buttons use the compact height only when the primary pointer is fine and no coarse pointer is available.
 

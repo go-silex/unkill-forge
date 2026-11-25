@@ -42,23 +42,26 @@ export function Gallery({
   items,
   label,
   view = 'grid',
+  linkRel,
 }: {
-  items: readonly { href: string; title: string; preview?: string; detail?: Child }[]
+  items: readonly { href: string; title: string; preview?: string; detail?: Child; meta?: Child }[]
   label: string
   view?: GalleryView
+  linkRel?: 'noreferrer'
 }) {
   const modifier = view === 'list' ? ' forge-gallery--list' : ''
   return (
     // biome-ignore lint/a11y/noRedundantRoles: Safari removes unstyled lists from the accessibility tree.
     <ul class={`forge-gallery${modifier}`} role="list" aria-label={label}>
-      {items.map(({ href, title, preview, detail }) => (
+      {items.map(({ href, title, preview, detail, meta }) => (
         <li class="forge-gallery__item" key={href}>
-          <a class="forge-gallery__card" href={href}>
+          <a class="forge-gallery__card" href={href} rel={linkRel}>
             {preview && (
               <img class="forge-gallery__preview" src={`${previewPrefix}${preview}`} alt="" loading="lazy" />
             )}
             <span class="forge-gallery__caption">
               <span class="forge-gallery__title">{title}</span>
+              {meta != null && <span class="forge-gallery__meta">{meta}</span>}
             </span>
           </a>
           {detail != null && <div class="forge-gallery__detail">{detail}</div>}
