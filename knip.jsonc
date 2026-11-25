@@ -1,0 +1,6 @@
+{
+  "$schema": "https://unpkg.com/knip@6/schema-jsonc.json",
+  "entry": ["scripts/*.node-test.mjs"],
+  "project": ["**/*.{js,jsx,ts,tsx,mjs,cjs,mts,cts}"],
+  "treatConfigHintsAsErrors": true
+}

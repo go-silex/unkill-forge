@@ -1,12 +1,33 @@
 pre-commit:
-  parallel: true
+  piped: true
   commands:
+    install-config:
+      priority: 1
+      run: node scripts/check-install-config.mjs
     biome:
       glob: "*.{ts,tsx,mjs,json,jsonc}"
-      run: npx biome check --staged
+      run: ./node_modules/.bin/biome check --staged
     typecheck:
-      run: npm run typecheck
+      run: ./node_modules/.bin/tsc --noEmit
 commit-msg:
   commands:
     conventional:
       run: bash scripts/check-conventional-commit.sh {1}
+
+pre-push:
+  piped: true
+  jobs:
+    - name: install-config
+      run: node scripts/check-install-config.mjs
+    - name: lockfile-cooldown
+      use_stdin: true
+      run: node scripts/check-lockfile-cooldown.mjs --pre-push
+    - name: quality-gates
+      run: >-
+        ./node_modules/.bin/biome ci . && node scripts/check-file-length.mjs &&
+        node scripts/check-worker-scope.mjs && ./node_modules/.bin/knip --no-progress &&
+        ./node_modules/.bin/tsc --noEmit
+    - name: tests
+      run: >-
+        node --test scripts/*.node-test.mjs && ./node_modules/.bin/vitest run --coverage &&
+        node scripts/check-coverage-floors.mjs

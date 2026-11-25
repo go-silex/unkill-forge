@@ -5,7 +5,15 @@
   "type": "module",
   "scripts": {
     "typecheck": "tsc --noEmit",
-    "test": "node --test scripts/deploy.node-test.mjs && vitest run",
+    "test": "npm run test:node && vitest run",
+    "test:node": "node --test scripts/*.node-test.mjs",
+    "test:coverage": "vitest run --coverage && node scripts/check-coverage-floors.mjs",
+    "lint": "biome ci .",
+    "format": "biome check --write .",
+    "knip": "knip --no-progress",
+    "check:file-length": "node scripts/check-file-length.mjs",
+    "check:worker-scope": "node scripts/check-worker-scope.mjs",
+    "check:lockfile-cooldown": "node scripts/check-lockfile-cooldown.mjs",
     "deploy": "node scripts/deploy.mjs"
   },
   "dependencies": {
@@ -22,6 +30,8 @@
     "@cloudflare/vitest-plugin": "1.8.4",
     "@cloudflare/workers-types": "5.20261121.1",
     "@types/node": "26.6.6",
+    "@vitest/coverage-istanbul": "5.1.0",
+    "knip": "6.47.0",
     "lefthook": "2.2.2",
     "typescript": "7.0.2",
     "vitest": "5.1.0",

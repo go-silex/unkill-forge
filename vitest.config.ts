@@ -1,5 +1,6 @@
 import { cloudflareTest, readD1Migrations } from '@cloudflare/vitest-plugin'
 import { defineConfig } from 'vitest/config'
+import coverageScope from './config/coverage-scope.json'
 
 export default defineConfig({
   plugins: [
@@ -15,4 +16,12 @@ export default defineConfig({
       },
     }),
   ],
+  test: {
+    coverage: {
+      // Workerd does not expose the V8 coverage profiler.
+      provider: 'istanbul',
+      ...coverageScope,
+      reporter: ['text-summary', 'json-summary'],
+    },
+  },
 })
