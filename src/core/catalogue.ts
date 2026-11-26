@@ -200,7 +200,7 @@ export async function searchArtefacts(
       (SELECT group_concat(tag, ',' ORDER BY tag) FROM artefact_tags WHERE artefact_id = artefacts.id) AS tagList,
       current_revision AS revision, updated_at AS updatedAt
       FROM artefacts WHERE deleted_at IS NULL AND visibility = ? AND (updated_at, id) < (?, ?)
-      AND (?5 IS NULL OR id IN (SELECT artefact_id FROM artefact_tags WHERE tag = ?5))
+      AND (?5 IS NULL OR EXISTS (SELECT 1 FROM artefact_tags WHERE artefact_id = artefacts.id AND tag = ?5))
       ORDER BY updated_at DESC, id DESC LIMIT ?4`)
     const pages = await db.batch<Row>(
       scopes.map((scope) =>

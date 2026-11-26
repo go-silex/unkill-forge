@@ -177,7 +177,7 @@ export async function listArtefacts(
     .prepare(`SELECT id, slug, title, visibility, current_revision AS revision, updated_at AS updatedAt,
       (SELECT group_concat(tag, ',' ORDER BY tag) FROM artefact_tags WHERE artefact_id = artefacts.id) AS tagList
     FROM artefacts WHERE deleted_at IS NULL
-    AND (?4 IS NULL OR id IN (SELECT artefact_id FROM artefact_tags WHERE tag = ?4))
+    AND (?4 IS NULL OR EXISTS (SELECT 1 FROM artefact_tags WHERE artefact_id = artefacts.id AND tag = ?4))
     AND (?1 = '' OR instr(lower(slug), lower(?1)) > 0 OR instr(lower(${searchTitle}), lower(?1)) > 0
       OR EXISTS (SELECT 1 FROM artefact_tags WHERE artefact_id = artefacts.id AND instr(tag, lower(?1)) > 0))
     AND (?2 IS NULL OR updated_at < ?2 OR (updated_at = ?2 AND id > ?3))
@@ -226,13 +226,23 @@ export async function getArtefactDetails(
     env: { DB: db },
     config,
   } = runtime
-  const { id, deletedAt: _deletedAt, ...artefact } = await liveHead(db, slug)
+  checkSlug(slug)
+  // Publish commits tags and the head together; read both in the same D1 snapshot.
+  const row = await db
+    .prepare(`SELECT id, slug, title, visibility, current_revision AS revision, created_by AS createdBy,
+      created_at AS createdAt, updated_at AS updatedAt,
+      (SELECT group_concat(tag, ',' ORDER BY tag) FROM artefact_tags WHERE artefact_id = artefacts.id) AS tagList
+      FROM artefacts WHERE slug = ? AND deleted_at IS NULL`)
+    .bind(slug)
+    .first<Omit<Artefact, 'deletedAt'> & { tagList: string | null }>()
+  if (!row) throw new ArtefactError('not_found', 'Artefact not found')
+  const { id, tagList, ...artefact } = row
   const { revision } = artefact
   const after = cursor === undefined ? null : decodeCursor(cursor, fileCursor)
   if (after && after[0] !== id)
     throw new ArtefactError('invalid_input', 'Cursor belongs to a different artefact')
   if (after) checkRevision(after[1], revision)
-  const [page, path, shareLinks, revisionMeta, tagRows] = await Promise.all([
+  const [page, path, shareLinks, revisionMeta] = await Promise.all([
     db
       .prepare(`SELECT path, size, content_type AS type FROM files
         WHERE artefact_id = ? AND revision = ? AND path > ? ORDER BY path LIMIT 201`)
@@ -249,10 +259,6 @@ export async function getArtefactDetails(
           .bind(id, revision)
           .first<{ author: string; createdAt: number; fileCount: number }>()
       : null,
-    db
-      .prepare('SELECT tag FROM artefact_tags WHERE artefact_id = ? ORDER BY tag')
-      .bind(id)
-      .all<{ tag: string }>(),
   ])
   if (!path) throw new Error('Artefact head has no entry file')
   const files = page.results
@@ -261,7 +267,7 @@ export async function getArtefactDetails(
   return {
     id,
     ...artefact,
-    tags: tagRows.results.map(({ tag }) => tag),
+    tags: unpackArtefactTags(tagList),
     files,
     url: entryUrl(config.readOrigin, slug, path),
     shareLinks,

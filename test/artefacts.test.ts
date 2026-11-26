@@ -5,7 +5,8 @@ import { expect, it, vi } from 'vitest'
 import { z } from 'zod'
 import { configuration, type Env } from '../src/config'
 import type { Member } from '../src/core'
-import { restoreDeletedArtefact, setRedirects } from '../src/core/artefacts'
+import { listArtefacts, restoreDeletedArtefact, setRedirects } from '../src/core/artefacts'
+import { searchArtefacts } from '../src/core/catalogue'
 import { maintain } from '../src/core/maintenance'
 import { purgeArtefact } from '../src/core/purge'
 import { sealShareKey, unsealShareKey } from '../src/core/share-keys'
@@ -74,6 +75,94 @@ async function bot(send: Handle, role: 'viewer' | 'publisher' = 'publisher', nam
 }
 
 const file = (path: string, content = 'hello') => ({ path, content })
+
+it('gets tags from the same snapshot as the head when a publish races the details read', async () => {
+  const { call } = await bot(runtime())
+  const slug = 'tag-snapshot'
+  const input = { slug, mode: 'replace', files: [file('index.html')] }
+  expect(await call('publish', { ...input, tags: ['before'] })).toMatchObject({ revision: 1 })
+  let interleaved = false
+  const racingDb = new Proxy(db, {
+    get(target, property) {
+      if (property !== 'prepare') return Reflect.get(target, property)
+      return (sql: string) => {
+        const statement = target.prepare(sql)
+        if (!sql.includes('current_revision AS revision') || !sql.includes('WHERE slug = ?')) return statement
+        return {
+          bind: (...args: unknown[]) => ({
+            async first() {
+              const row = await statement.bind(...args).first()
+              expect(await call('publish', { ...input, tags: ['after'], expectedRevision: 1 })).toMatchObject(
+                { revision: 2 },
+              )
+              interleaved = true
+              return row
+            },
+          }),
+        }
+      }
+    },
+  })
+  expect(await call('get_artefact', { slug }, runtime({ DB: racingDb }))).toMatchObject({
+    revision: 1,
+    tags: ['before'],
+  })
+  expect(interleaved).toBe(true)
+  expect(await call('get_artefact', { slug })).toMatchObject({ revision: 2, tags: ['after'] })
+})
+
+it('bounds D1 catalogue reads when an exact tag is on thousands of artefacts', async () => {
+  await bot(runtime())
+  const { member, core } = await coreAdmin()
+  await db
+    .prepare(`WITH RECURSIVE numbers(n) AS (SELECT 1 UNION ALL SELECT n + 1 FROM numbers WHERE n < 4000)
+      INSERT INTO artefacts (id, slug, title, visibility, current_revision, created_by, created_at, updated_at)
+      SELECT printf('00000000-0000-4000-8000-%012d', n), 'tagged-' || n, 'Tagged',
+        CASE WHEN n % 2 = 0 THEN 'public' ELSE 'private' END, 1, ?, n, n FROM numbers`)
+    .bind(member.id)
+    .run()
+  await db.prepare(`INSERT INTO artefact_tags (artefact_id, tag) SELECT id, 'common' FROM artefacts`).run()
+
+  let mcpRowsRead = 0
+  const measured = new Proxy(db, {
+    get(target, property) {
+      if (property !== 'prepare') return Reflect.get(target, property)
+      return (sql: string) => ({
+        bind: (...args: unknown[]) => ({
+          async all() {
+            const page = await target
+              .prepare(sql)
+              .bind(...args)
+              .all()
+            mcpRowsRead += page.meta.rows_read
+            return page
+          },
+        }),
+      })
+    },
+  })
+  let manageRowsRead = 0
+  const managed = watchBatches(undefined, (results) => {
+    for (const result of results) manageRowsRead += result.meta.rows_read
+  })
+  const mcp = { ...core, env: { ...core.env, DB: measured } }
+  const manage = { ...core, env: { ...core.env, DB: managed } }
+  const tagParams = new URLSearchParams({ tag: 'common' })
+  const first = await listArtefacts(mcp, member, '', undefined, 'common')
+  const manageFirst = await searchArtefacts(manage, member, tagParams)
+  expect(first.artefacts).toHaveLength(50)
+  expect(manageFirst.artefacts).toHaveLength(50)
+  expect(first.nextCursor).toBeDefined()
+  expect(manageFirst.nextCursor).toBeDefined()
+  expect((await listArtefacts(mcp, member, '', first.nextCursor, 'common')).artefacts).toHaveLength(50)
+  expect(
+    (await searchArtefacts(manage, member, tagParams, undefined, manageFirst.nextCursor)).artefacts,
+  ).toHaveLength(50)
+  expect(mcpRowsRead).toBeGreaterThan(0)
+  expect(mcpRowsRead).toBeLessThan(1000)
+  expect(manageRowsRead).toBeGreaterThan(0)
+  expect(manageRowsRead).toBeLessThan(1500)
+})
 
 it('publishes sorted unique tags atomically, preserves omitted tags, and clears an empty set', async () => {
   const { call } = await bot(runtime())
