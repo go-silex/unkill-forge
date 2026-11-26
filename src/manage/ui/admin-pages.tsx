@@ -3,13 +3,13 @@ import type { Child } from 'hono/jsx'
 import { z } from 'zod'
 import type { Runtime } from '../../config'
 import { createOwnToken, listOwnTokens, revokeOwnToken, uiActor } from '../../core/admin'
+import { artefactTagMaxLength } from '../../core/artefact-tags'
 import {
   AccessConfirmationError,
   ArtefactError,
   createShareLink,
   deleteArtefact,
   deletedRetentionMs,
-  encodeFilePath,
   getArtefactDetails,
   getShareLink,
   listDeletedArtefacts,
@@ -20,6 +20,7 @@ import {
   restoreRevision,
   revokeShareLink,
   setAccess,
+  setArtefactTags,
   setRedirects,
   setVisibility,
 } from '../../core/artefacts'
@@ -29,11 +30,13 @@ import { galleryQueryLimit } from '../../core/gallery-search'
 import type { BrowserSession, Member, Role } from '../../core/index'
 import { purgeArtefact } from '../../core/purge'
 import { artefactPath, maxRedirectPrefix } from '../../core/read-path'
+import { encodeFilePath } from '../../core/revision-entry'
 import { shareKeyMax } from '../../core/share-keys'
 import { absoluteTime, time } from '../../dates'
 import { GalleryViews, galleryView } from '../../gallery'
 import { readForm } from '../../http'
 import { type AdminMessage, type AdminTranslate, adminMessages, type CopyLabels, messages } from '../../i18n'
+import { TagChips } from '../../tag-chips'
 import { manageError } from '../access'
 import { requireBrowserSession } from '../login'
 import { localClientPath } from '../oauth'
@@ -92,6 +95,7 @@ const artefactAction = z.discriminatedUnion('action', [
     .strictObject({ action: z.literal('access'), access, artefactId: id, revoke: confirmedCount.optional() })
     .refine(({ access, revoke }) => access === 'private' || revoke === undefined),
   z.strictObject({ action: z.literal('restore-revision'), revision, artefactId: id }),
+  z.strictObject({ action: z.literal('tags'), tags: z.string(), artefactId: id }),
   z.strictObject({
     action: z.literal('create-share'),
     artefactId: id,
@@ -199,7 +203,7 @@ adminPages.get(
     if (rawVisibility && !success)
       return manageError(c.env.config, 400, t('malformed'), { home: '/artefacts' })
     const { searchParams } = new URL(c.req.url)
-    const [{ artefacts, query: q, continued, nextCursor }, counts] = await Promise.all([
+    const [{ artefacts, query: q, tag, continued, nextCursor }, counts] = await Promise.all([
       searchArtefacts(c.env, actor, searchParams, selected, c.req.query('cursor')),
       catalogueCounts(c.env, actor),
     ])
@@ -213,6 +217,7 @@ adminPages.get(
     const params = new URLSearchParams()
     if (q) params.set('q', q)
     if (selected) params.set('visibility', selected)
+    if (tag) params.set('tag', tag)
     if (rawView === view) params.set('view', view)
     const { config } = c.env
     const empty = nextCursor ? 'noNewMatches' : continued ? 'noMoreResults' : 'noResults'
@@ -225,6 +230,9 @@ adminPages.get(
           <form class="forge-action" method="get">
             <label>
               {t('searchQuery')} <input type="search" name="q" value={q} maxlength={galleryQueryLimit} />
+            </label>
+            <label class="forge-tag-filter">
+              {t('tagFilter')} <input type="text" name="tag" value={tag} maxlength={artefactTagMaxLength} />
             </label>
             {selected && <input type="hidden" name="visibility" value={selected} />}
             {rawView === view && <input type="hidden" name="view" value={view} />}
@@ -322,6 +330,7 @@ adminPages.get(
               )}
             </span>
           )}
+          <TagChips tags={artefact.tags} />
         </div>
         <div class="forge-detail__actions">
           <a class="forge-button forge-button--primary" href={artefact.url}>
@@ -460,6 +469,16 @@ adminPages.get(
                 </div>
               </section>
               <section class="forge-panel-card">
+                <h2>{t('tags')}</h2>
+                <p id="forge-tags-help">{t('tagsHelp')}</p>
+                <Action action="tags" label={t('saveTags')} fields={{ artefactId: artefact.id }} path={path}>
+                  <label>
+                    {t('tags')}{' '}
+                    <input name="tags" value={artefact.tags.join(', ')} aria-describedby="forge-tags-help" />
+                  </label>
+                </Action>
+              </section>
+              <section class="forge-panel-card">
                 <h2>{t('shareLinks')}</h2>
                 <p>{t('shareWarning')}</p>
                 {count ? (
@@ -595,6 +614,15 @@ adminPages.post(
           case 'visibility':
             await setVisibility(c.env, actor, currentSlug, input.visibility, input.artefactId)
             return { message: 'visibilitySaved' }
+          case 'tags':
+            await setArtefactTags(
+              c.env,
+              actor,
+              currentSlug,
+              input.tags.trim() ? input.tags.split(',').map((tag) => tag.trim()) : [],
+              input.artefactId,
+            )
+            return { message: 'tagsSaved' }
           case 'restore-revision':
             await restoreRevision(c.env, actor, currentSlug, input.revision, undefined, input.artefactId)
             return { message: 'revisionRestored' }

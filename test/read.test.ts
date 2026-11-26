@@ -345,6 +345,11 @@ it.each(['en', 'fr'] as const)(
       files: [{ path: 'index.html', content: 'entry' }],
     })
     await call('set_visibility', { slug: 'field-guide', visibility: 'public' })
+    await db
+      .prepare(`INSERT INTO artefact_tags (artefact_id, tag)
+        SELECT id, CASE slug WHEN 'public' THEN 'ops' WHEN 'field-guide' THEN 'ops-weekly' ELSE 'private-label' END
+        FROM artefacts WHERE slug IN ('public', 'field-guide', 'private')`)
+      .run()
 
     statements.length = 0
     const unfiltered = await home({ view: 'list' })
@@ -400,8 +405,66 @@ it.each(['en', 'fr'] as const)(
       expect(headers.has('ETag')).toBe(false)
       expect(headers.has('Vary')).toBe(false)
     }
+    expect(unfiltered).toContain(`name="tag" aria-label="${french ? 'Filtrer par tag' : 'Filter by tag'}"`)
+    expect(unfiltered).toContain(`<option value="">${french ? 'Tous les tags' : 'All tags'}</option>`)
+    expect(unfiltered).toContain('<option value="ops">ops</option>')
+    expect(unfiltered).toContain('<option value="ops-weekly">ops-weekly</option>')
+    expect(unfiltered).not.toContain('private-label')
+
+    const exactTag = await home({ tag: 'ops' })
+    expect(exactTag).toContain('Public report')
+    expect(exactTag).not.toContain('Alternate entry')
+    expect(exactTag).toContain('<span class="forge-tag">ops</span>')
+    expect(exactTag).toMatch(/<option value="ops" selected[^>]*>/)
+    expect(exactTag).toContain('<option value="ops-weekly">ops-weekly</option>')
+
+    statements.length = 0
+    const combined = await home({ q: 'WEEKLY', tag: 'ops-weekly', view: 'list' })
+    expect(statements).toEqual(baseline)
+    expect(combined).toContain(french ? '1 sur 2 documents' : '1 of 2 documents')
+    expect(combined).toContain('Alternate entry')
+    expect(combined).not.toContain('Public report')
+    expect(combined).toContain('<span class="forge-tag">ops-weekly</span>')
+    expect(combined).toContain('href="/?q=WEEKLY&amp;tag=ops-weekly"')
+    expect(combined).toContain('href="/?q=WEEKLY&amp;tag=ops-weekly&amp;view=list" aria-current="page"')
+    expect(combined).toContain(`href="/?view=list">${french ? 'Effacer' : 'Clear'}</a>`)
+    expect(await home({ q: 'WEEKLY' })).toContain('Alternate entry')
+    expect(await home({ q: 'WEEKLY', tag: 'ops' })).toContain(
+      french ? '0 sur 2 documents' : '0 of 2 documents',
+    )
+
+    const hiddenTag = await home({ tag: 'private-label', view: 'list' })
+    expect(hiddenTag).toBe(await home({ tag: 'missing-label', view: 'list' }))
+    expect(hiddenTag).not.toContain('private-label')
+    expect(hiddenTag).not.toContain('<ul class="forge-gallery')
+    expect(await home({ tag: 'OPS', view: 'list' })).toBe(unfiltered)
   },
 )
+
+it('limits public gallery tags and tag search to the newest 200 public artefacts', async () => {
+  await fixture()
+  const { DB: db } = env as typeof env & Pick<Env, 'DB'>
+  await db.batch([
+    db.prepare(`WITH RECURSIVE n(value) AS (VALUES (1) UNION ALL SELECT value + 1 FROM n WHERE value < 200)
+      INSERT INTO artefacts (id, slug, title, visibility, current_revision, created_by, created_at, updated_at)
+      SELECT 'new-' || value, 'new-' || value, 'New report', 'public', 1, a.created_by,
+        a.created_at + value, a.updated_at
+      FROM n CROSS JOIN artefacts AS a WHERE a.slug = 'public'`),
+    db.prepare(`INSERT INTO revisions (artefact_id, number, created_by, created_at, entry_path)
+      SELECT id, 1, created_by, created_at, 'index.html' FROM artefacts WHERE slug LIKE 'new-%'`),
+    db.prepare(`INSERT INTO artefact_tags (artefact_id, tag)
+      SELECT id, 'older-tag' FROM artefacts WHERE slug = 'public'`),
+  ])
+  const indexed = runtime({ PUBLIC_INDEX: 'true' })
+  const index = await (await indexed(read)).text()
+  expect(index).toContain('<p class="forge-public-count">200 documents</p>')
+  expect(index).not.toContain('older-tag')
+  expect(index).not.toContain('Public report')
+  const filtered = await (await indexed(`${read}/?tag=older-tag`)).text()
+  expect(filtered).toContain('0 of 200 documents')
+  expect(filtered).not.toContain('older-tag')
+  expect(await (await indexed(`${read}/?q=older-tag`)).text()).toContain('0 of 200 documents')
+})
 
 it('folds Unicode search without stripping accents or splitting surrogate pairs', async () => {
   const indexed = runtime({ PUBLIC_INDEX: 'true' })

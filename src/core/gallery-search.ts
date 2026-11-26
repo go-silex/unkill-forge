@@ -29,7 +29,9 @@ export function gallerySearch(params: URLSearchParams) {
   }
   return {
     query,
-    matches: ({ slug, title }: { slug: string; title: string }) =>
-      !needle || (!startsWithMark && (matchesText(slug) || matchesText(title))),
+    matches: ({ slug, title, tags }: { slug: string; title: string; tags: readonly string[] }) =>
+      !needle ||
+      (!startsWithMark &&
+        (matchesText(slug) || matchesText(title) || tags.some((tag) => tag.includes(needle)))),
   }
 }

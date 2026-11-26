@@ -8,6 +8,7 @@ export const MCP_INSTRUCTIONS = `Forge hosts static artefacts: each slug holds f
 Rules:
 - Every access change needs the user's explicit approval: set_visibility, create_share_link, revoke_share_link, rename_artefact, restore_revision, delete_artefact, set_redirects. Before making a slug public or creating a share link, get approval for access to the current and all future heads while the grant stays active. Never change access to make a check pass.
 - An update reaches the slug's current audience: anyone if public, members if private, and every holder of an active share link. Get the user's approval for that audience before writing.
+- Tags on public artefacts appear in the public gallery. Use set_artefact_tags to edit tags without making a new file revision.
 - Never post a share URL or key except to its intended recipient. Never log or share upload URLs.
 - Never fall back to another Forge instance.
 

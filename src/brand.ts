@@ -126,6 +126,9 @@ const style = `
   .forge-gallery__title { color: var(--forge-ink); font-weight: 600 }
   :where(.forge-gallery__card:is(:hover, :focus-visible)) .forge-gallery__title { text-decoration: underline }
   .forge-gallery__meta { display: block; color: var(--forge-muted); font-size: var(--forge-text-small) }
+  .forge-tags { display: flex; flex-wrap: wrap; gap: calc(.5 * var(--forge-space)); margin-block: calc(.5 * var(--forge-space)) }
+  .forge-tag { padding-inline: var(--forge-space); border: 1px solid var(--forge-hairline); border-radius: var(--forge-radius); color: var(--forge-muted); font-size: var(--forge-text-small); overflow-wrap: anywhere }
+  .forge-tag-filter { min-inline-size: 0; max-inline-size: 100% }
   @media (min-width: 45rem) {
     :where(.forge-gallery--list) .forge-gallery__caption:where(:has(> .forge-gallery__meta)) { display: flex; align-items: baseline; justify-content: space-between; gap: var(--forge-space) }
     :where(.forge-gallery--list) .forge-gallery__meta { flex: none; text-align: end }

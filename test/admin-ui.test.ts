@@ -187,6 +187,7 @@ it('refuses every browser mutation without the manage origin and refuses insuffi
     [detail, { action: 'restore-revision', revision: '1', artefactId: selectedId }],
     [detail, { action: 'visibility', visibility: 'public', artefactId: selectedId }],
     [detail, { action: 'access', access: 'shared', artefactId: selectedId }],
+    [detail, { action: 'tags', tags: 'internal-review', artefactId: selectedId }],
     [detail, { action: 'create-share', label: 'Test share', artefactId: selectedId }],
     [detail, { action: 'reveal-share', id }],
     [detail, { action: 'revoke-share', id }],
@@ -1133,6 +1134,102 @@ it('paginates substring matches once in slug order across both visibility scopes
     stale.searchParams.set('cursor', base64url.encode(JSON.stringify(oldCursor)))
     expect(await html(owner, stale)).toBe(first)
   }
+})
+
+it('composes exact tags, text search, access, presentation and catalogue pagination', async () => {
+  const send = runtime()
+  const owner = await mockProvider().signedIn(send, admin)
+  await publish(send, await issueToken(owner, 'Tag catalogue fixture'), 'seed', 'Seed')
+  await db.batch([
+    db.prepare(`WITH RECURSIVE numbers(n) AS (SELECT 1 UNION ALL SELECT n + 1 FROM numbers WHERE n < 54)
+    INSERT INTO artefacts (id, slug, title, visibility, current_revision, created_by, created_at, updated_at)
+    SELECT printf('10000000-0000-4000-8000-%012d', n), printf('weekly-%03d', n), 'Weekly update',
+    CASE WHEN n = 53 THEN 'public' ELSE 'private' END,
+    current_revision, created_by, created_at, updated_at + n FROM artefacts, numbers WHERE slug = 'seed'`),
+    db.prepare(`INSERT INTO artefact_tags (artefact_id, tag)
+    SELECT id, CASE WHEN slug = 'weekly-052' THEN 'finance-team' ELSE 'finance' END
+    FROM artefacts WHERE slug LIKE 'weekly-%'
+    UNION ALL
+    SELECT id, 'quarterly-brief' FROM artefacts WHERE slug LIKE 'weekly-%' AND slug <> 'weekly-054'`),
+  ])
+  const visibleSlugs = (markup: string) =>
+    Array.from(markup.matchAll(/href="\/artefacts\/(weekly-\d+)"/g), ([, slug]) => slug)
+  const path = '/artefacts?q=brief&visibility=private&tag=finance&view=list'
+  const first = await html(owner, path)
+  expect(visibleSlugs(first)).toHaveLength(50)
+  expect(formValue(first, 'tag')).toBe('finance')
+  expect(first).toContain('class="forge-tag">quarterly-brief<')
+  expect(first).toContain('href="/artefacts?q=brief&amp;visibility=private&amp;tag=finance"')
+  expect(first).toContain('href="/artefacts?q=brief&amp;visibility=public&amp;tag=finance&amp;view=list"')
+  const next = /href="([^"]+)"[^>]*>Next page<\/a>/.exec(first)?.[1]?.replaceAll('&amp;', '&')
+  if (!next) throw new Error('Expected a filtered continuation')
+  const url = new URL(next, manage)
+  for (const [key, value] of Object.entries({
+    q: 'brief',
+    visibility: 'private',
+    tag: 'finance',
+    view: 'list',
+  }))
+    expect(url.searchParams.get(key)).toBe(value)
+  const second = await html(owner, url)
+  expect(visibleSlugs(second)).toHaveLength(1)
+  expect(second).not.toContain('Next page')
+  expect([...visibleSlugs(first), ...visibleSlugs(second)].sort()).toEqual(
+    Array.from({ length: 51 }, (_, i) => `weekly-${String(i + 1).padStart(3, '0')}`),
+  )
+  url.searchParams.set('tag', 'finance-team')
+  await html(owner, url, 400)
+  const grid = await html(owner, '/artefacts?tag=finance-team')
+  expect(visibleSlugs(grid)).toEqual(['weekly-052'])
+  expect(grid).toContain('class="forge-tag">finance-team<')
+})
+
+it('lets publishers and admins replace and clear tags without a new revision and rejects stale forms', async () => {
+  const send = runtime()
+  const idp = mockProvider()
+  const owner = await idp.signedIn(send, admin)
+  const publisher = await idp.signedIn(send, 'publisher')
+  const viewer = await idp.signedIn(send, 'viewer')
+  const publisherId = await listedId(owner, members, 'publisher@example.test')
+  await post(owner, members, { action: 'role', id: publisherId, role: 'publisher' })
+  const token = await issueToken(owner, 'Tag editor fixture')
+  await publish(send, token, slug, 'Quarterly report')
+  const initial = directAction(await html(publisher, detail), 'tags', detail)
+  const identity = { artefactId: formValue(initial.form, 'artefactId') }
+  expect(formValue(initial.form, 'tags')).toBe('')
+
+  const saved = await post(publisher, initial.path, {
+    action: initial.action,
+    tags: 'review, finance',
+    ...identity,
+  })
+  expect(formValue(directAction(saved, 'tags', detail).form, 'tags')).toBe('finance, review')
+  const readonly = await html(viewer, detail)
+  expect(readonly).toContain('class="forge-tag">finance<')
+  expect(readonly).toContain('class="forge-tag">review<')
+  expect(readonly).not.toContain('name="tags"')
+
+  const stale = await post(publisher, initial.path, {
+    action: initial.action,
+    tags: 'replaced-by-stale-form',
+    artefactId: crypto.randomUUID(),
+  })
+  expect(stale).toContain('The change conflicts with the current state.')
+  expect(formValue(directAction(stale, 'tags', detail).form, 'tags')).toBe('finance, review')
+  const changed = await post(owner, detail, { action: 'tags', tags: 'approved', ...identity })
+  expect(formValue(directAction(changed, 'tags', detail).form, 'tags')).toBe('approved')
+  const cleared = await post(publisher, detail, { action: 'tags', tags: '', ...identity })
+  expect(formValue(directAction(cleared, 'tags', detail).form, 'tags')).toBe('')
+  expect(cleared).not.toContain('class="forge-tag"')
+  expect(cleared).toMatch(/<span>v1(?:\s|<)/)
+  const audit = await db
+    .prepare(`SELECT member_id, COUNT(*) AS total FROM audit_log
+    WHERE artefact_id = ? AND action = 'artefact.tags' GROUP BY member_id`)
+    .bind(identity.artefactId)
+    .all<{ member_id: string; total: number }>()
+  expect(audit.results).toHaveLength(2)
+  expect(audit.results).toContainEqual({ member_id: publisherId, total: 2 })
+  expect(audit.results.map(({ total }) => total).sort()).toEqual([1, 2])
 })
 
 it('finds sparse matches beyond the first candidate window without a continuation', async () => {
