@@ -68,7 +68,7 @@ const style = `
   .forge-lead { margin: var(--forge-space) 0 0; color: var(--forge-muted) }
   .forge-page-actions { display: flex; flex-wrap: wrap; gap: var(--forge-space) }
   .forge-panel { width: min(100%, 42rem); margin: clamp(1rem, 8vh, 5rem) auto; padding: 0 calc(2 * var(--forge-space)) }
-  .forge-panel__header { margin-bottom: calc(2 * var(--forge-space)) }
+  .forge-panel__header { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: var(--forge-space); margin-bottom: calc(2 * var(--forge-space)) }
   .forge-panel__body { padding: clamp(1rem, 4vw, 2rem); border: 1px solid var(--forge-hairline); border-radius: var(--forge-radius); background: var(--forge-surface); overflow-wrap: anywhere }
   .forge-panel__note { text-align: center; color: var(--forge-muted); font-size: var(--forge-text-small); overflow-wrap: anywhere }
   .forge-card-status { margin-block: 0 var(--forge-space); color: var(--forge-muted); font-size: var(--forge-text-small) }
@@ -88,7 +88,9 @@ const style = `
   }
   .forge-panel.forge-panel--gallery { width: 100% }
   .forge-panel--gallery > :is(.forge-panel__header, .forge-panel__body) { width: min(100%, 76rem); margin-inline: auto }
-  .forge-panel--gallery .forge-panel__header { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: var(--forge-space); overflow-wrap: anywhere }
+  .forge-panel--gallery .forge-panel__header { overflow-wrap: anywhere }
+  .forge-panel--gallery .forge-language-switch { margin-inline-start: auto }
+  .forge-account .forge-language-switch { margin-block-start: var(--forge-space) }
   .forge-public-intro { padding-block: var(--forge-space) clamp(1.5rem, 4vw, 3rem) }
   :where(.forge-public-intro) .forge-title { margin: 0; font-size: calc(1.4 * var(--forge-text-title)) }
   .forge-public-search { flex: 1 1 24rem; min-inline-size: 0 }

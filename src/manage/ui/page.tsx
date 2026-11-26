@@ -1,18 +1,16 @@
 import type { Context } from 'hono'
 import { raw } from 'hono/html'
 import type { Child } from 'hono/jsx'
-import { BrandBlock } from '../../brand-block'
 import type { Config, Runtime } from '../../config'
-import type { BrowserSession, Member } from '../../core'
+import type { BrowserSession } from '../../core'
 import type { CatalogueAccess } from '../../core/catalogue'
 import { putUiFlash, takeUiFlash } from '../../core/ui-flash'
-import { DocumentHead } from '../../head'
 import { type CopyLabels, messages } from '../../i18n'
+import { ManageShell, type PageHead } from './shell'
 
 export type UiContext = Context<{ Bindings: Runtime }>
 
 type Sheet = { title: string; body?: string; label: string; cancel: string }
-type PageHead = { lead?: string; actions?: Child }
 
 export function Action({
   action,
@@ -156,33 +154,6 @@ const copyScript =
   'document.addEventListener("click",async(e)=>{const b=e.target.closest("button[data-copy]");if(!b)return;try{await navigator.clipboard.writeText(b.previousElementSibling.textContent);b.textContent=b.dataset.copied}catch{b.textContent=b.dataset.failed}});addEventListener("pageshow",(e)=>{if(e.persisted)document.querySelector("[data-secret-flash]")?.remove()});document.querySelectorAll("button[data-copy]").forEach((b)=>{b.hidden=false});'
 export const copyScriptSource = "'sha256-gKtKyAGgpJlKo+7uRRmAq5ws0oWd85H3QGIE/Wvp3Gc='"
 
-const navGroups = [
-  [
-    'content',
-    [
-      ['/artefacts', 'artefacts', 'viewer'],
-      ['/admin/deleted', 'deleted', 'admin'],
-      ['/admin/redirects', 'redirects', 'admin'],
-    ],
-  ],
-  [
-    'access',
-    [
-      ['/admin/members', 'members', 'admin'],
-      ['/admin/bots', 'bots', 'admin'],
-    ],
-  ],
-  [
-    'account',
-    [
-      ['/connect', 'connect', 'viewer'],
-      ['/tokens', 'tokens', 'publisher'],
-    ],
-  ],
-] as const
-
-const roleRank = { viewer: 0, publisher: 1, admin: 2 }
-
 export function Badge({
   variant,
   children,
@@ -244,99 +215,6 @@ export function Table({ columns, children }: { columns: TableColumn[]; children:
         <tbody>{children}</tbody>
       </table>
     </div>
-  )
-}
-
-function Page({
-  config,
-  title,
-  member,
-  path,
-  beforeTitle,
-  lead,
-  actions,
-  children,
-}: {
-  config: Config
-  title: string
-  member: Member
-  path?: string
-  beforeTitle?: Child
-  children: Child
-} & PageHead) {
-  const t = messages(config)
-  const navigation = (
-    <>
-      {member.status === 'active' && (
-        <nav class="forge-nav" aria-label={t.navigation}>
-          {navGroups.map(([group, links]) => {
-            const visible = links.filter(([, , role]) => roleRank[member.role] >= roleRank[role])
-            return (
-              visible.length > 0 && (
-                <section class="forge-nav__group" aria-label={t.navGroups[group]}>
-                  <span class="forge-nav__group-label">{t.navGroups[group]}</span>
-                  {visible.map(([href, label]) => (
-                    <a
-                      class="forge-nav__link"
-                      href={href}
-                      aria-current={path === href || path?.startsWith(`${href}/`) ? 'page' : undefined}
-                    >
-                      {t[label]}
-                    </a>
-                  ))}
-                </section>
-              )
-            )
-          })}
-        </nav>
-      )}
-      <div class="forge-account">
-        <span class="forge-account__name">{member.name}</span>
-        <span class="forge-account__role">{t.roles[member.role]}</span>
-        <form class="forge-action" action="/logout" method="post">
-          <button class="forge-button" type="submit">
-            {t.signOut}
-          </button>
-        </form>
-      </div>
-    </>
-  )
-  const titleElement = <h1 class="forge-title">{title}</h1>
-  const heading =
-    lead || actions ? (
-      <header class="forge-page-head">
-        <div>
-          {titleElement}
-          {lead && <p class="forge-lead">{lead}</p>}
-        </div>
-        {actions && <div class="forge-page-actions">{actions}</div>}
-      </header>
-    ) : (
-      titleElement
-    )
-  return (
-    <html lang={config.locale}>
-      <DocumentHead config={config} title={`${title} · ${config.name}`} />
-      <body>
-        <div class="forge-shell">
-          <header class="forge-tray">
-            <div class="forge-bar">
-              <BrandBlock config={config} variant="home-link" />
-              <details class="forge-drawer">
-                <summary class="forge-menu forge-button">{t.menu}</summary>
-                <div class="forge-drawer__panel">{navigation}</div>
-              </details>
-            </div>
-            <div class="forge-tray__sections">{navigation}</div>
-          </header>
-          <main class="forge-content">
-            {beforeTitle}
-            {heading}
-            {children}
-          </main>
-        </div>
-      </body>
-    </html>
   )
 }
 
@@ -408,7 +286,7 @@ export async function page(
   const notice = await navigationFlash(c, session)
   const secret = notice?.secret
   return c.html(
-    <Page config={config} title={title} member={session.member} path={c.req.path} {...options}>
+    <ManageShell config={config} title={title} member={session.member} path={c.req.path} {...options}>
       {notice && (
         <aside
           class="forge-notice"
@@ -422,6 +300,6 @@ export async function page(
       )}
       {children}
       <script>{raw(copyScript)}</script>
-    </Page>,
+    </ManageShell>,
   )
 }

@@ -1,24 +1,35 @@
 import { brandAsset, rootIcon, themeAsset, themePrefix } from './brand'
-import { configuration, type Env, type Runtime } from './config'
+import { type Config, configuration, type Env, instanceConfiguration, type Runtime } from './config'
 import { previewPrefix } from './core/gallery-previews'
 import { coverCron, generateCovers, generatePublishedCover } from './core/generated-covers'
 import { maintain } from './core/maintenance'
 import { renderCover } from './cover-renderer'
 import { galleryPreview } from './gallery-preview'
 import { messages } from './i18n'
+import { languagePath, setLanguage, visitorLocale } from './language'
 import { manageError } from './manage/access'
 import { manageHandoff } from './manage/handoff'
 import { loginRoute } from './manage/login'
 import { localClientDocument, localClientPath, oauthFetch } from './manage/oauth'
+import { resumeConsent } from './manage/oauth/consent'
 import { checkManageOrigin, manageHeaders } from './manage/origin'
 import { manageUi } from './manage/ui'
 import { manageUpload } from './manage/upload'
 import { read } from './read'
+import { readHeaders } from './read/headers'
+
+function managePage(response: Response, locale: Config['locale']): Response {
+  const result = manageHeaders(response)
+  if (result.headers.get('Content-Type')?.startsWith('text/html'))
+    result.headers.set('Content-Language', locale)
+  return result
+}
 
 export default {
   async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
-    const config = configuration(env)
-    if (!config) return new Response('Forge is unavailable', { status: 503 })
+    const instance = instanceConfiguration(env)
+    if (!instance) return new Response('Forge is unavailable', { status: 503 })
+    const config = instance.default
     const url = new URL(request.url)
     const host = request.headers.get('Host')
     if (host !== null && host.toLowerCase() !== url.host) return new Response('Not found', { status: 404 })
@@ -37,7 +48,11 @@ export default {
     const runtime: Runtime = { config, env }
     if (url.origin === config.readOrigin) {
       if (url.pathname.startsWith(previewPrefix)) return galleryPreview(request, url, runtime, 'public')
-      return brandAsset(request.method, url.pathname, config) ?? read(request, url, runtime, ctx)
+      if (url.pathname === languagePath) return setLanguage(request, url.origin, readHeaders())
+      const asset = brandAsset(request.method, url.pathname, config)
+      if (asset) return asset
+      runtime.config = instance.locales[visitorLocale(request, config.locale)]
+      return read(request, url, runtime, ctx)
     }
     if (url.origin !== config.manageOrigin) return new Response('Not found', { status: 404 })
 
@@ -59,7 +74,16 @@ export default {
       if (asset) return asset
       if (request.method === 'GET' && path === localClientPath) return localClientDocument(config)
       if (path.startsWith('/upload/')) return manageHeaders(await manageUpload(request, path, runtime))
-      if (path === '/auth/handoff') return manageHeaders(await manageHandoff(request, url, runtime))
+      if (path === languagePath)
+        return manageHeaders(
+          await setLanguage(request, url.origin, new Headers(), (token) =>
+            resumeConsent(request, runtime, token),
+          ),
+        )
+      if (path === '/authorize' && (request.method === 'GET' || request.method === 'POST')) {
+        runtime.config = instance.locales[visitorLocale(request, config.locale)]
+        return managePage(await oauthFetch(request, runtime, ctx), runtime.config.locale)
+      }
       if (
         path === '/mcp' ||
         path === '/authorize' ||
@@ -69,20 +93,24 @@ export default {
       ) {
         return manageHeaders(await oauthFetch(request, runtime, ctx))
       }
+      if (!/^\/login\/[^/]+\/backchannel-logout$/.test(path))
+        runtime.config = instance.locales[visitorLocale(request, config.locale)]
+      if (path === '/auth/handoff')
+        return managePage(await manageHandoff(request, url, runtime), runtime.config.locale)
       const response =
         path.startsWith('/login/') || path === '/logout'
           ? await loginRoute(request, runtime)
           : await manageUi.fetch(request, runtime, ctx)
-      return manageHeaders(response)
+      return managePage(response, runtime.config.locale)
     } catch (error) {
       console.error('Forge request failed', error instanceof Error ? error.name : 'unknown')
-      const lead = messages(config).unavailable
+      const lead = messages(runtime.config).unavailable
       const browserAccess =
         (request.method === 'GET' && /^(?:\/login(?:\/[^/]+(?:\/callback)?)?|\/invite\/[^/]+)$/.test(path)) ||
         (path === '/authorize' && (request.method === 'GET' || request.method === 'POST'))
-      return manageHeaders(
-        browserAccess ? manageError(config, 503, lead) : new Response(lead, { status: 503 }),
-      )
+      return browserAccess
+        ? managePage(manageError(runtime.config, 503, lead), runtime.config.locale)
+        : manageHeaders(new Response(lead, { status: 503 }))
     } finally {
       // Leave receipt-dependent D1 writes ahead of cover work, including for browser restores.
       if (browser && coverJobs) {

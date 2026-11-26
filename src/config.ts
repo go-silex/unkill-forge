@@ -1,5 +1,6 @@
 import { z } from 'zod'
 import { accent } from '../brand/defaults'
+import type { Locale } from './i18n'
 
 const mark = z
   .string()
@@ -157,7 +158,7 @@ export type Env = Record<string, unknown> & {
 }
 export type Config = {
   name: string
-  locale: 'en' | 'fr'
+  locale: Locale
   timeZone: string
   brand: z.output<typeof brand>
   theme?: Fetcher
@@ -183,10 +184,11 @@ export type Runtime = {
   onRevisionCommitted?: (artefactId: string, revision: number) => void
 }
 
-const cache = new WeakMap<Env, Config | null>()
+type InstanceConfiguration = { default: Config; locales: Record<Locale, Config> }
+const cache = new WeakMap<Env, InstanceConfiguration | null>()
 const secret = z.string().min(1)
 
-export function configuration(env: Env): Config | null {
+export function instanceConfiguration(env: Env): InstanceConfiguration | null {
   const cached = cache.get(env)
   if (cached !== undefined) return cached
   const parsed = vars.safeParse(env)
@@ -234,6 +236,17 @@ export function configuration(env: Env): Config | null {
         revisionRetention: value.REVISION_RETENTION,
       }
   }
-  cache.set(env, config)
-  return config
+  const instance: InstanceConfiguration | null = config && {
+    default: config,
+    locales: {
+      en: config.locale === 'en' ? config : { ...config, locale: 'en' },
+      fr: config.locale === 'fr' ? config : { ...config, locale: 'fr' },
+    },
+  }
+  cache.set(env, instance)
+  return instance
+}
+
+export function configuration(env: Env): Config | null {
+  return instanceConfiguration(env)?.default ?? null
 }

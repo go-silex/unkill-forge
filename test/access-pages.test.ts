@@ -98,7 +98,8 @@ it('keeps protocol and machine misses plain and serves the browser HEAD without 
     expect(await head.text()).toBe('')
   }
 
-  const machineHeaders = { ...browserHeaders, 'content-type': 'text/plain; charset=UTF-8' }
+  const { 'content-language': _language, ...plainHeaders } = browserHeaders
+  const machineHeaders = { ...plainHeaders, 'content-type': 'text/plain; charset=UTF-8' }
   for (const [path, methods] of [
     ['/_forge/session', ['GET', 'HEAD']],
     ['/oauth/clients/local.json', ['OPTIONS', 'HEAD']],
@@ -125,7 +126,7 @@ it('keeps protocol and machine misses plain and serves the browser HEAD without 
   }
 
   const loginHeaders = {
-    ...browserHeaders,
+    ...plainHeaders,
     'content-type': 'text/plain;charset=UTF-8',
     'referrer-policy': 'no-referrer',
   }
@@ -178,7 +179,7 @@ it('renders login and consent storage outages but leaves the logout failure plai
     }),
   })
   const start = await unavailable('/login/team')
-  const referenceHeaders = Object.fromEntries(start.headers)
+  const { 'content-language': _language, ...referenceHeaders } = Object.fromEntries(start.headers)
   await errorCard(start, 503)
   fault = /DELETE FROM login_flows WHERE state_hash/
   await errorCard(await unavailable(callback, { headers: { Cookie: guest.cookieHeader() } }), 503)
@@ -258,12 +259,12 @@ it('shows the same pending account and local sign-out form at home and consent',
   expect(location(await viewer.request('/')).pathname).toBe('/login')
 })
 
-function authPath(id = clientId) {
+function authPath(id = clientId, state = requestData) {
   return `/authorize?${new URLSearchParams({
     client_id: id,
     redirect_uri: redirectUri,
     response_type: 'code',
-    state: requestData,
+    state,
     code_challenge: 'a'.repeat(43),
     code_challenge_method: 'S256',
     resource: `${manage}/mcp`,
@@ -272,7 +273,10 @@ function authPath(id = clientId) {
 }
 
 it('renders verified consent facts, escapes the client name and retains the bound Deny form', async () => {
-  const owner = await mockProvider().signedIn(runtime(), admin)
+  const send = runtime()
+  const idp = mockProvider()
+  const owner = await idp.signedIn(send, admin)
+  const otherSession = await idp.signedIn(send, admin)
   const providerFetch = fetch
   vi.stubGlobal('fetch', (input: RequestInfo | URL, init?: RequestInit) =>
     input === clientId
@@ -281,7 +285,10 @@ it('renders verified consent facts, escapes the client name and retains the boun
         )
       : providerFetch(input, init),
   )
-  const response = await owner.request(authPath())
+  const state = requestData.padEnd(5_000, 'x')
+  const path = authPath(clientId, state)
+  expect(path.length).toBeGreaterThan(4096)
+  const response = await owner.request(path)
   expect(response.status).toBe(200)
   expect(response.headers.get('Content-Type')).toBe('text/html; charset=utf-8')
   expect(response.headers.get('Cache-Control')).toBe('no-store')
@@ -297,16 +304,34 @@ it('renders verified consent facts, escapes the client name and retains the boun
   expect(html).toContain('&lt;strong&gt;Test application&lt;/strong&gt;')
   expect(html).not.toContain(clientName)
   expect(html).not.toContain(requestData)
+  const switchForm = html.match(/<form class="forge-language-switch"[^>]*>.*?<\/form>/s)?.[0] ?? ''
+  const switchToken = formValue(switchForm, 'consent')
+  expect(switchToken).toBe(formValue(html, 'consent'))
+  expect(switchToken).toMatch(/^[\w-]{43}$/)
+  const body = new URLSearchParams({ language: 'fr', consent: switchToken })
+  const headers = { Origin: manage, Referer: `${manage}/` }
+  const wrongSession = await otherSession.request('/_forge/language', { method: 'POST', headers, body })
+  expect(wrongSession.status).toBe(400)
+  expect(wrongSession.headers.has('Set-Cookie')).toBe(false)
+  const changed = await owner.request('/_forge/language', { method: 'POST', headers, body })
+  expect(changed.status).toBe(303)
+  expect(changed.headers.get('Location')).toBe(path)
+  const resumed = await owner.request(location(changed))
+  expect(resumed.headers.get('Content-Language')).toBe('fr')
+  const french = await resumed.text()
+  expect(french).toContain('<html lang="fr">')
+  expect(french).not.toContain(state)
   expect(html).toMatch(
     /method="post" action="\/authorize".*name="decision" value="deny".*name="decision" value="approve"/s,
   )
-  const consent = formValue(html, 'consent')
-  expect(consent).toMatch(/^[\w-]{43}$/)
+  const consent = formValue(french, 'consent')
+  expect(consent).not.toBe(switchToken)
+  await errorCard(await owner.post('/authorize', { consent: switchToken, decision: 'deny' }), 400)
   await errorCard(await owner.post('/authorize', { consent, decision: requestData }), 400)
   const denied = await owner.post('/authorize', { consent, decision: 'deny', state: 'ignored' })
   expect(denied.status).toBe(303)
   expect(location(denied)).toMatchObject({ origin: 'https://client.example.test', pathname: '/callback' })
-  expect(location(denied).searchParams.get('state')).toBe(requestData)
+  expect(location(denied).searchParams.get('state')).toBe(state)
   expect(location(denied).searchParams.get('error')).toBe('access_denied')
   await errorCard(await owner.post('/authorize', { consent, decision: 'deny' }), 400)
 })

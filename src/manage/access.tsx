@@ -21,6 +21,33 @@ export function isUnambiguousBrowserPath(path: string): boolean {
   )
 }
 
+export function SignIn({ config, query }: { config: Config; query: URLSearchParams }) {
+  const t = messages(config)
+  const invite = query.has('invite')
+  return (
+    <AccessCard
+      config={config}
+      variant={invite ? 'invite' : 'sign-in'}
+      title={t.signIn}
+      lead={invite ? t.access.inviteLead : t.access.signInLead}
+      note={t.access.signInNote}
+      homeLink
+      languageReturn={`/login?${query}`}
+      actions={
+        <ul class="forge-link-list">
+          {config.providers.map((provider, index) => (
+            <li>
+              <CardLink href={`/login/${provider.id}?${query}`} primary={index === 0}>
+                {provider.label}
+              </CardLink>
+            </li>
+          ))}
+        </ul>
+      }
+    />
+  )
+}
+
 export function PendingAccess({ config, member }: { config: Config; member: Member }) {
   const t = messages(config)
   return (
@@ -31,6 +58,7 @@ export function PendingAccess({ config, member }: { config: Config; member: Memb
       lead={t.legacy.approvalRequired}
       note={t.access.pendingNote}
       homeLink
+      languageReturn="/"
       actions={
         <form class="forge-action" action="/logout" method="post">
           <button class="forge-button forge-button--primary" type="submit">
@@ -81,6 +109,7 @@ export function manageError(
       status={status}
       lead={lead}
       homeLink
+      languageReturn={options?.noReferrer ? undefined : (options?.home ?? '/')}
       actions={
         <>
           {options?.retry && (

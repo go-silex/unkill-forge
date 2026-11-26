@@ -128,7 +128,9 @@ Publication does not wait for capture. The scheduled pass also discovers existin
 
 ## Branding and locale
 
-Set `LOCALE` to `en` (default) or `fr` for Forge-authored UI copy on both hosts. It does not translate published artefacts, provider labels or member names. `FORGE_NAME` supplies the instance name in document titles, MCP and OAuth resource metadata. `BRAND` is a JSON-encoded string; keep `"{}"` for the bundled defaults, or override the six-digit hex accent, the brand block label (trimmed plain text, 1–40 characters; defaults to `FORGE_NAME`), and the non-index read landing's plain text (up to 500 characters). A label does not require a theme binding:
+Set `LOCALE` to `en` (default) or `fr` as the fallback for Forge-authored UI on both hosts. Forge first uses the visitor's explicit preference on that host, then the best supported language in the browser's `Accept-Language` header. Visitors can switch between English and French on the read landing, access cards and in Manage. Each host saves its own preference for one year. This does not translate published artefacts, operator branding, provider labels or member names.
+
+`FORGE_NAME` supplies the instance name in document titles, MCP and OAuth resource metadata. `BRAND` is a JSON-encoded string; keep `"{}"` for the bundled defaults, or override the six-digit hex accent, the brand block label (trimmed plain text, 1–40 characters; defaults to `FORGE_NAME`), and the non-index read landing's plain text (up to 500 characters). A label does not require a theme binding:
 
 Set the optional `TIMEZONE` to an IANA time zone name (default `UTC`, for example `Europe/Paris`). Manage shows relative dates where possible; this setting applies to the absolute timestamp on hover and to older dates shown directly. Relative labels use elapsed time and do not depend on the time zone.
 
@@ -220,6 +222,7 @@ These classes and the custom properties above are the supported theme contract. 
 | `.forge-nav`, `.forge-nav__link`                                                                  | Section navigation and links; use `[aria-current="page"]` for the active section                           |
 | `.forge-nav__group`, `.forge-nav__group-label`                                                    | Role-gated section group and its visible label                                                             |
 | `.forge-account`, `.forge-account__name`, `.forge-account__role`                                  | Signed-in account block with member name, role and sign-out form                                           |
+| `.forge-language-switch`, `.forge-language-switch__button`                                        | Same-origin language preference form and button (uses `lang` for the alternate language)                   |
 | `.forge-filters`, `.forge-filters__link`, `.forge-filters__count`                                 | Catalogue visibility filters, links (active via `[aria-current="page"]`) and catalogue-wide counts         |
 | `.forge-badge`, `.forge-badge--current`                                                           | Text badge and current-version variant                                                                     |
 | `.forge-badge--private`, `.forge-badge--shared`, `.forge-badge--public`                           | Private, shared and public access variants                                                                 |

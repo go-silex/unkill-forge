@@ -227,11 +227,15 @@ it('themes Forge-authored errors without altering served artefacts, redirects or
     [`${read}/a/public?tab=latest`, 301, ''],
     [share.url.slice(0, -1), 301, ''],
   ] as const) {
-    const actual = await themed(url)
+    const actual = await themed(url, {
+      headers: { 'Accept-Language': 'fr', Cookie: '__Host-forge-language=fr' },
+    })
     const original = await send(url)
     expect(actual.status, url).toBe(status)
     expect(await actual.text()).toBe(body)
     expect([...actual.headers]).toEqual([...original.headers])
+    expect(actual.headers.has('Content-Language')).toBe(false)
+    expect(actual.headers.has('Vary')).toBe(false)
     expect(actual.headers.has('Content-Security-Policy')).toBe(false)
   }
 
@@ -242,8 +246,9 @@ it('themes Forge-authored errors without altering served artefacts, redirects or
   expect(neverExisted.status).toBe(404)
   expect(Object.fromEntries(revoked.headers)).toEqual({
     'cache-control': 'private, no-store',
+    'content-language': 'en',
     'content-security-policy':
-      "default-src 'none'; style-src 'self'; img-src 'self'; font-src 'self'; base-uri 'none'; frame-ancestors 'none'",
+      "default-src 'none'; style-src 'self'; img-src 'self'; font-src 'self'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'",
     'content-type': 'text/html; charset=utf-8',
     'referrer-policy': 'same-origin',
     'x-content-type-options': 'nosniff',
@@ -434,10 +439,51 @@ it.each(['en', 'fr'] as const)(
     )
 
     const hiddenTag = await home({ tag: 'private-label', view: 'list' })
-    expect(hiddenTag).toBe(await home({ tag: 'missing-label', view: 'list' }))
-    expect(hiddenTag).not.toContain('private-label')
+    const staleTag = await home({ tag: 'missing-label', view: 'list' })
+    expect(hiddenTag.replace('tag=private-label', 'tag=missing-label')).toBe(staleTag)
+    expect(hiddenTag).not.toContain('<option value="private-label"')
+    expect(staleTag).not.toContain('<option value="missing-label"')
     expect(hiddenTag).not.toContain('<ul class="forge-gallery')
     expect(await home({ tag: 'OPS', view: 'list' })).toBe(unfiltered)
+
+    const preferredLocale = french ? 'en' : 'fr'
+    const reader = new Browser(indexed)
+    const tagged = await reader.request(`${read}/?q=WEEKLY&tag=ops-weekly&view=list`, {
+      headers: { 'Accept-Language': preferredLocale },
+    })
+    expect(tagged.headers.get('Content-Language')).toBe(preferredLocale)
+    const preferred = await tagged.text()
+    expect(preferred).toContain(`name="tag" aria-label="${french ? 'Filter by tag' : 'Filtrer par tag'}"`)
+    expect(preferred).toContain('<span class="forge-tag">ops-weekly</span>')
+    const returnPath = formValue(preferred, 'return').replaceAll('&amp;', '&')
+    expect(returnPath).toBe('/?q=WEEKLY&tag=ops-weekly&view=list')
+    const switched = await reader.post(
+      `${read}/_forge/language`,
+      { language: locale, return: returnPath },
+      read,
+    )
+    expect(switched.status).toBe(303)
+    expect(switched.headers.get('Location')).toBe(returnPath)
+    const selected = await reader.request(read + returnPath, {
+      headers: { 'Accept-Language': preferredLocale },
+    })
+    expect(selected.headers.get('Content-Language')).toBe(locale)
+    expect(await selected.text()).toBe(combined)
+
+    const staleReturnPath = formValue(staleTag, 'return').replaceAll('&amp;', '&')
+    expect(staleReturnPath).toBe('/?tag=missing-label&view=list')
+    const staleSwitch = await reader.post(
+      `${read}/_forge/language`,
+      { language: preferredLocale, return: staleReturnPath },
+      read,
+    )
+    expect(staleSwitch.status).toBe(303)
+    expect(staleSwitch.headers.get('Location')).toBe(staleReturnPath)
+    const stalePage = await reader.request(read + staleReturnPath)
+    expect(stalePage.headers.get('Content-Language')).toBe(preferredLocale)
+    const staleHtml = await stalePage.text()
+    expect(staleHtml).toContain(french ? '0 of 2 documents' : '0 sur 2 documents')
+    expect(staleHtml).not.toContain('<ul class="forge-gallery')
   },
 )
 
@@ -462,7 +508,7 @@ it('limits public gallery tags and tag search to the newest 200 public artefacts
   expect(index).not.toContain('Public report')
   const filtered = await (await indexed(`${read}/?tag=older-tag`)).text()
   expect(filtered).toContain('0 of 200 documents')
-  expect(filtered).not.toContain('older-tag')
+  expect(filtered).not.toContain('<option value="older-tag"')
   expect(await (await indexed(`${read}/?q=older-tag`)).text()).toContain('0 of 200 documents')
 })
 
@@ -688,7 +734,15 @@ it('signs in and returns to a punctuation-heavy URL at the handoff limit without
   const login = location(await manageBrowser.request(handoff, { headers: navigation }))
   expect(login.pathname).toBe('/login')
   const loginPage = await (await manageBrowser.request(login)).text()
-  const providerHref = /href="([^"]*\/login\/team\?[^"]+)"/.exec(loginPage)?.[1]
+  const languageReturn = formValue(loginPage, 'return')
+  expect(languageReturn.length).toBeGreaterThan(10_900)
+  const switched = await manageBrowser.post('/_forge/language', { language: 'fr', return: languageReturn })
+  expect(switched.status).toBe(303)
+  expect(manageBrowser.cookie('__Host-forge-language')).toBe('fr')
+  expect(location(switched).searchParams.get('return')).toBe(login.searchParams.get('return'))
+  const localizedPage = await manageBrowser.request(location(switched))
+  expect(localizedPage.headers.get('Content-Language')).toBe('fr')
+  const providerHref = /href="([^"]*\/login\/team\?[^"]+)"/.exec(await localizedPage.text())?.[1]
   if (!providerHref) throw new Error('Expected the sign-in provider link')
   expect(providerHref.length).toBeLessThan(16_384)
   const upstream = location(await manageBrowser.request(providerHref))
