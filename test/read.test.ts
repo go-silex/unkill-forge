@@ -630,7 +630,15 @@ it('signs in and returns to a punctuation-heavy URL at the handoff limit without
   const login = location(await manageBrowser.request(handoff, { headers: navigation }))
   expect(login.pathname).toBe('/login')
   const loginPage = await (await manageBrowser.request(login)).text()
-  const providerHref = /href="([^"]*\/login\/team\?[^"]+)"/.exec(loginPage)?.[1]
+  const languageReturn = formValue(loginPage, 'return')
+  expect(languageReturn.length).toBeGreaterThan(10_900)
+  const switched = await manageBrowser.post('/_forge/language', { language: 'fr', return: languageReturn })
+  expect(switched.status).toBe(303)
+  expect(manageBrowser.cookie('__Host-forge-language')).toBe('fr')
+  expect(location(switched).searchParams.get('return')).toBe(login.searchParams.get('return'))
+  const localizedPage = await manageBrowser.request(location(switched))
+  expect(localizedPage.headers.get('Content-Language')).toBe('fr')
+  const providerHref = /href="([^"]*\/login\/team\?[^"]+)"/.exec(await localizedPage.text())?.[1]
   if (!providerHref) throw new Error('Expected the sign-in provider link')
   expect(providerHref.length).toBeLessThan(16_384)
   const upstream = location(await manageBrowser.request(providerHref))

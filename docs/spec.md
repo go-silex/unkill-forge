@@ -368,6 +368,8 @@ Sign-in and invitation entry, pending approval on either host, and OAuth consent
 
 The gallery, access cards and Manage shell offer a language switch. `POST /_forge/language` accepts only an exact same-origin form submission and a validated local return path, then sets a host-only, Secure, HttpOnly, SameSite=Lax preference cookie for one year and returns a 303. The hosts do not share a preference. Read-origin artefact code can set that host's preference; it changes only Forge copy, never authorization. Error pages with a strict no-referrer policy keep that policy and do not offer the form.
 
+On OAuth consent the switch consumes the current session-bound consent token without approving or denying the request. It redirects to the stored local authorization URL, which renders the consent in the selected language and issues a new one-use token. The authorization query is not copied into the switch form.
+
 Forge HTML has matching `<html lang>` and `Content-Language` and is `no-store`. Any future cacheable variant must vary on `Accept-Language` and `Cookie`. Published files, previews, theme assets, operator branding and MCP/OAuth protocol metadata are not localized.
 
 ## 12. Configuration, branding, deployment

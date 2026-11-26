@@ -14,6 +14,24 @@ import { requireBrowserSession } from '../login'
 import { manageHeaders } from '../origin'
 import { Badge } from '../ui/page'
 
+const consentTokenPattern = /^[A-Za-z0-9_-]{43}$/
+
+export async function resumeConsent(
+  request: Request,
+  runtime: Runtime,
+  token: string,
+): Promise<string | null> {
+  if (!consentTokenPattern.test(token)) return null
+  const session = await requireBrowserSession(request, runtime)
+  if (session instanceof Response || session.member.status !== 'active') return null
+  const stored = await consumeConsent(runtime.env.DB, await hashSecret(token), session.idHash, Date.now())
+  if (!stored) return null
+  const target = URL.parse(stored)
+  return target?.origin === runtime.config.manageOrigin && target.pathname === '/authorize'
+    ? target.pathname + target.search
+    : null
+}
+
 export async function authorize(
   request: Request,
   runtime: Runtime,
@@ -60,7 +78,7 @@ export async function authorize(
           lead={text.lead}
           note={text.note}
           homeLink
-          languageReturn
+          languageReturn={{ consentToken: token }}
           facts={[
             [text.client, local ? text.localClient : consent.clientName],
             [
@@ -117,11 +135,7 @@ export async function authorize(
     if (!form) return manageError(config, 400, text.invalidForm, { home: '/artefacts' })
     const token = form.get('consent')
     const decision = form.get('decision')
-    if (
-      typeof token !== 'string' ||
-      !/^[A-Za-z0-9_-]{43}$/.test(token) ||
-      (decision !== 'approve' && decision !== 'deny')
-    ) {
+    if (!token || !consentTokenPattern.test(token) || (decision !== 'approve' && decision !== 'deny')) {
       return manageError(config, 400, text.invalidForm, { home: '/artefacts' })
     }
     const stored = await consumeConsent(DB, await hashSecret(token), session.idHash, Date.now())

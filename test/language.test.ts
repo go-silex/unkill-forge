@@ -26,6 +26,8 @@ it.each([
   ['fr', 'en', undefined, 'en'],
   ['en', 'de;q=1,en-GB;q=0.3, FR-ca ; Q=0.75', undefined, 'fr'],
   ['fr', 'fr-FR;q=0.4,en-US;q=0.75', undefined, 'en'],
+  ['fr', 'fr;q = 1,en;q=0.8', undefined, 'en'],
+  ['fr', 'fr;q= 1,en;q=0.8', undefined, 'en'],
   ['en', 'fr-CA;q=0.7,en;q=0.7', undefined, 'fr'],
   ['en', 'fr;q=0,de,*;q=0.8', undefined, 'en'],
   ['fr', 'en;q=1.1,en;q=oops,es-ES', undefined, 'fr'],
@@ -111,15 +113,23 @@ it.each([read, manage])('requires same-origin POST and a local return on %s', as
     '//other.example/',
     '/\\other.example/',
     '/%5cother.example/',
+    '/%2fother.example/',
+    '/%252Fother.example/',
+    '/%255Cother.example/',
+    '/prefix/../%2Fother.example/',
     '/.//other.example/',
     '/a\t/b',
-    `/${'x'.repeat(8192)}`,
+    `/${'x'.repeat(16_384)}`,
   ]) {
     const invalid = await post(new URLSearchParams({ language: 'fr', return: destination }))
     expect(invalid.status, destination).toBe(400)
     expect(invalid.headers.has('Set-Cookie')).toBe(false)
     expect(invalid.headers.has('Location')).toBe(false)
   }
+  const safeQuery = '/?q=%2F%5C'
+  const accepted = await post(new URLSearchParams({ language: 'fr', return: safeQuery }))
+  expect(accepted.status).toBe(303)
+  expect(accepted.headers.get('Location')).toBe(safeQuery)
   const invalidLanguage = await post(new URLSearchParams({ language: 'fr-CA', return: '/' }))
   expect(invalidLanguage.status).toBe(400)
   const duplicate = await post(new URLSearchParams('language=en&language=fr&return=%2F'))

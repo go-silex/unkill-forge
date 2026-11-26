@@ -28,8 +28,7 @@ export function AccessCard({
   note?: string
   status?: number
   homeLink?: boolean
-  // `true` follows the initiating page via the same-origin Referer rather than echoing its URL.
-  languageReturn?: string | true
+  languageReturn?: string | { consentToken: string }
 }) {
   return (
     <html lang={config.locale}>
@@ -42,6 +41,7 @@ export function AccessCard({
               <LanguageSwitch
                 locale={config.locale}
                 returnPath={typeof languageReturn === 'string' ? languageReturn : undefined}
+                consentToken={typeof languageReturn === 'object' ? languageReturn.consentToken : undefined}
               />
             )}
           </header>

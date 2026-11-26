@@ -11,6 +11,7 @@ import { manageError } from './manage/access'
 import { manageHandoff } from './manage/handoff'
 import { loginRoute } from './manage/login'
 import { localClientDocument, localClientPath, oauthFetch } from './manage/oauth'
+import { resumeConsent } from './manage/oauth/consent'
 import { checkManageOrigin, manageHeaders } from './manage/origin'
 import { manageUi } from './manage/ui'
 import { manageUpload } from './manage/upload'
@@ -73,7 +74,12 @@ export default {
       if (asset) return asset
       if (request.method === 'GET' && path === localClientPath) return localClientDocument(config)
       if (path.startsWith('/upload/')) return manageHeaders(await manageUpload(request, path, runtime))
-      if (path === languagePath) return manageHeaders(await setLanguage(request, url.origin, new Headers()))
+      if (path === languagePath)
+        return manageHeaders(
+          await setLanguage(request, url.origin, new Headers(), (token) =>
+            resumeConsent(request, runtime, token),
+          ),
+        )
       if (path === '/authorize' && (request.method === 'GET' || request.method === 'POST')) {
         runtime.config = instance.locales[visitorLocale(request, config.locale)]
         return managePage(await oauthFetch(request, runtime, ctx), runtime.config.locale)
