@@ -4,7 +4,9 @@ import { AccessCard, CardLink, ErrorCard } from '../access-card'
 import { forgePageSources } from '../brand'
 import { BrandBlock } from '../brand-block'
 import type { Config, Runtime } from '../config'
-import { canonicalRead, publicArtefacts, shareRead } from '../core/artefacts'
+import { isArtefactTag } from '../core/artefact-tags'
+import { canonicalRead, shareRead } from '../core/artefacts'
+import { publicArtefacts } from '../core/catalogue'
 import { galleryPreviewSlugs } from '../core/gallery-previews'
 import { galleryQueryLimit, gallerySearch } from '../core/gallery-search'
 import { handoffChallenge, readBoundSession, redeemHandoff, validHandoffState } from '../core/handoffs'
@@ -16,6 +18,7 @@ import { DocumentHead } from '../head'
 import { isDocumentNavigation, readBoundedBody, readCookie, writeCookie } from '../http'
 import { messages } from '../i18n'
 import { LanguageSwitch } from '../language-switch'
+import { TagChips } from '../tag-chips'
 import { serveFile } from './file'
 import { readHeaders } from './headers'
 
@@ -126,14 +129,22 @@ async function home(runtime: Runtime, url: URL, head: boolean, ctx: ExecutionCon
   const { query: q, matches: matchesQuery } = gallerySearch(params)
   const view = galleryView(params.get('view'))
   const entries = await publicArtefacts(runtime, ctx)
+  const requestedTag = params.get('tag') ?? ''
+  const tag = isArtefactTag(requestedTag) ? requestedTag : ''
+  const publicTags = new Set<string>()
+  for (const entry of entries) for (const value of entry.tags) publicTags.add(value)
   // Keep preview discovery on the same bounded set (and SQL path) for both indexed views and search.
   const previews = await galleryPreviewSlugs(
     runtime,
     entries.map(({ slug }) => slug),
     'public',
   )
-  const matches = q ? entries.filter(matchesQuery) : entries
-  const viewParams = q ? new URLSearchParams({ q }) : undefined
+  const filtered = Boolean(q || tag)
+  const matches = filtered
+    ? entries.filter((entry) => (!tag || entry.tags.includes(tag)) && matchesQuery(entry))
+    : entries
+  const viewParams = new URLSearchParams(q ? { q } : undefined)
+  if (publicTags.has(tag)) viewParams.set('tag', tag)
   const clear = view === 'list' ? '/?view=list' : '/'
   const languageReturn = viewParams ? `/?${viewParams}${view === 'list' ? '&view=list' : ''}` : clear
   return documentResponse(
@@ -168,11 +179,21 @@ async function home(runtime: Runtime, url: URL, head: boolean, ctx: ExecutionCon
                     maxlength={galleryQueryLimit}
                     placeholder={t.read.searchLabel}
                   />
+                  {publicTags.size > 0 && (
+                    <select class="forge-tag-filter" name="tag" aria-label={t.read.tagFilter}>
+                      <option value="">{t.read.allTags}</option>
+                      {[...publicTags].sort().map((option) => (
+                        <option key={option} value={option} selected={tag === option}>
+                          {option}
+                        </option>
+                      ))}
+                    </select>
+                  )}
                   {view === 'list' && <input name="view" type="hidden" value={view} />}
                   <button class="forge-button" type="submit">
                     {t.read.search}
                   </button>
-                  {q && (
+                  {filtered && (
                     <a class="forge-button" href={clear}>
                       {t.read.clear}
                     </a>
@@ -180,7 +201,7 @@ async function home(runtime: Runtime, url: URL, head: boolean, ctx: ExecutionCon
                 </form>
               </search>
               <p class="forge-public-count">
-                {t.read.documents(entries.length, q ? matches.length : undefined)}
+                {t.read.documents(entries.length, filtered ? matches.length : undefined)}
               </p>
               <GalleryViews path="/" params={viewParams} view={view} labels={t.views} />
             </div>
@@ -195,10 +216,11 @@ async function home(runtime: Runtime, url: URL, head: boolean, ctx: ExecutionCon
                 label={t.artefacts}
                 view={view}
                 linkRel="noreferrer"
-                items={matches.map(({ url, title, slug, updatedAt }) => ({
+                items={matches.map(({ url, title, slug, updatedAt, tags }) => ({
                   href: url,
                   title,
                   preview: previews.has(slug) ? slug : undefined,
+                  detail: tags.length > 0 ? <TagChips tags={tags} /> : undefined,
                   meta: time(config, updatedAt),
                 }))}
               />

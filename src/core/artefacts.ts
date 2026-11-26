@@ -1,12 +1,21 @@
 import { base64url } from 'jose'
 import { z } from 'zod'
 import { MAX_ARTEFACT_FILES, type Runtime } from '../config'
+import { isArtefactTag, replaceArtefactTags, unpackArtefactTags } from './artefact-tags'
 import { blobText, contentType, MAX_TEXT_BYTES, storeBlobs, textSlice } from './blobs'
 import type { CatalogueAccess } from './catalogue'
 import { cleanSearchQuery } from './gallery-search'
 import { auditChange, hashSecret, type Member } from './index'
 import { trimLookahead } from './pagination'
 import { redirectPrefix } from './read-path'
+import {
+  cacheRevisionEntries,
+  computeRevisionEntry,
+  encodeFilePath,
+  entryUrl,
+  type RevisionEntry,
+  revisionEntry,
+} from './revision-entry'
 import { generateShareKey, sealShareKey, unsealShareKey, validShareKey } from './share-keys'
 
 type ErrorCode = 'not_found' | 'forbidden' | 'conflict' | 'invalid_input' | 'too_large'
@@ -43,6 +52,7 @@ type InlineFile = { path: string; content: string; encoding?: 'utf8' | 'base64';
 type Publish = {
   slug: string
   title?: string
+  tags?: string[]
   files: (InlineFile | { path: string; uploadId: string })[]
   mode: 'merge' | 'replace'
   delete?: string[]
@@ -50,7 +60,7 @@ type Publish = {
   message?: string
 }
 
-const listCursor = z.tuple([z.int().nonnegative(), z.uuid(), z.string()])
+const listCursor = z.tuple([z.int().nonnegative(), z.uuid(), z.string(), z.string().optional()])
 const fileCursor = z.tuple([z.uuid(), z.int().positive(), z.string()])
 const revisionCursor = z.tuple([z.uuid(), z.int().positive()])
 
@@ -85,6 +95,25 @@ export function checkSlug(slug: string) {
       'Invalid slug; use 1–64 lowercase letters, digits or internal hyphens',
     )
   }
+}
+
+function checkTag(tag: string) {
+  if (!isArtefactTag(tag))
+    throw new ArtefactError(
+      'invalid_input',
+      'Invalid tag; use 1–32 lowercase letters, digits or internal hyphens',
+    )
+}
+
+function normaliseTags(tags: string[]) {
+  const unique = new Set<string>()
+  for (const tag of tags) {
+    if (unique.has(tag)) continue
+    checkTag(tag)
+    unique.add(tag)
+    if (unique.size > 10) throw new ArtefactError('invalid_input', 'An artefact can have at most 10 tags')
+  }
+  return [...unique].sort()
 }
 
 export function checkPath(path: string) {
@@ -130,118 +159,41 @@ async function liveHead(db: D1Database, slug: string, expectedId?: string) {
   return artefact
 }
 
-type RevisionEntry = { path: string | null }
-
-function selectRevisionEntry(db: D1Database, id: string, revision: number) {
-  return db
-    .prepare('SELECT entry_path AS path FROM revisions WHERE artefact_id = ? AND number = ?')
-    .bind(id, revision)
-}
-
-function computeRevisionEntry(db: D1Database, id: string, revision: number | null) {
-  return db
-    .prepare(`WITH target(number) AS (
-      SELECT COALESCE(?2, (SELECT current_revision FROM artefacts WHERE id = ?1))
-    )
-    SELECT COALESCE(
-      (SELECT path FROM files WHERE artefact_id = ?1 AND revision = target.number AND path = 'index.html'),
-      (SELECT path FROM files WHERE artefact_id = ?1 AND revision = target.number
-       ORDER BY (lower(trim(substr(content_type, 1, instr(content_type || ';', ';') - 1), char(9) || ' '))
-         = 'text/html') DESC, path LIMIT 1)
-    ) AS path FROM target`)
-    .bind(id, revision)
-}
-
-async function cacheRevisionEntries(
-  db: D1Database,
-  entries: (RevisionEntry & { id: string; revision: number })[],
-  ctx?: ExecutionContext,
-) {
-  const persist = async () => {
-    const updates = []
-    for (const { id, revision, path } of entries) {
-      if (path === null) continue
-      updates.push(
-        db
-          .prepare(
-            'UPDATE revisions SET entry_path = ? WHERE artefact_id = ? AND number = ? AND entry_path IS NULL',
-          )
-          .bind(path, id, revision),
-      )
-    }
-    if (updates.length > 0) await db.batch(updates)
-  }
-  const update = persist().catch(() => console.error('Forge revision entry cache write failed'))
-  if (ctx) ctx.waitUntil(update)
-  else await update
-}
-
-export async function revisionEntry(
-  db: D1Database,
-  id: string,
-  revision: number,
-  { ctx, cache = true }: { ctx?: ExecutionContext; cache?: boolean } = {},
-) {
-  const cached = await selectRevisionEntry(db, id, revision).first<string>('path')
-  if (cached !== null) return cached
-  const path = await computeRevisionEntry(db, id, revision).first<string>('path')
-  if (cache && path !== null) await cacheRevisionEntries(db, [{ id, revision, path }], ctx)
-  return path
-}
-
-function entryUrl(origin: string, slug: string, path: string) {
-  const base = `${origin}/a/${slug}/`
-  return path === 'index.html' ? base : base + encodeFilePath(path)
-}
-
-export function encodeFilePath(path: string) {
-  return path.split('/').map(encodeURIComponent).join('/')
-}
-
-export async function publicArtefacts({ env: { DB: db }, config }: Runtime, ctx?: ExecutionContext) {
-  const { results } = await db
-    .prepare(`SELECT a.id, a.slug, a.title, a.updated_at AS updatedAt, r.number AS revision, r.entry_path AS path
-      FROM artefacts a JOIN revisions r ON r.artefact_id = a.id AND r.number = a.current_revision
-      WHERE a.deleted_at IS NULL AND a.visibility = 'public'
-      ORDER BY a.created_at DESC, a.slug LIMIT 200`)
-    .all<RevisionEntry & Pick<Artefact, 'id' | 'slug' | 'title' | 'updatedAt' | 'revision'>>()
-  const legacy = results.filter(({ path }) => path === null)
-  if (legacy.length > 0) {
-    const entries = await db.batch<RevisionEntry>(
-      legacy.map(({ id, revision }) => computeRevisionEntry(db, id, revision)),
-    )
-    for (const [index, row] of legacy.entries()) row.path = entries[index].results[0]?.path ?? null
-    await cacheRevisionEntries(db, legacy, ctx)
-  }
-  return results.flatMap(({ slug, title, path, updatedAt }) =>
-    path === null ? [] : [{ slug, title, url: entryUrl(config.readOrigin, slug, path), updatedAt }],
-  )
-}
-
 export async function listArtefacts(
   { env: { DB: db } }: Runtime,
   member: Member,
   query = '',
   cursor?: string,
+  tag?: string,
 ) {
   checkMember(member)
+  if (tag !== undefined) checkTag(tag)
   const after = cursor === undefined ? null : decodeCursor(cursor, listCursor)
-  if (after && after[2] !== query)
+  if (after && (after[2] !== query || after[3] !== tag))
     throw new ArtefactError('invalid_input', 'Cursor belongs to a different query')
   const literal = cleanSearchQuery(query)
   const searchTitle = "replace(replace(title, char(65038), ''), char(65039), '')" // Slugs are ASCII.
   const { results } = await db
-    .prepare(`SELECT id, slug, title, visibility, current_revision AS revision, updated_at AS updatedAt
-    FROM artefacts WHERE deleted_at IS NULL AND (?1 = '' OR instr(lower(slug), lower(?1)) > 0
-      OR instr(lower(${searchTitle}), lower(?1)) > 0)
+    .prepare(`SELECT id, slug, title, visibility, current_revision AS revision, updated_at AS updatedAt,
+      (SELECT group_concat(tag, ',' ORDER BY tag) FROM artefact_tags WHERE artefact_id = artefacts.id) AS tagList
+    FROM artefacts WHERE deleted_at IS NULL
+    AND (?4 IS NULL OR EXISTS (SELECT 1 FROM artefact_tags WHERE artefact_id = artefacts.id AND tag = ?4))
+    AND (?1 = '' OR instr(lower(slug), lower(?1)) > 0 OR instr(lower(${searchTitle}), lower(?1)) > 0
+      OR EXISTS (SELECT 1 FROM artefact_tags WHERE artefact_id = artefacts.id AND instr(tag, lower(?1)) > 0))
     AND (?2 IS NULL OR updated_at < ?2 OR (updated_at = ?2 AND id > ?3))
     ORDER BY updated_at DESC, id LIMIT 51`)
-    .bind(literal, after?.[0] ?? null, after?.[1] ?? null)
-    .all<Pick<Artefact, 'id' | 'slug' | 'title' | 'visibility' | 'revision' | 'updatedAt'>>()
+    .bind(literal, after?.[0] ?? null, after?.[1] ?? null, tag ?? null)
+    .all<
+      Pick<Artefact, 'id' | 'slug' | 'title' | 'visibility' | 'revision' | 'updatedAt'> & {
+        tagList: string | null
+      }
+    >()
   const last = trimLookahead(results, 50)
   return {
-    artefacts: results.map(({ id: _id, ...row }) => row),
-    nextCursor: last ? base64url.encode(JSON.stringify([last.updatedAt, last.id, query])) : undefined,
+    artefacts: results.map(({ id: _id, tagList, ...row }) => ({ ...row, tags: unpackArtefactTags(tagList) })),
+    nextCursor: last
+      ? base64url.encode(JSON.stringify([last.updatedAt, last.id, query, ...(tag ? [tag] : [])]))
+      : undefined,
   }
 }
 
@@ -274,7 +226,17 @@ export async function getArtefactDetails(
     env: { DB: db },
     config,
   } = runtime
-  const { id, deletedAt: _deletedAt, ...artefact } = await liveHead(db, slug)
+  checkSlug(slug)
+  // Publish commits tags and the head together; read both in the same D1 snapshot.
+  const row = await db
+    .prepare(`SELECT id, slug, title, visibility, current_revision AS revision, created_by AS createdBy,
+      created_at AS createdAt, updated_at AS updatedAt,
+      (SELECT group_concat(tag, ',' ORDER BY tag) FROM artefact_tags WHERE artefact_id = artefacts.id) AS tagList
+      FROM artefacts WHERE slug = ? AND deleted_at IS NULL`)
+    .bind(slug)
+    .first<Omit<Artefact, 'deletedAt'> & { tagList: string | null }>()
+  if (!row) throw new ArtefactError('not_found', 'Artefact not found')
+  const { id, tagList, ...artefact } = row
   const { revision } = artefact
   const after = cursor === undefined ? null : decodeCursor(cursor, fileCursor)
   if (after && after[0] !== id)
@@ -305,6 +267,7 @@ export async function getArtefactDetails(
   return {
     id,
     ...artefact,
+    tags: unpackArtefactTags(tagList),
     files,
     url: entryUrl(config.readOrigin, slug, path),
     shareLinks,
@@ -530,6 +493,7 @@ type Commit = {
   slug: string
   current: number
   title?: string
+  tags?: string[]
   message?: string
   action: 'artefact.publish' | 'artefact.restore_revision'
   detail: Record<string, unknown>
@@ -543,9 +507,11 @@ type Commit = {
 async function commitRevision(
   { env: { DB: db }, config, onRevisionCommitted }: Runtime,
   member: Member,
-  { id, slug, current, title, message, action, detail, source, carry, newFiles, uploaded, epoch }: Commit,
+  commit: Commit,
   ctx?: ExecutionContext,
 ) {
+  const { id, slug, current, title, message, action, detail } = commit
+  const { tags, source, carry, newFiles, uploaded, epoch } = commit
   const revision = current + 1
   const now = Date.now()
   const statements = []
@@ -624,6 +590,7 @@ async function commitRevision(
         updated_at = MAX(?, updated_at) WHERE id = ?`)
       .bind(revision, title ?? null, now, id),
     auditChange(db, now, member.id, action, { revision, ...detail }, id),
+    ...(tags === undefined ? [] : replaceArtefactTags(db, id, slug, tags)),
     db
       .prepare(`DELETE FROM revisions WHERE artefact_id = ?1 AND number IN (
         SELECT number FROM revisions WHERE artefact_id = ?1 AND number <= ?2 ORDER BY number LIMIT 2
@@ -737,6 +704,7 @@ export async function publish(
   const maxFiles = config.maxFilesPerArtefact
   const maxBytes = config.maxInlineBytes
   checkPublishArrayLengths(input)
+  const tags = input.tags === undefined ? undefined : normaliseTags(input.tags)
 
   const deletes = new Set(input.delete)
   for (const path of deletes) checkPath(path)
@@ -829,9 +797,10 @@ export async function publish(
           slug: input.slug,
           current,
           title: input.title,
+          tags,
           message: input.message,
           action: 'artefact.publish',
-          detail: { mode: input.mode },
+          detail: { mode: input.mode, tags },
           carry,
           newFiles,
           uploaded,
@@ -964,6 +933,29 @@ export async function setVisibility(
   ])
   if (result.meta.changes !== 1) throw new ArtefactError('not_found', 'Artefact not found')
   return { visibility }
+}
+
+export async function setArtefactTags(
+  { env: { DB: db } }: Runtime,
+  member: Member,
+  slug: string,
+  tags: string[],
+  expectedId?: string,
+) {
+  checkMember(member, true)
+  const normalised = normaliseTags(tags)
+  const { id } = await liveHead(db, slug, expectedId)
+  const now = Date.now()
+  const [result] = await db.batch([
+    db
+      .prepare(`UPDATE artefacts SET updated_at = MAX(?, updated_at)
+      WHERE id = ? AND slug = ? AND deleted_at IS NULL`)
+      .bind(now, id, slug),
+    auditChange(db, now, member.id, 'artefact.tags', { tags: normalised }, id),
+    ...replaceArtefactTags(db, id, slug, normalised),
+  ])
+  if (result.meta.changes !== 1) throw new ArtefactError('not_found', 'Artefact not found')
+  return { tags: normalised }
 }
 
 export async function setAccess(

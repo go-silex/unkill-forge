@@ -6,6 +6,8 @@
 - Show the irreversible purge guidance on the Deleted artefacts page as an accessible warning.
 - Read and Manage pages follow your browser's French or English preference; switch languages on either host without changing the other.
 - Upgrade: no D1 migration, binding or required config change. `LOCALE` is now the fallback language. Themes can style the switch with `.forge-language-switch` and `.forge-language-switch__button`.
+- Organize artefacts with tags, then filter or search by tag in Manage, the public gallery and MCP.
+- Upgrade: apply additive D1 migration `0013_artefact_tags.sql` before activating the Worker. No new bindings or config.
 
 ## v2.9.0 — 2026-11-25
 

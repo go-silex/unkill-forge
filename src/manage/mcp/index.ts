@@ -8,15 +8,12 @@ import {
   isInitializeRequest,
   LATEST_PROTOCOL_VERSION,
   ListToolsRequestSchema,
-  McpError,
-  type Tool,
 } from '@modelcontextprotocol/sdk/types.js'
 import { z } from 'zod'
 import { MAX_ARTEFACT_FILES, type Runtime } from '../../config'
 import type { Member } from '../../core'
 
 import {
-  ArtefactError,
   checkPublishArrayLengths,
   createShareLink,
   deleteArtefact,
@@ -32,6 +29,7 @@ import {
   renameArtefact,
   restoreRevision,
   revokeShareLink,
+  setArtefactTags,
   setRedirects,
   setVisibility,
 } from '../../core/artefacts'
@@ -39,50 +37,11 @@ import { maxRedirectPrefix } from '../../core/read-path'
 import { shareKeyMax, shareKeyMin } from '../../core/share-keys'
 import { checkUploadCount, createUploads } from '../../core/uploads'
 import { MCP_INSTRUCTIONS } from './instructions'
-
-function result(value: Record<string, unknown>, isError = false) {
-  return {
-    content: [{ type: 'text' as const, text: JSON.stringify(value) }],
-    ...(isError ? { isError } : { structuredContent: value }),
-  }
-}
-
-function tool<S extends z.ZodObject>(
-  name: string,
-  description: string,
-  input: S,
-  run: (input: z.output<S>) => Record<string, unknown> | Promise<Record<string, unknown>>,
-  readOnly = false,
-  checkArguments?: (args: unknown) => void,
-) {
-  const schema = z.toJSONSchema(input, { io: 'input' }) as Tool['inputSchema']
-  const definition: Tool = {
-    name,
-    description,
-    inputSchema: schema,
-    ...(readOnly ? { annotations: { readOnlyHint: true } } : {}),
-  }
-  return {
-    definition,
-    async call(args: unknown) {
-      try {
-        checkArguments?.(args)
-        const parsed = input.safeParse(args ?? {})
-        if (!parsed.success)
-          return result({ error: 'invalid_input', message: 'Arguments do not match the tool schema' }, true)
-        return result(await run(parsed.data))
-      } catch (error) {
-        if (error instanceof ArtefactError) {
-          return result({ error: error.code, message: error.message, ...error.extra }, true)
-        }
-        console.error('Forge MCP tool failed', name)
-        throw new McpError(ErrorCode.InternalError, 'Forge is unavailable')
-      }
-    },
-  }
-}
+import { result, tool } from './tool'
 
 const slug = z.string().describe('1–64 lowercase letters, digits or internal hyphens')
+const tag = z.string().describe('1–32 lowercase letters, digits or internal hyphens')
+const tags = z.array(tag).describe('Up to 10 distinct tags; duplicates are ignored and [] clears them')
 const path = z.string().describe('Relative POSIX file path; no hidden or empty segments')
 const cursor = z.string().optional().describe('Cursor from the previous page')
 const revision = z.int().positive()
@@ -231,14 +190,14 @@ export async function handleMcp(
     ),
     tool(
       'list_artefacts',
-      'Find live artefacts by slug or title without changing them. Tell the user which results match; use nextCursor for more.',
-      z.strictObject({ query: z.string().max(200).optional(), cursor }),
-      (input) => listArtefacts(runtime, member, input.query, input.cursor),
+      'Find live artefacts by slug, title or tag, optionally filtering by one exact tag. Tell the user which results match; use nextCursor with the same filters for more.',
+      z.strictObject({ query: z.string().max(200).optional(), tag: tag.optional(), cursor }),
+      (input) => listArtefacts(runtime, member, input.query, input.cursor, input.tag),
       true,
     ),
     tool(
       'get_artefact',
-      'Inspect the current revision, visibility, files and entry URL without changing them. Tell the user the URL and visibility; keep the revision for conditional writes.',
+      'Inspect the current revision, visibility, tags, files and entry URL without changing them. Tell the user the URL and visibility; keep the revision for conditional writes.',
       z.strictObject({ slug, cursor }),
       (input) => getArtefact(runtime, member, input.slug, input.cursor, ctx),
       true,
@@ -262,6 +221,7 @@ export async function handleMcp(
       z.strictObject({
         slug,
         title: z.string().max(200).optional(),
+        tags: tags.optional().describe('Omit to preserve tags; [] clears them; up to 10 distinct tags'),
         files: z.array(z.union([inlineFile, uploadFile])).max(MAX_ARTEFACT_FILES),
         mode: z.enum(['merge', 'replace']),
         delete: z.array(path).max(MAX_ARTEFACT_FILES).optional(),
@@ -305,6 +265,12 @@ export async function handleMcp(
       'Change who can read the canonical artefact URL without publishing a new revision. Public means anyone; private means members. Tell the user the resulting visibility.',
       z.strictObject({ slug, visibility: z.enum(['private', 'public']) }),
       (input) => setVisibility(runtime, member, input.slug, input.visibility),
+    ),
+    tool(
+      'set_artefact_tags',
+      'Replace the tags of a live artefact without creating a file revision (publisher or admin). An empty array clears tags. Tags on public artefacts are visible in the public gallery.',
+      z.strictObject({ slug, tags }),
+      (input) => setArtefactTags(runtime, member, input.slug, input.tags),
     ),
     tool(
       'create_share_link',
