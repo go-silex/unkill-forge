@@ -75,6 +75,121 @@ async function bot(send: Handle, role: 'viewer' | 'publisher' = 'publisher', nam
 
 const file = (path: string, content = 'hello') => ({ path, content })
 
+it('publishes sorted unique tags atomically, preserves omitted tags, and clears an empty set', async () => {
+  const { call } = await bot(runtime())
+  const slug = 'tagged-document'
+  const input = { slug, mode: 'merge', files: [file('index.html')] }
+  expect(await call('publish', { ...input, tags: ['zulu', 'alpha-team', 'zulu'] })).toMatchObject({
+    revision: 1,
+  })
+  expect(await call('get_artefact', { slug })).toMatchObject({ tags: ['alpha-team', 'zulu'] })
+  expect(await call('publish', { ...input, expectedRevision: 1 })).toMatchObject({ revision: 2 })
+  expect(await call('get_artefact', { slug })).toMatchObject({ tags: ['alpha-team', 'zulu'] })
+  expect(
+    await call('publish', {
+      ...input,
+      expectedRevision: 2,
+      tags: ['not-committed'],
+      files: [{ path: 'index.html', uploadId: crypto.randomUUID() }],
+    }),
+  ).toMatchObject({ error: 'not_found' })
+  expect(await call('get_artefact', { slug })).toMatchObject({ revision: 2, tags: ['alpha-team', 'zulu'] })
+  expect(await call('publish', { ...input, tags: [], expectedRevision: 2 })).toMatchObject({ revision: 3 })
+  expect(await call('get_artefact', { slug })).toMatchObject({ tags: [] })
+  const { results } = await db
+    .prepare("SELECT detail_json AS detail FROM audit_log WHERE action = 'artefact.publish'")
+    .all<{ detail: string }>()
+  expect(results.map(({ detail }) => JSON.parse(detail))).toEqual(
+    expect.arrayContaining([
+      { revision: 1, mode: 'merge', tags: ['alpha-team', 'zulu'] },
+      { revision: 2, mode: 'merge' },
+      { revision: 3, mode: 'merge', tags: [] },
+    ]),
+  )
+  expect(results).toHaveLength(3)
+})
+
+it('allows publishers but not viewers to set and clear live tags without making a revision', async () => {
+  const send = runtime()
+  const { call, id: publisherId } = await bot(send)
+  const viewer = await bot(send, 'viewer')
+  const slug = 'metadata-only'
+  const input = { slug, mode: 'replace', files: [file('index.html')] }
+  await call('publish', input)
+  expect(await viewer.call('set_artefact_tags', { slug, tags: ['refused'] })).toMatchObject({
+    error: 'forbidden',
+  })
+  for (const tags of [
+    ['Upper'],
+    ['-start'],
+    ['end-'],
+    ['space here'],
+    ['with\n'],
+    ['x'.repeat(33)],
+    Array.from({ length: 11 }, (_, i) => `tag-${i}`),
+  ]) {
+    expect(await call('set_artefact_tags', { slug, tags })).toMatchObject({ error: 'invalid_input' })
+  }
+  expect(await call('publish', { ...input, tags: ['bad_tag'] })).toMatchObject({ error: 'invalid_input' })
+  expect(await call('set_artefact_tags', { slug: 'missing', tags: [] })).toMatchObject({ error: 'not_found' })
+  const maxTag = `x${'-'.repeat(30)}9`
+  expect(await call('set_artefact_tags', { slug, tags: [maxTag, '1', maxTag] })).toEqual({
+    tags: ['1', maxTag],
+  })
+  expect(await viewer.call('get_artefact', { slug })).toMatchObject({ revision: 1, tags: ['1', maxTag] })
+  expect(await call('set_artefact_tags', { slug, tags: [] })).toEqual({ tags: [] })
+  expect(await call('get_artefact', { slug })).toMatchObject({ revision: 1, tags: [] })
+  const { results } = await db
+    .prepare(
+      "SELECT member_id AS memberId, detail_json AS detail FROM audit_log WHERE action = 'artefact.tags'",
+    )
+    .all<{ memberId: string; detail: string }>()
+  expect(results.map(({ memberId, detail }) => [memberId, JSON.parse(detail)])).toEqual(
+    expect.arrayContaining([
+      [publisherId, { tags: ['1', maxTag] }],
+      [publisherId, { tags: [] }],
+    ]),
+  )
+  expect(results).toHaveLength(2)
+})
+
+it('keeps current tags across rename and both restores until a hard purge', async () => {
+  const { call } = await bot(runtime())
+  const { member, core } = await coreAdmin()
+  const slug = 'before-rename'
+  const newSlug = 'after-rename'
+  const input = { slug, mode: 'replace', files: [file('index.html')] }
+  await call('publish', { ...input, tags: ['old'] })
+  await call('publish', { ...input, tags: ['current'] })
+  expect(await call('rename_artefact', { slug, newSlug })).toEqual({ url: `${read}/a/${newSlug}/` })
+  expect(await call('get_artefact', { slug: newSlug })).toMatchObject({ tags: ['current'] })
+  expect(await call('restore_revision', { slug: newSlug, revision: 1 })).toEqual({ revision: 3 })
+  expect(await call('get_artefact', { slug: newSlug })).toMatchObject({ tags: ['current'] })
+  const id = await artefactId(newSlug)
+  await call('delete_artefact', { slug: newSlug })
+  expect(await call('set_artefact_tags', { slug: newSlug, tags: ['refused'] })).toMatchObject({
+    error: 'not_found',
+  })
+  expect(await call('list_artefacts', { tag: 'current' })).toMatchObject({ artefacts: [] })
+  await restoreDeletedArtefact(core, member, newSlug)
+  expect(await call('get_artefact', { slug: newSlug })).toMatchObject({ tags: ['current'] })
+  await call('delete_artefact', { slug: newSlug })
+  expect(await purgeArtefact(core, member, id)).toEqual({ done: true })
+  expect(await db.prepare('SELECT tag FROM artefact_tags WHERE artefact_id = ?').bind(id).first()).toBeNull()
+})
+
+it('combines literal tag text search with exact tag filtering', async () => {
+  const { call } = await bot(runtime())
+  const input = { mode: 'replace', files: [file('index.html')] }
+  await call('publish', { ...input, slug: 'first', tags: ['project', 'research-2026'] })
+  await call('publish', { ...input, slug: 'second', tags: ['project-old', 'research-2026'] })
+  await call('publish', { ...input, slug: 'third', tags: ['project'] })
+  const { artefacts } = await call('list_artefacts', { query: 'RESEARCH', tag: 'project' })
+  expect(artefacts).toMatchObject([{ slug: 'first', tags: ['project', 'research-2026'] }])
+  expect(await call('list_artefacts', { tag: 'research' })).toMatchObject({ artefacts: [] })
+  expect(await call('list_artefacts', { tag: 'PROJECT' })).toMatchObject({ error: 'invalid_input' })
+})
+
 it('publishes from a bot token, discovers tool hints, and reads UTF-8 and base64 content', async () => {
   const send = runtime()
   const { token, call } = await bot(send)
@@ -791,13 +906,19 @@ it('pages 50 artefacts and 200 files without gaps, with literal search and revis
   const slug = 'page-00'
   const inputs = Array.from({ length: 202 }, (_, index) => file(`${String(index).padStart(3, '0')}.txt`))
   expect(
-    await call('publish', { slug, title: 'Literal a%_! marker', mode: 'replace', files: inputs }),
+    await call('publish', {
+      slug,
+      title: 'Literal a%_! marker',
+      mode: 'replace',
+      files: inputs,
+      tags: ['batch'],
+    }),
   ).toMatchObject({ revision: 1 })
   for (let i = 1; i <= 50; i++) {
     const slug = `page-${String(i).padStart(2, '0')}`
-    expect(await call('publish', { slug, mode: 'merge', files: [file('index.html')] })).toMatchObject({
-      revision: 1,
-    })
+    expect(
+      await call('publish', { slug, mode: 'merge', files: [file('index.html')], tags: ['batch'] }),
+    ).toMatchObject({ revision: 1 })
   }
   const first = await call('list_artefacts', { query: 'page-' })
   expect(first.artefacts).toHaveLength(50)
@@ -805,6 +926,14 @@ it('pages 50 artefacts and 200 files without gaps, with literal search and revis
   expect(second.artefacts).toHaveLength(1)
   expect(new Set([...first.artefacts, ...second.artefacts].map((row) => row.slug)).size).toBe(51)
   expect(second.nextCursor).toBeUndefined()
+  const tagged = await call('list_artefacts', { query: 'page-', tag: 'batch' })
+  expect(tagged.artefacts).toHaveLength(50)
+  expect(
+    await call('list_artefacts', { query: 'page-', tag: 'batch', cursor: tagged.nextCursor }),
+  ).toMatchObject({ artefacts: [{ tags: ['batch'] }] })
+  expect(await call('list_artefacts', { query: 'page-', cursor: tagged.nextCursor })).toMatchObject({
+    error: 'invalid_input',
+  })
   expect((await call('list_artefacts', { query: '%_!' })).artefacts).toMatchObject([{ slug }])
   const page = await call('get_artefact', { slug })
   expect(page.files).toHaveLength(200)

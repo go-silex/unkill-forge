@@ -6,6 +6,7 @@ import { previewPrefix } from '../../core/gallery-previews'
 import { time } from '../../dates'
 import { Gallery, type GalleryView } from '../../gallery'
 import type { AdminTranslate } from '../../i18n'
+import { TagChips } from '../../tag-chips'
 import { catalogueScrollScript } from './catalogue-scroll'
 import { AccessBadge, Fold, Table } from './page'
 
@@ -49,13 +50,14 @@ export function CatalogueResults({
               { folded: t('updated') },
             ]}
           >
-            {entries.map(({ id, href, slug, title, preview, updated, badge, revision }) => (
+            {entries.map(({ id, href, slug, title, preview, updated, badge, revision, tags }) => (
               <tr data-artefact-id={id}>
                 <td title={title}>
                   <a class="forge-catalogue-link" href={href}>
                     {preview && <img class="forge-thumb" src={preview} alt="" loading="lazy" />}
                     <span>{title}</span>
                   </a>
+                  <TagChips tags={tags} />
                   <Fold>
                     <code>{slug}</code>
                   </Fold>
@@ -80,7 +82,7 @@ export function CatalogueResults({
         ) : (
           <Gallery
             label={t('artefacts')}
-            items={entries.map(({ id, href, slug, title, preview, updated, badge, revision }) => ({
+            items={entries.map(({ id, href, slug, title, preview, updated, badge, revision, tags }) => ({
               artefactId: id,
               href,
               title,
@@ -94,6 +96,7 @@ export function CatalogueResults({
                     </span>
                     {badge}
                   </span>
+                  <TagChips tags={tags} />
                 </>
               ),
             }))}

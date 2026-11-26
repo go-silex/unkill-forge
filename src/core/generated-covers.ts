@@ -1,6 +1,6 @@
 import type { Runtime } from '../config'
-import { revisionEntry } from './artefacts'
 import { isJpeg, maxCoverBytes, openCover, revisionCoverFiles } from './gallery-previews'
+import { revisionEntry } from './revision-entry'
 
 export const coverCron = '*/5 * * * *'
 

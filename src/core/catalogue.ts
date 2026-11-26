@@ -1,14 +1,17 @@
 import { base64url } from 'jose'
 import { z } from 'zod'
 import type { Runtime } from '../config'
+import { isArtefactTag, unpackArtefactTags } from './artefact-tags'
 import { ArtefactError, checkMember } from './artefacts'
 import { gallerySearch } from './gallery-search'
 import type { Member } from './index'
 import { adminPageSize, trimLookahead } from './pagination'
+import { cacheRevisionEntries, computeRevisionEntry, entryUrl, type RevisionEntry } from './revision-entry'
 
 const cursorAccess = z.enum(['private', 'shared', 'public']).nullable()
-const recentCursor = z.tuple([z.string(), cursorAccess, z.literal('recent'), z.int(), z.string()])
-const searchCursor = z.tuple([z.string(), cursorAccess, z.literal('slug-scan'), z.string()])
+const cursorTag = z.string().optional()
+const recentCursor = z.tuple([z.string(), cursorAccess, z.literal('recent'), z.int(), z.string(), cursorTag])
+const searchCursor = z.tuple([z.string(), cursorAccess, z.literal('slug-scan'), z.string(), cursorTag])
 const prefixCursor = z.tuple([z.string(), cursorAccess, z.enum(['slug', 'title']), z.string(), z.string()])
 const cursorSchema = z.union([recentCursor, searchCursor, prefixCursor])
 const searchBatchSize = 100
@@ -16,6 +19,7 @@ const searchBatchSize = 100
 const searchCandidates = `SELECT id, slug, title, visibility, hex(lower(slug)) || '!' || id AS term,
   EXISTS (SELECT 1 FROM share_links INDEXED BY share_links_active_artefact
     WHERE artefact_id = artefacts.id AND revoked_at IS NULL) AS shared,
+  (SELECT group_concat(tag, ',' ORDER BY tag) FROM artefact_tags WHERE artefact_id = artefacts.id) AS tagList,
   current_revision AS revision, updated_at AS updatedAt
   FROM artefacts INDEXED BY artefacts_catalogue_slug
   WHERE deleted_at IS NULL AND visibility = ? AND term > ?
@@ -23,6 +27,7 @@ const searchCandidates = `SELECT id, slug, title, visibility, hex(lower(slug)) |
   SELECT id, slug, title, visibility, hex(lower(slug)) || '!' || id AS term,
   EXISTS (SELECT 1 FROM share_links INDEXED BY share_links_active_artefact
     WHERE artefact_id = artefacts.id AND revoked_at IS NULL) AS shared,
+  (SELECT group_concat(tag, ',' ORDER BY tag) FROM artefact_tags WHERE artefact_id = artefacts.id) AS tagList,
   current_revision AS revision, updated_at AS updatedAt
   FROM artefacts INDEXED BY artefacts_catalogue_slug
   WHERE deleted_at IS NULL AND visibility = ? AND term > ?
@@ -33,6 +38,7 @@ type Row = {
   id: string
   slug: string
   title: string
+  tagList: string | null
   visibility: 'private' | 'public'
   /**
    * 1 when an active share link exists. INDEXED BY pins the partial active-link index so the probe never walks
@@ -44,6 +50,7 @@ type Row = {
 }
 export type CatalogueEntry = Pick<Row, 'id' | 'slug' | 'title' | 'revision' | 'updatedAt'> & {
   access: CatalogueAccess
+  tags: string[]
 }
 const accessOf = ({ visibility, shared }: Pick<Row, 'visibility' | 'shared'>): CatalogueAccess =>
   visibility === 'public' ? 'public' : shared ? 'shared' : 'private'
@@ -73,6 +80,45 @@ export async function catalogueCounts({ env: { DB: db } }: Runtime, member: Memb
   return counts.all <= catalogueCountLimit ? counts : null
 }
 
+export async function publicArtefacts({ env: { DB: db }, config }: Runtime, ctx?: ExecutionContext) {
+  const { results } = await db
+    .prepare(`SELECT a.id, a.slug, a.title, a.updated_at AS updatedAt, r.number AS revision, r.entry_path AS path,
+      (SELECT group_concat(tag, ',' ORDER BY tag) FROM artefact_tags WHERE artefact_id = a.id) AS tagList
+      FROM artefacts a JOIN revisions r ON r.artefact_id = a.id AND r.number = a.current_revision
+      WHERE a.deleted_at IS NULL AND a.visibility = 'public'
+      ORDER BY a.created_at DESC, a.slug LIMIT 200`)
+    .all<
+      RevisionEntry & {
+        id: string
+        slug: string
+        title: string
+        updatedAt: number
+        revision: number
+        tagList: string | null
+      }
+    >()
+  const legacy = results.filter(({ path }) => path === null)
+  if (legacy.length > 0) {
+    const entries = await db.batch<RevisionEntry>(
+      legacy.map(({ id, revision }) => computeRevisionEntry(db, id, revision)),
+    )
+    for (const [index, row] of legacy.entries()) row.path = entries[index].results[0]?.path ?? null
+    await cacheRevisionEntries(db, legacy, ctx)
+  }
+  const artefacts = []
+  for (const { slug, title, path, updatedAt, tagList } of results) {
+    if (path === null) continue
+    artefacts.push({
+      slug,
+      title,
+      url: entryUrl(config.readOrigin, slug, path),
+      updatedAt,
+      tags: unpackArtefactTags(tagList),
+    })
+  }
+  return artefacts
+}
+
 export async function searchArtefacts(
   { env: { DB: db } }: Runtime,
   member: Member,
@@ -82,6 +128,8 @@ export async function searchArtefacts(
 ) {
   checkMember(member)
   const { query, matches } = gallerySearch(params)
+  const tag = params.get('tag') || undefined
+  if (tag !== undefined && !isArtefactTag(tag)) throw new ArtefactError('invalid_input', 'Invalid tag filter')
   const selected = access ?? null
   let after: z.infer<typeof recentCursor> | z.infer<typeof searchCursor> | undefined
   try {
@@ -90,8 +138,11 @@ export async function searchArtefacts(
       const decoded = cursorSchema.parse(JSON.parse(new TextDecoder().decode(base64url.decode(cursor))))
       // Old prefix and activity-order search cursors cannot resume this scan.
       if (decoded[2] === 'slug-scan' || (decoded[2] === 'recent' && !decoded[0])) {
-        if (decoded[0] !== query || decoded[1] !== selected) throw new Error()
+        const cursorTag = decoded[2] === 'recent' ? decoded[5] : decoded[4]
+        if (decoded[0] !== query || decoded[1] !== selected || cursorTag !== tag) throw new Error()
         after = decoded
+      } else if (tag !== undefined) {
+        throw new Error()
       }
     }
   } catch {
@@ -102,11 +153,14 @@ export async function searchArtefacts(
   const artefacts: CatalogueEntry[] = []
   const collect = (row: Row) => {
     const state = accessOf(row)
-    if ((access && state !== access) || !matches(row)) return
+    if (access && state !== access) return
+    const tags = unpackArtefactTags(row.tagList)
+    if ((tag && !tags.includes(tag)) || !matches({ slug: row.slug, title: row.title, tags })) return
     artefacts.push({
       id: row.id,
       slug: row.slug,
       title: row.title,
+      tags,
       access: state,
       revision: row.revision,
       updatedAt: row.updatedAt,
@@ -133,7 +187,9 @@ export async function searchArtefacts(
       if (consumed === results.length) break
       if (artefacts.length === adminPageSize || remaining === 0) {
         // Resume after the last candidate actually checked, not the end of the fetched batch.
-        nextCursor = base64url.encode(JSON.stringify([query, selected, 'slug-scan', term]))
+        nextCursor = base64url.encode(
+          JSON.stringify([query, selected, 'slug-scan', term, ...(tag ? [tag] : [])]),
+        )
         break
       }
     }
@@ -141,9 +197,11 @@ export async function searchArtefacts(
     const statement = db.prepare(`SELECT id, slug, title, visibility,
       EXISTS (SELECT 1 FROM share_links INDEXED BY share_links_active_artefact
         WHERE artefact_id = artefacts.id AND revoked_at IS NULL) AS shared,
+      (SELECT group_concat(tag, ',' ORDER BY tag) FROM artefact_tags WHERE artefact_id = artefacts.id) AS tagList,
       current_revision AS revision, updated_at AS updatedAt
       FROM artefacts WHERE deleted_at IS NULL AND visibility = ? AND (updated_at, id) < (?, ?)
-      ORDER BY updated_at DESC, id DESC LIMIT ?`)
+      AND (?5 IS NULL OR id IN (SELECT artefact_id FROM artefact_tags WHERE tag = ?5))
+      ORDER BY updated_at DESC, id DESC LIMIT ?4`)
     const pages = await db.batch<Row>(
       scopes.map((scope) =>
         statement.bind(
@@ -151,6 +209,7 @@ export async function searchArtefacts(
           after?.[2] === 'recent' ? after[3] : Number.MAX_SAFE_INTEGER,
           after?.[2] === 'recent' ? after[4] : '',
           adminPageSize + 1,
+          tag ?? null,
         ),
       ),
     )
@@ -161,11 +220,14 @@ export async function searchArtefacts(
     const last = trimLookahead(rows, adminPageSize)
     for (const row of rows) collect(row)
     if (last)
-      nextCursor = base64url.encode(JSON.stringify([query, selected, 'recent', last.updatedAt, last.id]))
+      nextCursor = base64url.encode(
+        JSON.stringify([query, selected, 'recent', last.updatedAt, last.id, ...(tag ? [tag] : [])]),
+      )
   }
   return {
     artefacts,
     query,
+    tag: tag ?? '',
     continued: after !== undefined,
     nextCursor,
   }

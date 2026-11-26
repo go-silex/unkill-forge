@@ -1,3 +1,5 @@
+import { enRead, frRead } from './i18n-read'
+
 export type Locale = 'en' | 'fr'
 
 export type CopyLabels = { copy: string; copied: string; copyFailed: string }
@@ -88,18 +90,7 @@ const en = {
       503: 'Service unavailable',
     },
   },
-  read: {
-    incomplete: 'Sign-in did not complete',
-    retry: 'Try signing in again',
-    noArtefacts: 'Nothing has been published yet.',
-    landingLead: 'Published documents',
-    searchLabel: 'Search documents',
-    search: 'Search',
-    clear: 'Clear',
-    noMatches: 'No documents match your search.',
-    documents: (total: number, matches?: number) =>
-      `${matches === undefined ? '' : `${matches} of `}${total} ${total === 1 ? 'document' : 'documents'}`,
-  },
+  read: enRead,
   noticeTone: {
     info: 'Information',
     success: 'Success',
@@ -246,6 +237,11 @@ const en = {
     search: 'Search',
     searchQuery: 'Title or slug',
     visibility: 'Visibility',
+    tagFilter: 'Filter by tag',
+    tags: 'Tags',
+    tagsHelp: 'Separate tags with commas. Use lowercase letters, digits, and hyphens.',
+    saveTags: 'Save tags',
+    tagsSaved: 'Tags updated.',
     all: 'All',
     private: 'Private',
     shared: 'Shared',
@@ -457,18 +453,7 @@ const fr: typeof en = {
       503: 'Service indisponible',
     },
   },
-  read: {
-    incomplete: 'La connexion n’a pas abouti',
-    retry: 'Réessayer de se connecter',
-    noArtefacts: 'Aucun artefact publié pour le moment.',
-    landingLead: 'Documents publiés',
-    searchLabel: 'Rechercher des documents',
-    search: 'Rechercher',
-    clear: 'Effacer',
-    noMatches: 'Aucun document ne correspond à votre recherche.',
-    documents: (total: number, matches?: number) =>
-      `${matches === undefined ? '' : `${matches} sur `}${total} ${total <= 1 ? 'document' : 'documents'}`,
-  },
+  read: frRead,
   noticeTone: {
     info: 'Information',
     success: 'Succès',
@@ -620,6 +605,11 @@ const fr: typeof en = {
     search: 'Rechercher',
     searchQuery: 'Titre ou identifiant',
     visibility: 'Visibilité',
+    tagFilter: 'Filtrer par tag',
+    tags: 'Tags',
+    tagsHelp: 'Séparez les tags par des virgules. Utilisez des minuscules, des chiffres et des tirets.',
+    saveTags: 'Enregistrer les tags',
+    tagsSaved: 'Tags mis à jour.',
     all: 'Toutes',
     private: 'Privé',
     shared: 'Partagé',
