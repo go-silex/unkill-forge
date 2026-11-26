@@ -77,9 +77,10 @@ async function home(runtime: Runtime, url: URL, head: boolean, ctx: ExecutionCon
     ? entries.filter((entry) => (!tag || entry.tags.includes(tag)) && matchesQuery(entry))
     : entries
   const viewParams = new URLSearchParams(q ? { q } : undefined)
-  if (publicTags.has(tag)) viewParams.set('tag', tag)
+  if (tag) viewParams.set('tag', tag)
   const clear = view === 'list' ? '/?view=list' : '/'
   const languageQuery = viewParams.toString()
+  if (tag && !publicTags.has(tag)) viewParams.delete('tag')
   const languageReturn = languageQuery ? `/?${languageQuery}${view === 'list' ? '&view=list' : ''}` : clear
   return documentResponse(
     config,

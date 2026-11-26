@@ -439,8 +439,10 @@ it.each(['en', 'fr'] as const)(
     )
 
     const hiddenTag = await home({ tag: 'private-label', view: 'list' })
-    expect(hiddenTag).toBe(await home({ tag: 'missing-label', view: 'list' }))
-    expect(hiddenTag).not.toContain('private-label')
+    const staleTag = await home({ tag: 'missing-label', view: 'list' })
+    expect(hiddenTag.replace('tag=private-label', 'tag=missing-label')).toBe(staleTag)
+    expect(hiddenTag).not.toContain('<option value="private-label"')
+    expect(staleTag).not.toContain('<option value="missing-label"')
     expect(hiddenTag).not.toContain('<ul class="forge-gallery')
     expect(await home({ tag: 'OPS', view: 'list' })).toBe(unfiltered)
 
@@ -467,6 +469,21 @@ it.each(['en', 'fr'] as const)(
     })
     expect(selected.headers.get('Content-Language')).toBe(locale)
     expect(await selected.text()).toBe(combined)
+
+    const staleReturnPath = formValue(staleTag, 'return').replaceAll('&amp;', '&')
+    expect(staleReturnPath).toBe('/?tag=missing-label&view=list')
+    const staleSwitch = await reader.post(
+      `${read}/_forge/language`,
+      { language: preferredLocale, return: staleReturnPath },
+      read,
+    )
+    expect(staleSwitch.status).toBe(303)
+    expect(staleSwitch.headers.get('Location')).toBe(staleReturnPath)
+    const stalePage = await reader.request(read + staleReturnPath)
+    expect(stalePage.headers.get('Content-Language')).toBe(preferredLocale)
+    const staleHtml = await stalePage.text()
+    expect(staleHtml).toContain(french ? '0 of 2 documents' : '0 sur 2 documents')
+    expect(staleHtml).not.toContain('<ul class="forge-gallery')
   },
 )
 
@@ -491,7 +508,7 @@ it('limits public gallery tags and tag search to the newest 200 public artefacts
   expect(index).not.toContain('Public report')
   const filtered = await (await indexed(`${read}/?tag=older-tag`)).text()
   expect(filtered).toContain('0 of 200 documents')
-  expect(filtered).not.toContain('older-tag')
+  expect(filtered).not.toContain('<option value="older-tag"')
   expect(await (await indexed(`${read}/?q=older-tag`)).text()).toContain('0 of 200 documents')
 })
 
