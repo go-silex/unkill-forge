@@ -1,9 +1,7 @@
-import type { Child } from 'hono/jsx'
 import { base64url } from 'jose'
-import { AccessCard, CardLink, ErrorCard } from '../access-card'
-import { forgePageSources } from '../brand'
+import { AccessCard, CardLink } from '../access-card'
 import { BrandBlock } from '../brand-block'
-import type { Config, Runtime } from '../config'
+import type { Runtime } from '../config'
 import { isArtefactTag } from '../core/artefact-tags'
 import { canonicalRead, shareRead } from '../core/artefacts'
 import { publicArtefacts } from '../core/catalogue'
@@ -21,6 +19,7 @@ import { LanguageSwitch } from '../language-switch'
 import { TagChips } from '../tag-chips'
 import { serveFile } from './file'
 import { readHeaders } from './headers'
+import { documentResponse, handoffStatus, notFound, statusPage } from './pages'
 
 const stateCookie = '__Host-forge-state'
 const readSessionCookie = '__Host-forge'
@@ -33,72 +32,6 @@ function redirect(location: string, status = 302, cookies: string[] = []) {
   headers.set('Location', location)
   for (const value of cookies) headers.append('Set-Cookie', value)
   return new Response(null, { status, headers })
-}
-
-function notFound(config: Config, head = false) {
-  return statusPage(config, messages(config).access.notFoundLead, 404, head)
-}
-
-function statusPage(config: Config, lead: string, status: 404 | 503, head: boolean) {
-  const t = messages(config)
-  return documentResponse(
-    config,
-    <ErrorCard
-      config={config}
-      status={status}
-      lead={lead}
-      languageReturn="/"
-      actions={
-        <>
-          <CardLink href="/" primary>
-            {t.access.home}
-          </CardLink>
-          <CardLink href={new URL('/artefacts', config.manageOrigin).href}>{t.signIn}</CardLink>
-        </>
-      }
-    />,
-    head,
-    status,
-  )
-}
-
-function handoffStatus(
-  config: Config,
-  title: string,
-  status: 400 | 404 | 503,
-  head = false,
-  children?: Child,
-) {
-  return documentResponse(
-    config,
-    <html lang={config.locale}>
-      <DocumentHead config={config} title={title} />
-      <body>
-        <main class="forge-panel forge-panel--error">
-          <header class="forge-panel__header">
-            <BrandBlock config={config} />
-          </header>
-          <div class="forge-panel__body">
-            <h1 class="forge-title">{title}</h1>
-            {children}
-          </div>
-        </main>
-      </body>
-    </html>,
-    head,
-    status,
-  )
-}
-
-function documentResponse(config: Config, html: Child, head: boolean, status = 200) {
-  const headers = readHeaders()
-  headers.set('Content-Type', 'text/html; charset=utf-8')
-  headers.set('Content-Language', config.locale)
-  headers.set(
-    'Content-Security-Policy',
-    `default-src 'none'; ${forgePageSources}; base-uri 'none'; frame-ancestors 'none'; form-action 'self'`,
-  )
-  return new Response(head ? null : `<!doctype html>${html}`, { status, headers })
 }
 
 async function home(runtime: Runtime, url: URL, head: boolean, ctx: ExecutionContext) {
@@ -146,7 +79,8 @@ async function home(runtime: Runtime, url: URL, head: boolean, ctx: ExecutionCon
   const viewParams = new URLSearchParams(q ? { q } : undefined)
   if (publicTags.has(tag)) viewParams.set('tag', tag)
   const clear = view === 'list' ? '/?view=list' : '/'
-  const languageReturn = viewParams ? `/?${viewParams}${view === 'list' ? '&view=list' : ''}` : clear
+  const languageQuery = viewParams.toString()
+  const languageReturn = languageQuery ? `/?${languageQuery}${view === 'list' ? '&view=list' : ''}` : clear
   return documentResponse(
     config,
     <html lang={config.locale}>

@@ -1204,6 +1204,18 @@ it('lets publishers and admins replace and clear tags without a new revision and
     ...identity,
   })
   expect(formValue(directAction(saved, 'tags', detail).form, 'tags')).toBe('finance, review')
+  const frenchHeaders = { 'Accept-Language': 'fr' }
+  const catalogue = await publisher.request('/artefacts?tag=finance', { headers: frenchHeaders })
+  const catalogueHtml = await catalogue.text()
+  expect(catalogue.headers.get('Content-Language')).toBe('fr')
+  expect(catalogueHtml).toContain('Filtrer par tag')
+  expect(catalogueHtml).toContain('class="forge-tag">finance<')
+  const editor = await publisher.request(detail, { headers: frenchHeaders })
+  expect(editor.headers.get('Content-Language')).toBe('fr')
+  const editorHtml = await editor.text()
+  expect(editorHtml).toContain('Séparez les tags par des virgules.')
+  expect(editorHtml).toContain('Enregistrer les tags')
+  expect(editorHtml).toContain('class="forge-tag">review<')
   const readonly = await html(viewer, detail)
   expect(readonly).toContain('class="forge-tag">finance<')
   expect(readonly).toContain('class="forge-tag">review<')

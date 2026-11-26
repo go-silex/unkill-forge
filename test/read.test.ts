@@ -443,6 +443,30 @@ it.each(['en', 'fr'] as const)(
     expect(hiddenTag).not.toContain('private-label')
     expect(hiddenTag).not.toContain('<ul class="forge-gallery')
     expect(await home({ tag: 'OPS', view: 'list' })).toBe(unfiltered)
+
+    const preferredLocale = french ? 'en' : 'fr'
+    const reader = new Browser(indexed)
+    const tagged = await reader.request(`${read}/?q=WEEKLY&tag=ops-weekly&view=list`, {
+      headers: { 'Accept-Language': preferredLocale },
+    })
+    expect(tagged.headers.get('Content-Language')).toBe(preferredLocale)
+    const preferred = await tagged.text()
+    expect(preferred).toContain(`name="tag" aria-label="${french ? 'Filter by tag' : 'Filtrer par tag'}"`)
+    expect(preferred).toContain('<span class="forge-tag">ops-weekly</span>')
+    const returnPath = formValue(preferred, 'return').replaceAll('&amp;', '&')
+    expect(returnPath).toBe('/?q=WEEKLY&tag=ops-weekly&view=list')
+    const switched = await reader.post(
+      `${read}/_forge/language`,
+      { language: locale, return: returnPath },
+      read,
+    )
+    expect(switched.status).toBe(303)
+    expect(switched.headers.get('Location')).toBe(returnPath)
+    const selected = await reader.request(read + returnPath, {
+      headers: { 'Accept-Language': preferredLocale },
+    })
+    expect(selected.headers.get('Content-Language')).toBe(locale)
+    expect(await selected.text()).toBe(combined)
   },
 )
 
