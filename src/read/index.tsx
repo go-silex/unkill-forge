@@ -15,6 +15,7 @@ import { Gallery, GalleryViews, galleryView } from '../gallery'
 import { DocumentHead } from '../head'
 import { isDocumentNavigation, readBoundedBody, readCookie, writeCookie } from '../http'
 import { messages } from '../i18n'
+import { LanguageSwitch } from '../language-switch'
 import { serveFile } from './file'
 import { readHeaders } from './headers'
 
@@ -38,10 +39,12 @@ function notFound(config: Config, head = false) {
 function statusPage(config: Config, lead: string, status: 404 | 503, head: boolean) {
   const t = messages(config)
   return documentResponse(
+    config,
     <ErrorCard
       config={config}
       status={status}
       lead={lead}
+      languageReturn="/"
       actions={
         <>
           <CardLink href="/" primary>
@@ -64,6 +67,7 @@ function handoffStatus(
   children?: Child,
 ) {
   return documentResponse(
+    config,
     <html lang={config.locale}>
       <DocumentHead config={config} title={title} />
       <body>
@@ -83,28 +87,31 @@ function handoffStatus(
   )
 }
 
-function documentResponse(html: Child, head: boolean, status = 200) {
+function documentResponse(config: Config, html: Child, head: boolean, status = 200) {
   const headers = readHeaders()
   headers.set('Content-Type', 'text/html; charset=utf-8')
+  headers.set('Content-Language', config.locale)
   headers.set(
     'Content-Security-Policy',
-    `default-src 'none'; ${forgePageSources}; base-uri 'none'; frame-ancestors 'none'`,
+    `default-src 'none'; ${forgePageSources}; base-uri 'none'; frame-ancestors 'none'; form-action 'self'`,
   )
   return new Response(head ? null : `<!doctype html>${html}`, { status, headers })
 }
 
-async function home(runtime: Runtime, params: URLSearchParams, head: boolean, ctx: ExecutionContext) {
+async function home(runtime: Runtime, url: URL, head: boolean, ctx: ExecutionContext) {
   const { config } = runtime
   const { name, publicIndex, brand } = config
   const t = messages(config)
   const signIn = new URL('/artefacts', config.manageOrigin).href
   if (!publicIndex) {
     return documentResponse(
+      config,
       <AccessCard
         config={config}
         variant="landing"
         title={name}
         lead={brand.landingText}
+        languageReturn="/"
         actions={
           <CardLink href={signIn} primary>
             {t.signIn}
@@ -114,6 +121,7 @@ async function home(runtime: Runtime, params: URLSearchParams, head: boolean, ct
       head,
     )
   }
+  const params = url.searchParams
 
   const { query: q, matches: matchesQuery } = gallerySearch(params)
   const view = galleryView(params.get('view'))
@@ -127,13 +135,16 @@ async function home(runtime: Runtime, params: URLSearchParams, head: boolean, ct
   const matches = q ? entries.filter(matchesQuery) : entries
   const viewParams = q ? new URLSearchParams({ q }) : undefined
   const clear = view === 'list' ? '/?view=list' : '/'
+  const languageReturn = viewParams ? `/?${viewParams}${view === 'list' ? '&view=list' : ''}` : clear
   return documentResponse(
+    config,
     <html lang={config.locale}>
       <DocumentHead config={config} title={name} />
       <body>
         <div class="forge-panel forge-panel--landing forge-panel--gallery">
           <header class="forge-panel__header">
             <BrandBlock config={config} />
+            <LanguageSwitch locale={config.locale} returnPath={languageReturn} />
             <CardLink href={signIn} primary>
               {t.signIn}
             </CardLink>
@@ -299,12 +310,14 @@ export async function read(
         return new Response(null, { status: 401, headers: readHeaders() })
       case 'pending':
         return documentResponse(
+          config,
           <AccessCard
             config={config}
             variant="pending"
             title={common.pending}
             lead={common.legacy.approvalRequired}
             note={common.access.pendingNote}
+            languageReturn={url.pathname + url.search}
             actions={
               <CardLink href={config.manageOrigin} primary>
                 {common.access.account}
@@ -316,7 +329,7 @@ export async function read(
       case 'not-found':
         return notFound(config, head)
     }
-    if (url.pathname === '/') return await home(runtime, url.searchParams, head, ctx)
+    if (url.pathname === '/') return await home(runtime, url, head, ctx)
     return notFound(config, head)
   } catch (error) {
     console.error('Forge read failed', error instanceof Error ? error.name : 'unknown')

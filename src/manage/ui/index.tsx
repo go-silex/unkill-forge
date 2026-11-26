@@ -24,7 +24,7 @@ import { adminCountLimit } from '../../core/pagination'
 import { time } from '../../dates'
 import { readForm } from '../../http'
 import { messages } from '../../i18n'
-import { isUnambiguousBrowserPath, manageError, PendingAccess } from '../access'
+import { isUnambiguousBrowserPath, manageError, PendingAccess, SignIn } from '../access'
 import { openInvite, requireBrowserSession, returnPath } from '../login'
 import { adminPages } from './admin-pages'
 import { Action, Avatar, Badge, Fold, flash, page, pageLink, Table, type UiContext } from './page'
@@ -103,32 +103,6 @@ function RoleSelect({
         )}
       </select>
     </label>
-  )
-}
-
-function SignIn({ config, query }: { config: Config; query: URLSearchParams }) {
-  const t = messages(config)
-  const invite = query.has('invite')
-  return (
-    <AccessCard
-      config={config}
-      variant={invite ? 'invite' : 'sign-in'}
-      title={t.signIn}
-      lead={invite ? t.access.inviteLead : t.access.signInLead}
-      note={t.access.signInNote}
-      homeLink
-      actions={
-        <ul class="forge-link-list">
-          {config.providers.map((provider, index) => (
-            <li>
-              <CardLink href={`/login/${provider.id}?${query}`} primary={index === 0}>
-                {provider.label}
-              </CardLink>
-            </li>
-          ))}
-        </ul>
-      }
-    />
   )
 }
 

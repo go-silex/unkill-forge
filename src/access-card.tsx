@@ -3,6 +3,7 @@ import { BrandBlock } from './brand-block'
 import type { Config } from './config'
 import { DocumentHead } from './head'
 import { messages } from './i18n'
+import { LanguageSwitch } from './language-switch'
 
 export function AccessCard({
   config,
@@ -15,6 +16,7 @@ export function AccessCard({
   note,
   status,
   homeLink,
+  languageReturn,
 }: {
   config: Config
   variant: 'sign-in' | 'invite' | 'pending' | 'consent' | 'error' | 'landing'
@@ -26,6 +28,8 @@ export function AccessCard({
   note?: string
   status?: number
   homeLink?: boolean
+  // `true` follows the initiating page via the same-origin Referer rather than echoing its URL.
+  languageReturn?: string | true
 }) {
   return (
     <html lang={config.locale}>
@@ -34,6 +38,12 @@ export function AccessCard({
         <main class={`forge-panel forge-panel--${variant}`}>
           <header class="forge-panel__header">
             <BrandBlock config={config} variant={homeLink ? 'home-link' : undefined} />
+            {languageReturn && (
+              <LanguageSwitch
+                locale={config.locale}
+                returnPath={typeof languageReturn === 'string' ? languageReturn : undefined}
+              />
+            )}
           </header>
           <div class="forge-panel__body">
             {status && <p class="forge-card-status">{messages(config).access.errorCode(status)}</p>}
@@ -75,12 +85,14 @@ export function ErrorCard({
   lead,
   actions,
   homeLink,
+  languageReturn,
 }: {
   config: Config
   status: CardErrorStatus
   lead: string
   actions: Child
   homeLink?: boolean
+  languageReturn?: string
 }) {
   return (
     <AccessCard
@@ -91,6 +103,7 @@ export function ErrorCard({
       lead={lead}
       actions={actions}
       homeLink={homeLink}
+      languageReturn={languageReturn}
     />
   )
 }

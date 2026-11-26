@@ -2144,16 +2144,21 @@ it('localizes share creation metadata and keeps one visible copy of folded table
 })
 
 it.each(['en', 'fr'] as const)(
-  'renders every admin and read page in %s and serves configured branding',
+  'negotiates %s on every browser flow and serves configured branding',
   async (locale) => {
     const french = locale === 'fr'
-    const send = runtime({
-      LOCALE: locale,
+    const baseSend = runtime({
+      LOCALE: french ? 'en' : 'fr',
       FORGE_NAME: 'Ember Studio',
       BRAND: '{"accent":"#123a6f","landingText":"Ember landing","label":"  Ember & Co  "}',
       ALLOW_DCR: 'true',
       AUTH_PROVIDERS: JSON.stringify([{ ...provider, autoJoinRole: undefined }]),
     })
+    const send: Handle = (path, init) => {
+      const headers = new Headers(init?.headers)
+      headers.set('Accept-Language', locale)
+      return baseSend(path, { ...init, headers })
+    }
     const idp = mockProvider()
     const owner = await idp.signedIn(send, admin)
     const pending = await idp.signedIn(send, 'awaiting-approval')
@@ -2173,7 +2178,11 @@ it.each(['en', 'fr'] as const)(
       [owner, '/connect', 'MCP endpoint', 'Point d’accès MCP'],
     ] as const
     for (const [browser, path, en, fr] of pages) {
-      const document = await html(browser, path)
+      const response = await browser.request(path)
+      expect(response.status).toBe(200)
+      expect(response.headers.get('Content-Language')).toBe(locale)
+      expect(response.headers.get('Cache-Control')).toBe('no-store')
+      const document = await response.text()
       expect(document, path).toContain(french ? fr : en)
       expect(document, path).toContain(`lang="${locale}"`)
       expect(document, path).toContain('Ember Studio')
@@ -2391,7 +2400,7 @@ it.each(['en', 'fr'] as const)(
     expect(failed.headers.get('Cache-Control')).toBe('private, no-store')
     expect(failed.headers.get('Referrer-Policy')).toBe('same-origin')
     expect(failed.headers.get('Content-Security-Policy')).toBe(
-      "default-src 'none'; style-src 'self'; img-src 'self'; font-src 'self'; base-uri 'none'; frame-ancestors 'none'",
+      "default-src 'none'; style-src 'self'; img-src 'self'; font-src 'self'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'",
     )
 
     const privateUrl = `${read}/a/${slug}/`
@@ -2400,8 +2409,10 @@ it.each(['en', 'fr'] as const)(
     expect(start.status).toBe(302)
     const handoff = await pending.request(location(start), { headers: navigation })
     expect(handoff.status).toBe(200)
+    expect(handoff.headers.get('Content-Language')).toBe(locale)
     const handoffHtml = await handoff.text()
     expect(handoffHtml).toContain(french ? 'Continuer vers Forge' : 'Continue to Forge')
+    expect(handoffHtml).toContain(`<html lang="${locale}">`)
     expect(handoffHtml).toContain('Ember &amp; Co</div>')
     expect(handoff.headers.get('Content-Security-Policy')).toContain("font-src 'self'")
     const handoffFields = (document: string) =>
@@ -2431,6 +2442,7 @@ it.each(['en', 'fr'] as const)(
       body: handoffFields(await nextHandoff.text()),
     })
     expect(retry.status).toBe(400)
+    expect(retry.headers.get('Content-Language')).toBe(locale)
     const retryHtml = await retry.text()
     expect(retryHtml).toContain(french ? 'Réessayer de se connecter' : 'Try signing in again')
     expect(retryHtml).toContain('Ember &amp; Co</div>')
@@ -2457,12 +2469,17 @@ it.each(['en', 'fr'] as const)(
       resource: `${manage}/mcp`,
       scope: 'mcp',
     })}`
-    const consent = await html(owner, authorize)
+    const consentPage = await owner.request(authorize)
+    expect(consentPage.status).toBe(200)
+    expect(consentPage.headers.get('Content-Language')).toBe(locale)
+    const consent = await consentPage.text()
+    expect(consent).toContain(`<html lang="${locale}">`)
     expect(consent).toContain(french ? 'Autoriser' : 'Allow')
     expect(consent).toContain('Locale test client')
     expect(consent).toContain('forge-panel--consent')
     expect(consent).toContain('Ember &amp; Co</a>')
     const metadata = await send('/.well-known/oauth-protected-resource/mcp')
+    expect(metadata.headers.has('Content-Language')).toBe(false)
     expect(await metadata.json()).toMatchObject({ resource_name: 'Ember Studio' })
     const local = new URL(authorize, manage)
     const localClientId = `${manage}/oauth/clients/local.json`
@@ -2473,6 +2490,22 @@ it.each(['en', 'fr'] as const)(
     local.searchParams.set('client_id', localClientId)
     local.searchParams.set('redirect_uri', 'http://127.0.0.1:3000/callback')
     expect(await html(owner, local)).toContain(french ? 'Client MCP local' : 'Local MCP client')
+    const shellPath = '/artefacts?view=list'
+    const shell = await html(owner, shellPath)
+    expect(shell).toContain('class="forge-language-switch"')
+    const other = french ? 'en' : 'fr'
+    const switched = await owner.request('/_forge/language', {
+      method: 'POST',
+      headers: { Origin: manage, Referer: manage + shellPath },
+      body: new URLSearchParams({ language: other }),
+    })
+    expect(switched.status).toBe(303)
+    expect(switched.headers.get('Location')).toBe(shellPath)
+    const switchedPage = await owner.request(location(switched))
+    expect(switchedPage.headers.get('Content-Language')).toBe(other)
+    const switchedBody = await switchedPage.text()
+    expect(switchedBody).toContain(`<html lang="${other}">`)
+    expect(switchedBody).toContain(french ? 'Title or slug' : 'Titre ou identifiant')
   },
 )
 

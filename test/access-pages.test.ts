@@ -98,7 +98,8 @@ it('keeps protocol and machine misses plain and serves the browser HEAD without 
     expect(await head.text()).toBe('')
   }
 
-  const machineHeaders = { ...browserHeaders, 'content-type': 'text/plain; charset=UTF-8' }
+  const { 'content-language': _language, ...plainHeaders } = browserHeaders
+  const machineHeaders = { ...plainHeaders, 'content-type': 'text/plain; charset=UTF-8' }
   for (const [path, methods] of [
     ['/_forge/session', ['GET', 'HEAD']],
     ['/oauth/clients/local.json', ['OPTIONS', 'HEAD']],
@@ -125,7 +126,7 @@ it('keeps protocol and machine misses plain and serves the browser HEAD without 
   }
 
   const loginHeaders = {
-    ...browserHeaders,
+    ...plainHeaders,
     'content-type': 'text/plain;charset=UTF-8',
     'referrer-policy': 'no-referrer',
   }
@@ -178,7 +179,7 @@ it('renders login and consent storage outages but leaves the logout failure plai
     }),
   })
   const start = await unavailable('/login/team')
-  const referenceHeaders = Object.fromEntries(start.headers)
+  const { 'content-language': _language, ...referenceHeaders } = Object.fromEntries(start.headers)
   await errorCard(start, 503)
   fault = /DELETE FROM login_flows WHERE state_hash/
   await errorCard(await unavailable(callback, { headers: { Cookie: guest.cookieHeader() } }), 503)
@@ -297,6 +298,15 @@ it('renders verified consent facts, escapes the client name and retains the boun
   expect(html).toContain('&lt;strong&gt;Test application&lt;/strong&gt;')
   expect(html).not.toContain(clientName)
   expect(html).not.toContain(requestData)
+  expect(html).toContain('class="forge-language-switch"')
+  const changed = await owner.request('/_forge/language', {
+    method: 'POST',
+    headers: { Origin: manage, Referer: manage + authPath() },
+    body: new URLSearchParams({ language: 'fr' }),
+  })
+  expect(changed.status).toBe(303)
+  expect(changed.headers.get('Location')).toBe(authPath())
+  expect((await owner.request(location(changed))).headers.get('Content-Language')).toBe('fr')
   expect(html).toMatch(
     /method="post" action="\/authorize".*name="decision" value="deny".*name="decision" value="approve"/s,
   )

@@ -227,11 +227,15 @@ it('themes Forge-authored errors without altering served artefacts, redirects or
     [`${read}/a/public?tab=latest`, 301, ''],
     [share.url.slice(0, -1), 301, ''],
   ] as const) {
-    const actual = await themed(url)
+    const actual = await themed(url, {
+      headers: { 'Accept-Language': 'fr', Cookie: '__Host-forge-language=fr' },
+    })
     const original = await send(url)
     expect(actual.status, url).toBe(status)
     expect(await actual.text()).toBe(body)
     expect([...actual.headers]).toEqual([...original.headers])
+    expect(actual.headers.has('Content-Language')).toBe(false)
+    expect(actual.headers.has('Vary')).toBe(false)
     expect(actual.headers.has('Content-Security-Policy')).toBe(false)
   }
 
@@ -242,8 +246,9 @@ it('themes Forge-authored errors without altering served artefacts, redirects or
   expect(neverExisted.status).toBe(404)
   expect(Object.fromEntries(revoked.headers)).toEqual({
     'cache-control': 'private, no-store',
+    'content-language': 'en',
     'content-security-policy':
-      "default-src 'none'; style-src 'self'; img-src 'self'; font-src 'self'; base-uri 'none'; frame-ancestors 'none'",
+      "default-src 'none'; style-src 'self'; img-src 'self'; font-src 'self'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'",
     'content-type': 'text/html; charset=utf-8',
     'referrer-policy': 'same-origin',
     'x-content-type-options': 'nosniff',

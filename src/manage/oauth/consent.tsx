@@ -60,6 +60,7 @@ export async function authorize(
           lead={text.lead}
           note={text.note}
           homeLink
+          languageReturn
           facts={[
             [text.client, local ? text.localClient : consent.clientName],
             [
