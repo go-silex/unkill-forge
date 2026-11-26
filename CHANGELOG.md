@@ -1,6 +1,6 @@
 # Changelog
 
-## [Unreleased]
+## v2.10.0 — 2026-11-26
 
 - Ignore emoji presentation selectors in artefact searches on Manage, the public gallery, and MCP.
 - Show the irreversible purge guidance on the Deleted artefacts page as an accessible warning.
