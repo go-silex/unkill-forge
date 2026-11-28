@@ -17,7 +17,9 @@ Tests run the Worker in `workerd` with isolated D1, R2 and KV bindings, not with
 
 Install local checks with `npx lefthook install`. Pre-push requires a clean
 worktree and checks only pushes from `HEAD`, so every check sees the same
-commit. Coverage floors in `config/coverage-floors.json` apply to first-party
+commit. Pre-push gates are script jobs in `.lefthook/pre-push/` so Lefthook
+does not skip them when `HEAD` has no diff against `origin/main`.
+Coverage floors in `config/coverage-floors.json` apply to first-party
 JS/TS, including modules outside `src/`; test, tooling and build outputs are
 excluded in `config/coverage-scope.json`. The checker requires a report record
 for every in-scope file. Production and tooling source is capped at 300 lines;

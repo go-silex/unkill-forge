@@ -16,18 +16,22 @@ commit-msg:
 
 pre-push:
   piped: true
+  # Use script jobs: Lefthook skips pre-push commands when HEAD has no diff against origin/main.
   jobs:
     - name: install-config
-      run: node scripts/check-install-config.mjs
+      script: install-config.sh
+      runner: bash
+      args: "--"
     - name: lockfile-cooldown
+      script: lockfile-cooldown.sh
+      runner: bash
+      args: "--"
       use_stdin: true
-      run: node scripts/check-lockfile-cooldown.mjs --pre-push
     - name: quality-gates
-      run: >-
-        ./node_modules/.bin/biome ci . && node scripts/check-file-length.mjs &&
-        node scripts/check-worker-scope.mjs && ./node_modules/.bin/knip --no-progress &&
-        ./node_modules/.bin/tsc --noEmit
+      script: quality-gates.sh
+      runner: bash
+      args: "--"
     - name: tests
-      run: >-
-        node --test scripts/*.node-test.mjs && ./node_modules/.bin/vitest run --coverage &&
-        node scripts/check-coverage-floors.mjs
+      script: tests.sh
+      runner: bash
+      args: "--"
